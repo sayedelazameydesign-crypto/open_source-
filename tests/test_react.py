@@ -10,7 +10,6 @@ from os_core.models import ScriptedModel
 from os_core.router import ModelRouter, RouterConfig
 from os_core.state import RunStatus
 from os_core.types import ModelResponse, ToolCall, Usage
-from tests.conftest import tool_response
 
 
 def make_agent(model, registry, bus, *, approver=None, **cfg) -> ReActAgent:
@@ -24,7 +23,7 @@ def make_agent(model, registry, bus, *, approver=None, **cfg) -> ReActAgent:
     )
 
 
-async def test_single_tool_then_final_answer(registry, bus) -> None:
+async def test_single_tool_then_final_answer(registry, bus, tool_response) -> None:
     model = ScriptedModel(
         script=[tool_response(ToolCall(name="echo", args={"text": "ping"}), content="trying")],
         final_content="pong",
@@ -35,7 +34,7 @@ async def test_single_tool_then_final_answer(registry, bus) -> None:
     assert result.run.steps_used == 2
 
 
-async def test_observation_is_fed_back_to_the_model(registry, bus) -> None:
+async def test_observation_is_fed_back_to_the_model(registry, bus, tool_response) -> None:
     model = ScriptedModel(
         script=[tool_response(ToolCall(name="echo", args={"text": "abc"}))],
         final_content="done",
@@ -45,7 +44,7 @@ async def test_observation_is_fed_back_to_the_model(registry, bus) -> None:
     assert any(m.role == "tool" and "abc" in m.content for m in last)
 
 
-async def test_unknown_tool_is_reported_not_fatal(registry, bus) -> None:
+async def test_unknown_tool_is_reported_not_fatal(registry, bus, tool_response) -> None:
     model = ScriptedModel(
         script=[
             tool_response(ToolCall(name="does_not_exist", args={})),
@@ -58,7 +57,7 @@ async def test_unknown_tool_is_reported_not_fatal(registry, bus) -> None:
     assert any("unknown tool" in r.error for r in result.run.results if r.error)
 
 
-async def test_missing_required_argument_is_reported(registry, bus) -> None:
+async def test_missing_required_argument_is_reported(registry, bus, tool_response) -> None:
     model = ScriptedModel(
         script=[tool_response(ToolCall(name="echo", args={}))], final_content="ok"
     )
@@ -66,7 +65,9 @@ async def test_missing_required_argument_is_reported(registry, bus) -> None:
     assert any("missing required argument" in (r.error or "") for r in result.run.results)
 
 
-async def test_prompt_injection_is_blocked_before_any_tool_runs(registry, bus, events) -> None:
+async def test_prompt_injection_is_blocked_before_any_tool_runs(
+    registry, bus, events, tool_response
+) -> None:
     model = ScriptedModel(
         script=[tool_response(ToolCall(name="echo", args={"text": "x"}))],
         final_content="should not happen",
@@ -79,7 +80,7 @@ async def test_prompt_injection_is_blocked_before_any_tool_runs(registry, bus, e
     assert any(e.type is EventType.ERROR for e in events)
 
 
-async def test_dangerous_tool_requires_human_approval(registry, bus) -> None:
+async def test_dangerous_tool_requires_human_approval(registry, bus, tool_response) -> None:
     registry.tools["echo"].name = "echo"
     from os_core.types import RiskLevel
 
@@ -93,7 +94,7 @@ async def test_dangerous_tool_requires_human_approval(registry, bus) -> None:
     assert denied and "human approval denied" in denied[0].error
 
 
-async def test_approved_dangerous_tool_executes(registry, bus, events) -> None:
+async def test_approved_dangerous_tool_executes(registry, bus, events, tool_response) -> None:
     from os_core.types import RiskLevel
 
     registry.tools["echo"].risk = RiskLevel.DANGEROUS
@@ -107,7 +108,7 @@ async def test_approved_dangerous_tool_executes(registry, bus, events) -> None:
     assert EventType.APPROVAL_RESOLVED in types
 
 
-async def test_stagnation_is_broken_by_the_reviewer(registry, bus, events) -> None:
+async def test_stagnation_is_broken_by_the_reviewer(registry, bus, events, tool_response) -> None:
     """The same call three times must not spin to the step ceiling."""
     call = ToolCall(name="echo", args={"text": "same"})
 
@@ -123,7 +124,7 @@ async def test_stagnation_is_broken_by_the_reviewer(registry, bus, events) -> No
     assert any(e.type is EventType.REVIEW for e in events)
 
 
-async def test_max_steps_ceiling_stops_the_run(registry, bus) -> None:
+async def test_max_steps_ceiling_stops_the_run(registry, bus, tool_response) -> None:
     def responder(messages):
         return tool_response(ToolCall(name="echo", args={"text": messages[-1].content[-3:]}))
 
@@ -134,7 +135,7 @@ async def test_max_steps_ceiling_stops_the_run(registry, bus) -> None:
     assert result.run.steps_used == 4
 
 
-async def test_tool_failures_abort_after_the_error_ceiling(registry, bus) -> None:
+async def test_tool_failures_abort_after_the_error_ceiling(registry, bus, tool_response) -> None:
     model = ScriptedModel(
         responder=lambda m: tool_response(ToolCall(name="echo", args={}))  # always missing arg
     )
@@ -144,7 +145,7 @@ async def test_tool_failures_abort_after_the_error_ceiling(registry, bus) -> Non
     assert "consecutive tool failures" in result.stopped_reason
 
 
-async def test_routing_is_recorded_per_step(registry, bus) -> None:
+async def test_routing_is_recorded_per_step(registry, bus, tool_response) -> None:
     model = ScriptedModel(
         script=[tool_response(ToolCall(name="echo", args={"text": "x"}))], final_content="done"
     )
@@ -153,7 +154,7 @@ async def test_routing_is_recorded_per_step(registry, bus) -> None:
     assert all(c.role in {"fast", "planner", "vision", "critic"} for c in result.run.model_choices)
 
 
-async def test_event_stream_carries_the_full_trace(registry, bus, events) -> None:
+async def test_event_stream_carries_the_full_trace(registry, bus, events, tool_response) -> None:
     model = ScriptedModel(
         script=[tool_response(ToolCall(name="echo", args={"text": "x"}), content="thinking")],
         final_content="done",
@@ -173,7 +174,7 @@ async def test_event_stream_carries_the_full_trace(registry, bus, events) -> Non
         assert expected in types, expected
 
 
-async def test_token_usage_is_accumulated(registry, bus) -> None:
+async def test_token_usage_is_accumulated(registry, bus, tool_response) -> None:
     model = ScriptedModel(
         script=[
             ModelResponse(

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from os_core.events import EventType
-from os_core.hitl import QueueApprover
+from os_core.hitl import ApprovalDecision, QueueApprover
 from os_core.state import RunStatus
 from os_orchestration.platform import build_platform
 from os_server.demo import build_demo_platform, build_registry
@@ -69,7 +69,7 @@ async def test_snapshot_is_json_serialisable() -> None:
     assert {s["status"] for s in snapshot["steps"]} == {"done"}
 
 
-async def test_dangerous_action_blocks_on_human_approval() -> None:
+async def test_dangerous_action_blocks_on_human_approval(tool_response) -> None:
     """A write-classified tool with a DenyApprover must never execute."""
     from os_core.hitl import DenyApprover
     from os_core.models import ScriptedModel
@@ -78,11 +78,7 @@ async def test_dangerous_action_blocks_on_human_approval() -> None:
     registry, _guard, _browser = build_registry()
     registry.tools["python_execute"].risk = RiskLevel.DANGEROUS
     model = ScriptedModel(
-        script=[
-            __import__("tests.conftest", fromlist=["tool_response"]).tool_response(
-                ToolCall(name="python_execute", args={"code": "print(1)"})
-            )
-        ],
+        script=[tool_response(ToolCall(name="python_execute", args={"code": "print(1)"}))],
         final_content="done",
     )
     platform = build_platform(model, registry=registry, mode="react", approver=DenyApprover())
@@ -113,7 +109,7 @@ async def test_queue_approver_can_be_answered() -> None:
         if approver.pending:
             break
         await asyncio.sleep(0.01)
-    assert approver.answer(call.id, __import__("os_core").ApprovalDecision.APPROVED)
+    assert approver.answer(call.id, ApprovalDecision.APPROVED)
     assert (await task).value == "approved"
 
 

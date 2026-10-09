@@ -84,7 +84,7 @@ ruff format .      # تنسيق موحّد
 from os_core.models import OpenAICompatModel
 
 model = OpenAICompatModel(
-    base_url="http://localhost:8000/v1",   # vLLM — أو 11434 لـ Ollama
+    base_url="http://localhost:8000/v1",  # vLLM — أو 11434 لـ Ollama
     model_id="deepseek-ai/DeepSeek-R1",
 )
 ```

@@ -157,8 +157,11 @@ python -m os_server.cli serve --demo --host 0.0.0.0 --port 8080
 
 ```python
 from os_core.models import OpenAICompatModel
-model = OpenAICompatModel(base_url="http://localhost:8000/v1",  # vLLM
-                          model_id="deepseek-ai/DeepSeek-R1")
+
+model = OpenAICompatModel(
+    base_url="http://localhost:8000/v1",  # vLLM
+    model_id="deepseek-ai/DeepSeek-R1",
+)
 ```
 
 نفس المسار البرمجي تمامًا؛ لا تغيير في الوكلاء أو الأدوات.

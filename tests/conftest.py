@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 from os_core.events import EventBus
-from os_core.models import ModelResponse, ScriptedModel, Usage
+from os_core.models import ModelResponse, Usage
 from os_core.router import ModelRouter, RouterConfig
 from os_core.types import ToolCall
 from os_tools.browser import BrowserTool, FakeBrowser, PageSnapshot, RetryPolicy
@@ -83,15 +83,19 @@ def browser_tool(fake_browser: FakeBrowser) -> BrowserTool:
     return BrowserTool(backend=fake_browser, policy=RetryPolicy(max_attempts=2, backoff=0.0))
 
 
-def scripted(*responses: ModelResponse, final: str = "done") -> ScriptedModel:
-    return ScriptedModel(script=list(responses), final_content=final)
-
-
-def tool_response(*calls: ToolCall, content: str = "") -> ModelResponse:
+def _make_tool_response(*calls: ToolCall, content: str = "") -> ModelResponse:
     return ModelResponse(
         content=content, tool_calls=list(calls), usage=Usage(prompt_tokens=50, completion_tokens=20)
     )
 
 
-def text_response(content: str, *, tokens: int = 40) -> ModelResponse:
-    return ModelResponse(content=content, usage=Usage(prompt_tokens=50, completion_tokens=tokens))
+@pytest.fixture
+def tool_response():
+    """Factory for a model response that requests tool calls.
+
+    Deliberately a fixture, not an importable helper: test modules must never
+    write ``from tests.conftest import ...``, because that depends on the
+    repository root being on ``sys.path`` — which pytest 9.1 no longer
+    guarantees. Injecting it keeps collection working on any pytest version.
+    """
+    return _make_tool_response
