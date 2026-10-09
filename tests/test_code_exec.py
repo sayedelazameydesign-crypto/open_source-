@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 from os_core.types import ToolStatus
-from os_tools.code_exec import LocalSubprocessBackend, SandboxLimits, _parse_report
+from os_tools.code_exec import (
+    LocalSubprocessBackend,
+    SandboxLimits,
+    _parse_report,
+    netns_unshare_available,
+)
 
 
 @pytest.fixture
@@ -93,7 +98,6 @@ def test_corrupt_report_is_reported_as_error() -> None:
 
 async def test_sandbox_cannot_reach_the_network(sandbox: LocalSubprocessBackend) -> None:
     """With a netns available the sandbox has no interfaces at all."""
-    import shutil
 
     code = (
         "import socket\n"
@@ -103,10 +107,12 @@ async def test_sandbox_cannot_reach_the_network(sandbox: LocalSubprocessBackend)
         "except OSError as exc:\n"
         "    print('NETWORK_BLOCKED', type(exc).__name__)\n"
     )
+    if not netns_unshare_available():
+        pytest.skip(
+            "this host cannot create a network namespace (unshare rejected); "
+            "egress isolation is the e2b/firecracker backend's job"
+        )
     result = await sandbox.execute(code)
     assert result.ok
-    if shutil.which("unshare"):
-        assert "NETWORK_BLOCKED" in result.output
-        assert result.metadata["network"] == "blocked (netns)"
-    else:  # pragma: no cover - environment without util-linux
-        pytest.skip("unshare unavailable; egress is enforced by the e2b/firecracker backend")
+    assert "NETWORK_BLOCKED" in result.output
+    assert result.metadata["network"] == "blocked (netns)"

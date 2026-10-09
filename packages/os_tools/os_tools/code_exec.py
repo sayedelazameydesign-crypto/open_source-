@@ -22,9 +22,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import functools
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -84,6 +86,35 @@ class CodeExecBackend(Protocol):
     async def execute(
         self, code: str, *, language: str, files: dict[str, str], timeout: float
     ) -> ToolResult: ...
+
+
+# Namespace flags we need for real network isolation. `--map-root-user` is
+# what makes an unprivileged netns possible, and it is exactly the flag that
+# restricted CI runners refuse.
+_NETNS_FLAGS = ("--net", "--map-root-user", "--fork", "--kill-child")
+
+
+@functools.lru_cache(maxsize=1)
+def netns_unshare_available() -> bool:
+    """Can this host *actually* create a network namespace?
+
+    Presence of the ``unshare`` binary proves nothing: GitHub-hosted runners
+    ship it but reject the uid_map write with ``Operation not permitted``,
+    which previously broke every single sandboxed execution. So the real
+    command is run once and the verdict cached.
+    """
+    if not shutil.which("unshare"):
+        return False
+    try:
+        completed = subprocess.run(
+            ["unshare", *_NETNS_FLAGS, "true"],
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return completed.returncode == 0
 
 
 class SandboxLimits(BaseModel):
@@ -198,7 +229,7 @@ class LocalSubprocessBackend(BaseModel):
 
     # -- isolation plumbing --------------------------------------------
     def _argv(self, runner: Path) -> Sequence[str]:
-        if self.unshare_net and shutil.which("unshare"):
+        if self.unshare_net and netns_unshare_available():
             # New network + PID namespace: no interfaces at all inside.
             return [
                 "unshare",
@@ -231,7 +262,12 @@ class LocalSubprocessBackend(BaseModel):
         return _apply
 
     def _network_mode(self) -> str:
-        return "blocked (netns)" if self.unshare_net and shutil.which("unshare") else "unverified"
+        """Report egress state truthfully — never claim isolation we lack."""
+        if not self.unshare_net:
+            return "disabled by config"
+        if netns_unshare_available():
+            return "blocked (netns)"
+        return "unverified (netns unavailable on this host)"
 
 
 class InMemoryBackend(BaseModel):
