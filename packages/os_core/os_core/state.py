@@ -7,7 +7,7 @@ single source of truth; the UI is a projection of :meth:`RunState.snapshot`.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
@@ -43,7 +43,7 @@ class RunState(BaseModel):
     tokens_used: int = 0
     replans: int = 0
     reviews: int = 0
-    started_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    started_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     finished_at: str | None = None
     error: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -74,7 +74,7 @@ class RunState(BaseModel):
         self, status: RunStatus, *, answer: str = "", error: str | None = None
     ) -> None:
         self.status = status
-        self.finished_at = datetime.now(timezone.utc).isoformat()
+        self.finished_at = datetime.now(UTC).isoformat()
         if answer:
             self.final_answer = answer
         if error:
