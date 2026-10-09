@@ -5,7 +5,7 @@
 (Artifacts) و Manus (التنفيذ الذاتي متعدد الخطوات).
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 
 > **165 اختبارًا ناجحًا · 0 فشل · دون مفاتيح API ودون شبكة.**
 
