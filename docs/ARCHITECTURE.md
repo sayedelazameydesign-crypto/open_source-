@@ -72,8 +72,12 @@ User UI (Next.js split-view)  ← WebSockets / SSE
    --kill-child` عند توفره. يُبلَّغ عن حالة الشبكة بصدق
    (`blocked (netns)` أو `unverified`) بدل ادعاء العزل.
 
-> **حدود صادقة:** `unshare` يحتاج Linux + صلاحيات؛ عند غيابه لا يوجد عزل شبكة فعلي.
-> الواجهة `CodeExecBackend` هي نقطة الاستبدال بـ E2B/Firecracker للإنتاج.
+> **حدود صادقة (مثبتة بـ CI، لا نظرية):** وجود ملف `unshare` **لا يعني** أنه يعمل.
+> على عدّاءات GitHub托管 الملف موجود لكنه يرفض كتابة `uid_map` برسالة
+> `Operation not permitted`. لذا `netns_unshare_available()` **تُنفِّذ الأمر فعليًا**
+> مرة واحدة وتخبّئ النتيجة، وعند الرفض يُبلَّغ `unverified (netns unavailable on this host)`
+> ويُتابَع التنفيذ بلا netns بدل تحطيم كل تنفيذ. الواجهة `CodeExecBackend` هي نقطة
+> الاستبدال بـ E2B/Firecracker للإنتاج.
 
 ### القيد 3 — تزامن الحالة
 `os_core/events.py` + `os_core/state.py`. كل تغيير في شجرة التنفيذ يُنشَر كـ `Event`
@@ -115,7 +119,11 @@ User UI (Next.js split-view)  ← WebSockets / SSE
 
 ## 6. الاختبار والتقييم
 
-165 اختبارًا، كلها دون مفاتيح API ودون شبكة:
+165 اختبارًا، كلها دون مفاتيح API ودون شبكة. على عدّاءات CI تظهر
+`164 passed, 1 skipped` — والاختبار المتخطّى هو فحص الشبكة تحديدًا، لأن العدّاء لا
+يستطيع إنشاء netns (وهو السلوك الصحيح: تخطٍّ صريح بدل ادعاء عزل غير موجود).
+
+CI أخضر على Python 3.11 / 3.12 / 3.13 — انظر <https://github.com/sayedelazameydesign-crypto/open_source-/actions>:
 
 ```bash
 pip install -e ".[dev]"
