@@ -14,7 +14,7 @@
 ## التشغيل في 30 ثانية
 
 ```bash
-git clone https://github.com/YOUR-USERNAME/open_source && cd open_source
+git clone https://github.com/sayedelazameydesign-crypto/open_source-.git && cd open_source-
 pip install -e ".[dev]"
 
 # 1) وضع ReAct — تنفيذ كود حقيقي داخل البيئة المعزولة

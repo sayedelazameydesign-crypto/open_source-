@@ -44,9 +44,9 @@ browser = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/YOUR-USERNAME/open_source"
-Repository = "https://github.com/YOUR-USERNAME/open_source"
-Issues = "https://github.com/YOUR-USERNAME/open_source/issues"
+Homepage = "https://github.com/sayedelazameydesign-crypto/open_source-"
+Repository = "https://github.com/sayedelazameydesign-crypto/open_source-"
+Issues = "https://github.com/sayedelazameydesign-crypto/open_source-/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = [
