@@ -94,3 +94,8 @@ ignore = ["RUF001", "RUF002", "RUF003", "B008"]
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["B011", "S101"]
 "packages/*/os_*/__init__.py" = ["F401"]
+# ASYNC109 wants timeouts expressed via asyncio.timeout() rather than a
+# parameter. The sandbox is the exception: a per-call timeout is part of the
+# CodeExecBackend contract, because the caller — not the backend — owns the
+# deadline for untrusted code.
+"packages/os_tools/os_tools/code_exec.py" = ["ASYNC109"]
