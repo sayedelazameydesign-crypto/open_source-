@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.11", "3.13"]
+        python-version: ["3.10", "3.11", "3.13"]
 
     steps:
       - uses: actions/checkout@v4
@@ -25,10 +25,16 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          pip install -e ".[dev,server]"
 
       - name: Lint
         run: ruff check .
 
       - name: Test
-        run: pytest
+        run: pytest -q
+
+      - name: Smoke-test the ReAct demo end to end
+        run: |
+          export PYTHONPATH=packages/os_core:packages/os_agents:packages/os_tools:packages/os_orchestration:packages/os_server
+          python -m os_server.cli run --demo "Sum 0..100" | tee /tmp/out
+          grep -q "5050" /tmp/out
