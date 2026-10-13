@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "open-source-platform"
+name = "cela-use-browser"
 version = "0.1.0"
-description = "Autonomous & interactive AI platform on a fully open-source 2026 stack: agentic reasoning + artifacts + sandboxed execution."
+description = "cela_use_browser — autonomous browser & sandboxed execution platform with a dedicated private API (/cela/v1 + CelaBrowser facade)."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
@@ -97,5 +97,7 @@ ignore = ["RUF001", "RUF002", "RUF003", "B008"]
 # ASYNC109 wants timeouts expressed via asyncio.timeout() rather than a
 # parameter. The sandbox is the exception: a per-call timeout is part of the
 # CodeExecBackend contract, because the caller — not the backend — owns the
-# deadline for untrusted code.
+# deadline for untrusted code. Likewise, CelaBrowser.browse/wait accept a
+# caller wait deadline while shielding the underlying run task.
 "packages/os_tools/os_tools/code_exec.py" = ["ASYNC109"]
+"packages/os_server/os_server/cela.py" = ["ASYNC109"]

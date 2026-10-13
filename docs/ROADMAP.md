@@ -18,8 +18,9 @@
 | سلسلة fallback الثلاثية للمتصفح | ✅ | `test_browser.py` (13) |
 | سجل أدوات بنمط MCP | ✅ | `test_e2e.py` |
 | REST + SSE + WebSocket + تذاكر WS | ✅ | `test_server.py` (30) |
+| `cela_use_browser` (`/cela/v1` + `CelaBrowser`) | ✅ | `test_cela_api.py` (49) |
 
-**المجموع: 281 اختبارًا، 0 فشل، دون مفاتيح API ودون شبكة.**
+**المجموع: 330 اختبارًا، 0 فشل، دون مفاتيح API ودون شبكة.**
 
 CI أخضر على Python 3.11 / 3.12 / 3.13 (Lint + Test + Smoke-test):
 <https://github.com/sayedelazameydesign-crypto/open_source-/actions>
