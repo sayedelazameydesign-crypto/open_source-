@@ -2,8 +2,9 @@
 
 Mirrors the dual-mode design: a task is profiled, then dispatched either to
 the ReAct loop (fast, single-agent) or the PlanningFlow (DAG, re-planning).
-Everything else (registry, guardrails, approver, event bus) is shared, so both
-modes have identical security semantics.
+Everything else (registry, guardrails, approver, event bus, run-outcome
+ledger) is shared, so both modes have identical security semantics — and both
+leave the same durable record of how the execution ended.
 """
 
 from __future__ import annotations
@@ -17,9 +18,10 @@ from os_agents.reviewer import HeuristicReviewer
 from os_core.events import Event, EventBus, EventType
 from os_core.guardrails import Guardrails
 from os_core.hitl import Approver, DenyApprover
+from os_core.ledger import LedgerError, RunLedger
 from os_core.models import ChatModel
 from os_core.router import ModelRouter, RouterConfig
-from os_core.state import RunState
+from os_core.state import RunState, RunStatus
 from os_tools.registry import ToolRegistry
 from pydantic import BaseModel, Field
 
@@ -50,6 +52,7 @@ class Platform(BaseModel):
     skill_auto_learn: bool = True
     last_skill_id: str | None = None
     last_bus: EventBus | None = None  # kept so the server can stream events
+    ledger: RunLedger | None = None  # append-only outcome log; None = don't record
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -87,61 +90,90 @@ class Platform(BaseModel):
         stream = bus or self.make_bus(state.run_id)
         stream.run_id = state.run_id
 
-        # Skill reuse: retrieve a learned pattern for this task and inject it
-        # as initial guidance. The original task remains the state's identity;
-        # only the text the agents reason over is enriched. Guardrails and
-        # HITL still apply to every resulting tool call, exactly as before.
-        effective_task = task
-        used_skill_id: str | None = None
-        if self.skill_manager is not None:
-            found = self.skill_manager.guidance_for_task(task)
-            if found is not None:
-                skill, score, enriched = found
-                effective_task = enriched
-                used_skill_id = skill.skill_id
-                self.last_skill_id = skill.skill_id
-                state.metadata["skill_id"] = skill.skill_id
-                state.metadata["skill_status"] = skill.status
-                state.metadata["skill_match"] = score
-                await stream.publish(
-                    Event(
-                        type=EventType.LOG,
-                        run_id=state.run_id,
-                        data={
-                            "text": f"reusing learned skill {skill.skill_id} (match={score:.2f})",
-                            "skill_id": skill.skill_id,
-                            "skill_match": score,
-                        },
+        try:
+            # Skill reuse: retrieve a learned pattern for this task and inject it
+            # as initial guidance. The original task remains the state's identity;
+            # only the text the agents reason over is enriched. Guardrails and
+            # HITL still apply to every resulting tool call, exactly as before.
+            effective_task = task
+            used_skill_id: str | None = None
+            if self.skill_manager is not None:
+                found = self.skill_manager.guidance_for_task(task)
+                if found is not None:
+                    skill, score, enriched = found
+                    effective_task = enriched
+                    used_skill_id = skill.skill_id
+                    self.last_skill_id = skill.skill_id
+                    state.metadata["skill_id"] = skill.skill_id
+                    state.metadata["skill_status"] = skill.status
+                    state.metadata["skill_match"] = score
+                    await stream.publish(
+                        Event(
+                            type=EventType.LOG,
+                            run_id=state.run_id,
+                            data={
+                                "text": f"reusing learned skill {skill.skill_id} (match={score:.2f})",
+                                "skill_id": skill.skill_id,
+                                "skill_match": score,
+                            },
+                        )
                     )
-                )
 
-        if mode == "flow":
-            flow = PlanningFlow(
-                planner=self.model,
+            if mode == "flow":
+                flow = PlanningFlow(
+                    planner=self.model,
+                    registry=self.registry,
+                    router=self.router_or_default(),
+                    bus=stream,
+                    guardrails=self.guardrails,
+                    approver=self.approver,
+                    budget_cfg=self.budget(),
+                    max_replans=self.config.max_replans,
+                    parallelism=self.config.parallelism,
+                )
+                result = await flow.run(effective_task, state=state)
+                return self._learn(state=result.run, used_skill_id=used_skill_id)
+
+            agent = ReActAgent(
+                model=self.model,
                 registry=self.registry,
                 router=self.router_or_default(),
                 bus=stream,
                 guardrails=self.guardrails,
                 approver=self.approver,
                 budget_cfg=self.budget(),
-                max_replans=self.config.max_replans,
-                parallelism=self.config.parallelism,
+                reviewer=self.reviewer,
             )
-            result = await flow.run(effective_task, state=state)
-            return self._learn(state=result.run, used_skill_id=used_skill_id)
+            outcome = await agent.run(effective_task, state=state)
+            return self._learn(state=outcome.run, used_skill_id=used_skill_id)
+        except Exception as exc:
+            # The agents mark their own terminal states. An exception escaping
+            # here is an infrastructure failure, so the state must not reach the
+            # ledger looking like it is still running.
+            if not state.is_terminal:
+                state.mark_finished(RunStatus.FAILED, error=f"{type(exc).__name__}: {exc}")
+            raise
+        finally:
+            # Every execution is recorded — completed, failed, budget-exhausted
+            # or interrupted. That is the whole point of a ledger. It runs after
+            # _learn, so skill feedback is settled before the record is written.
+            await self.record_outcome(state, bus=stream)
 
-        agent = ReActAgent(
-            model=self.model,
-            registry=self.registry,
-            router=self.router_or_default(),
-            bus=stream,
-            guardrails=self.guardrails,
-            approver=self.approver,
-            budget_cfg=self.budget(),
-            reviewer=self.reviewer,
-        )
-        outcome = await agent.run(effective_task, state=state)
-        return self._learn(state=outcome.run, used_skill_id=used_skill_id)
+    async def record_outcome(self, state: RunState, *, bus: EventBus | None = None) -> None:
+        """Append ``state``'s outcome to the ledger. Never raises.
+
+        A ledger that cannot be written is a real problem, but a *reporting*
+        one: it must not replace the run's own error, so it is surfaced as an
+        event on the bus instead of propagating out of the ``finally`` block.
+        """
+        if self.ledger is None:
+            return
+        stream = bus if bus is not None else self.last_bus
+        try:
+            self.ledger.record(state)
+        except LedgerError as exc:
+            if stream is not None:
+                await stream.log(f"run-outcome ledger write failed: {exc}", level="error")
 
     def _learn(self, *, state: RunState, used_skill_id: str | None) -> RunState:
         """Feedback loop: score a reused skill, then distill the run itself."""
@@ -168,6 +200,7 @@ def build_platform(
     token_budget: int = 200_000,
     max_steps: int = 25,
     skill_manager: Any = None,
+    ledger: RunLedger | None = None,
 ) -> Platform:
     """Convenience factory used by the CLI, the server and the tests."""
     return Platform(
@@ -176,4 +209,5 @@ def build_platform(
         config=PlatformConfig(mode=mode, token_budget=token_budget, max_steps=max_steps),
         approver=approver or DenyApprover(),
         skill_manager=skill_manager,
+        ledger=ledger,
     )

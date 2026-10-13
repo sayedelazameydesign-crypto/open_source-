@@ -20,6 +20,7 @@
 | REST + SSE + WebSocket + تذاكر WS + استئناف `after_seq` | ✅ | `test_server.py` (37) |
 | `cela_use_browser` (`/cela/v1` + `CelaBrowser`) | ✅ | `test_cela_api.py` (50) |
 | محرك الذكاء المحلي (`LocalAIEngine` + `/api/*` + `/cela/v1/*`) | ✅ | `test_local_ai.py` (15) |
+| سجل نتائج دائم لكل تشغيل (JSONL + ملخّص + `/ledger`) | ✅ | `test_ledger.py` |
 
 **المجموع: 403 اختبارًا، 0 فشل، دون مفاتيح API ودون شبكة.**
 
@@ -64,6 +65,8 @@ CI أخضر على Python 3.11 / 3.12 / 3.13 (Lint + Test + Smoke-test):
 - [x] تنفيذ `RunStore` فوق Postgres + Redis (`PostgresRunStore`/`DistributedRunStore`، ‏ADR-0006) خلف `distributed://` وإضافة اختيارية `[distributed]`.
 - [ ] طابور مهام (Celery/Arq) لفصل API عن التنفيذ.
 - [x] **قيد معروف (خُفّف):** المقابض الحية ما زالت داخل العملية، لكن الحالات/الأحداث/Artifacts/التذاكر تُكتب عبر `RunStore`؛ مع `sqlite:///<path>` تنجو التشغيلات المنتهية من إعادة التشغيل. تعدد النسخ المتزامن ما زال يحتاج Postgres+Redis.
+- [ ] نقل سجل النتائج (`os_core/ledger.py`، ADR-0014) من ملف JSONL محلي إلى المخزن
+      الدائم خلف الواجهة نفسها (`record`/`entries`/`summary`) + تدوير واحتفاظ صريح.
 
 ## 🔲 المرحلة 5 — التقييم المعياري
 

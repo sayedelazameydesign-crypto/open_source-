@@ -11,6 +11,7 @@ Both event streams accept ``?after_seq=N`` to resume a disconnected client from
 the last sequence number it received (see ADR-0002).
 ``POST /runs/{id}/approve``     human-in-the-loop answer
 ``GET  /artifacts/{id}/{name}`` fetch an artifact for the right-hand pane
+``GET  /ledger``                persisted outcome of every run + summary
 ``GET  /health``                minimal public liveness check
 
 Reach namespace (ADR-0013, behind the token of its parent API, opt-in via
@@ -31,6 +32,8 @@ Private browser namespace (guarded by ``CELA_PRIVATE_API_TOKEN``):
 ``POST /cela/v1/runs/{id}/approve``
 ``GET  /cela/v1/runs/{id}/artifacts``
 ``GET  /cela/v1/runs/{id}/artifacts/{name}``
+``GET  /cela/v1/ledger``
+``GET  /cela/v1/runs/{id}/outcome``
 """
 
 from __future__ import annotations
@@ -45,6 +48,7 @@ from fastapi.responses import Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from os_core.events import EventType, replay_and_stream
 from os_core.hitl import ApprovalDecision
+from os_core.ledger import RunLedger
 from os_orchestration.platform import Platform
 from os_tools.egress import EgressPolicy
 from pydantic import BaseModel
@@ -100,6 +104,7 @@ def create_app(
     reach_enabled: bool | None = None,
     reach_service: ReachService | None = None,
     reach_policy: EgressPolicy | None = None,
+    ledger: RunLedger | None = None,
 ) -> FastAPI:
     """Build the FastAPI application hosting both the platform and ``/cela/v1``."""
     configured_token = resolve_token(api_token)
@@ -121,6 +126,7 @@ def create_app(
             egress_policy=egress_policy,
             ws_ticket_ttl=ws_ticket_ttl,
             store_url=store_url,
+            ledger=ledger,
         )
     )
     if egress_policy is not None:
@@ -265,6 +271,13 @@ def create_app(
     )
     app.state.reach = reach
 
+    @app.get("/ledger", dependencies=[Depends(require_api_auth)])
+    async def ledger_report(
+        limit: int = Query(default=20, ge=1, le=500),
+    ) -> dict[str, Any]:
+        """Persisted outcome of every run: recent entries + aggregate summary."""
+        return rt.ledger_report(limit=limit)
+
     app.include_router(create_local_ai_router(cela_browser, api_token=api_token))
     app.include_router(create_private_router(cela_browser, private_api_token=private_api_token))
     app.include_router(
@@ -288,6 +301,7 @@ def serve(
     api_token: str | None = None,
     private_api_token: str | None = None,
     store_url: str | None = None,
+    ledger: RunLedger | None = None,
 ) -> None:
     import uvicorn
 
@@ -298,7 +312,13 @@ def serve(
         )
     priv_token = resolve_private_token(private_api_token)
     uvicorn.run(
-        create_app(platform, api_token=token, private_api_token=priv_token, store_url=store_url),
+        create_app(
+            platform,
+            api_token=token,
+            private_api_token=priv_token,
+            store_url=store_url,
+            ledger=ledger,
+        ),
         host=host,
         port=port,
         log_level="info",
