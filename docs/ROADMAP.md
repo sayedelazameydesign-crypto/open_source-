@@ -20,8 +20,9 @@
 | REST + SSE + WebSocket + تذاكر WS | ✅ | `test_server.py` (30) |
 | `cela_use_browser` (`/cela/v1` + `CelaBrowser`) | ✅ | `test_cela_api.py` (49) |
 | محرك الذكاء المحلي (`LocalAIEngine` + `/api/*` + `/cela/v1/*`) | ✅ | `test_local_ai.py` (15) |
+| سجل نتائج دائم لكل تشغيل (JSONL + ملخّص + `/ledger`) | ✅ | `test_ledger.py` (47) |
 
-**المجموع: 345 اختبارًا، 0 فشل، دون مفاتيح API ودون شبكة.**
+**المجموع: 392 اختبارًا، 0 فشل، دون مفاتيح API ودون شبكة.**
 
 CI أخضر على Python 3.11 / 3.12 / 3.13 (Lint + Test + Smoke-test):
 <https://github.com/sayedelazameydesign-crypto/open_source-/actions>
@@ -57,6 +58,8 @@ CI أخضر على Python 3.11 / 3.12 / 3.13 (Lint + Test + Smoke-test):
 - [ ] `EventBus` خلف Redis Streams أو NATS (الواجهة الحالية تسمح بذلك دون تغيير الوكلاء).
 - [ ] مخزن تنفيذ دائم (Postgres) بدل القواميس في الذاكرة داخل `app.py`.
 - [ ] طابور مهام (Celery/Arq) لفصل API عن التنفيذ.
+- [ ] نقل سجل النتائج (`os_core/ledger.py`) من ملف JSONL محلي إلى المخزن الدائم خلف
+      الواجهة نفسها (`record`/`entries`/`summary`) + تدوير واحتفاظ (retention) صريح.
 - [ ] **قيد معروف:** `runs`/`states`/`artifacts` في `app.py` قواميس داخل العملية، فلا
       تعمل مع أكثر من نسخة واحدة.
 

@@ -38,3 +38,15 @@ jobs:
           export PYTHONPATH=packages/os_core:packages/os_agents:packages/os_tools:packages/os_orchestration:packages/os_server
           python -m os_server.cli run --demo "Sum 0..100" | tee /tmp/out
           grep -q "5050" /tmp/out
+
+      - name: Smoke-test the run-outcome ledger
+        run: |
+          export PYTHONPATH=packages/os_core:packages/os_agents:packages/os_tools:packages/os_orchestration:packages/os_server
+          export CELA_LEDGER_PATH=/tmp/run-ledger.jsonl
+          # The run must report where it recorded itself …
+          python -m os_server.cli run --demo "Sum 0..100" | tee /tmp/out | grep -q "ledger:"
+          # … the file must exist on disk with a success outcome …
+          test -s /tmp/run-ledger.jsonl
+          grep -q '"outcome":"success"' /tmp/run-ledger.jsonl
+          # … and the reader must summarise it.
+          python -m os_server.cli ledger --limit 5 | tee /tmp/ledger | grep -q "success_rate=1.00"

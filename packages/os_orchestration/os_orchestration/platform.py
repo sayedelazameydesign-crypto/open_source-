@@ -2,8 +2,9 @@
 
 Mirrors the dual-mode design: a task is profiled, then dispatched either to
 the ReAct loop (fast, single-agent) or the PlanningFlow (DAG, re-planning).
-Everything else (registry, guardrails, approver, event bus) is shared, so both
-modes have identical security semantics.
+Everything else (registry, guardrails, approver, event bus, run-outcome
+ledger) is shared, so both modes have identical security semantics — and both
+leave the same durable record of how the execution ended.
 """
 
 from __future__ import annotations
@@ -17,9 +18,10 @@ from os_agents.reviewer import HeuristicReviewer
 from os_core.events import EventBus
 from os_core.guardrails import Guardrails
 from os_core.hitl import Approver, DenyApprover
+from os_core.ledger import LedgerError, RunLedger
 from os_core.models import ChatModel
 from os_core.router import ModelRouter, RouterConfig
-from os_core.state import RunState
+from os_core.state import RunState, RunStatus
 from os_tools.registry import ToolRegistry
 from pydantic import BaseModel, Field
 
@@ -44,6 +46,7 @@ class Platform(BaseModel):
     approver: Approver = Field(default_factory=DenyApprover)
     reviewer: Any = Field(default_factory=HeuristicReviewer)
     last_bus: EventBus | None = None  # kept so the server can stream events
+    ledger: RunLedger | None = None  # append-only outcome log; None = don't record
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -81,33 +84,61 @@ class Platform(BaseModel):
         stream = bus or self.make_bus(state.run_id)
         stream.run_id = state.run_id
 
-        if mode == "flow":
-            flow = PlanningFlow(
-                planner=self.model,
+        try:
+            if mode == "flow":
+                flow = PlanningFlow(
+                    planner=self.model,
+                    registry=self.registry,
+                    router=self.router_or_default(),
+                    bus=stream,
+                    guardrails=self.guardrails,
+                    approver=self.approver,
+                    budget_cfg=self.budget(),
+                    max_replans=self.config.max_replans,
+                    parallelism=self.config.parallelism,
+                )
+                result = await flow.run(task, state=state)
+                return result.run
+
+            agent = ReActAgent(
+                model=self.model,
                 registry=self.registry,
                 router=self.router_or_default(),
                 bus=stream,
                 guardrails=self.guardrails,
                 approver=self.approver,
                 budget_cfg=self.budget(),
-                max_replans=self.config.max_replans,
-                parallelism=self.config.parallelism,
+                reviewer=self.reviewer,
             )
-            result = await flow.run(task, state=state)
-            return result.run
+            outcome = await agent.run(task, state=state)
+            return outcome.run
+        except Exception as exc:
+            # The agents mark their own terminal states. An exception escaping
+            # here is an infrastructure failure, so the state must not reach the
+            # ledger looking like it is still running.
+            if not state.is_terminal:
+                state.mark_finished(RunStatus.FAILED, error=f"{type(exc).__name__}: {exc}")
+            raise
+        finally:
+            # Every execution is recorded — completed, failed, budget-exhausted
+            # or interrupted. That is the whole point of a ledger.
+            await self.record_outcome(state, bus=stream)
 
-        agent = ReActAgent(
-            model=self.model,
-            registry=self.registry,
-            router=self.router_or_default(),
-            bus=stream,
-            guardrails=self.guardrails,
-            approver=self.approver,
-            budget_cfg=self.budget(),
-            reviewer=self.reviewer,
-        )
-        outcome = await agent.run(task, state=state)
-        return outcome.run
+    async def record_outcome(self, state: RunState, *, bus: EventBus | None = None) -> None:
+        """Append ``state``'s outcome to the ledger. Never raises.
+
+        A ledger that cannot be written is a real problem, but a *reporting*
+        one: it must not replace the run's own error, so it is surfaced as an
+        event on the bus instead of propagating out of the ``finally`` block.
+        """
+        if self.ledger is None:
+            return
+        stream = bus if bus is not None else self.last_bus
+        try:
+            self.ledger.record(state)
+        except LedgerError as exc:
+            if stream is not None:
+                await stream.log(f"run-outcome ledger write failed: {exc}", level="error")
 
 
 def build_platform(
@@ -118,6 +149,7 @@ def build_platform(
     approver: Approver | None = None,
     token_budget: int = 200_000,
     max_steps: int = 25,
+    ledger: RunLedger | None = None,
 ) -> Platform:
     """Convenience factory used by the CLI, the server and the tests."""
     return Platform(
@@ -125,4 +157,5 @@ def build_platform(
         registry=registry,
         config=PlatformConfig(mode=mode, token_budget=token_budget, max_steps=max_steps),
         approver=approver or DenyApprover(),
+        ledger=ledger,
     )

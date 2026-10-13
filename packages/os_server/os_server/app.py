@@ -8,6 +8,7 @@ Public platform endpoints (guarded by ``CELA_API_TOKEN`` / ``OS_API_TOKEN``):
 ``WS   /ws/{id}``               live event stream (Bearer header or ``?ticket=``)
 ``POST /runs/{id}/approve``     human-in-the-loop answer
 ``GET  /artifacts/{id}/{name}`` fetch an artifact for the right-hand pane
+``GET  /ledger``                persisted outcome of every run + summary
 ``GET  /health``                minimal public liveness check
 
 Private browser namespace (guarded by ``CELA_PRIVATE_API_TOKEN``):
@@ -21,6 +22,8 @@ Private browser namespace (guarded by ``CELA_PRIVATE_API_TOKEN``):
 ``POST /cela/v1/runs/{id}/approve``
 ``GET  /cela/v1/runs/{id}/artifacts``
 ``GET  /cela/v1/runs/{id}/artifacts/{name}``
+``GET  /cela/v1/runs/{id}/outcome``
+``GET  /cela/v1/ledger``
 """
 
 from __future__ import annotations
@@ -29,11 +32,12 @@ import json
 import secrets
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from os_core.events import EventType
 from os_core.hitl import ApprovalDecision
+from os_core.ledger import RunLedger
 from os_orchestration.platform import Platform
 from os_tools.egress import EgressPolicy
 from pydantic import BaseModel
@@ -73,6 +77,7 @@ def create_app(
     egress_policy: EgressPolicy | None = None,
     ws_ticket_ttl: float = DEFAULT_WS_TICKET_TTL,
     runtime: ApiRuntime | None = None,
+    ledger: RunLedger | None = None,
 ) -> FastAPI:
     """Build the FastAPI application hosting both the platform and ``/cela/v1``."""
     configured_token = resolve_token(api_token)
@@ -93,6 +98,7 @@ def create_app(
             platform_or_factory,
             egress_policy=egress_policy,
             ws_ticket_ttl=ws_ticket_ttl,
+            ledger=ledger,
         )
     )
     if egress_policy is not None:
@@ -207,6 +213,13 @@ def create_app(
             raise HTTPException(404, "no such artifact")
         return Response(content=json.dumps(meta), media_type="application/json")
 
+    @app.get("/ledger", dependencies=[Depends(require_api_auth)])
+    async def ledger_report(
+        limit: int = Query(default=20, ge=1, le=500),
+    ) -> dict[str, Any]:
+        """Persisted outcome of every run: recent entries + aggregate summary."""
+        return rt.ledger_report(limit=limit)
+
     app.include_router(create_local_ai_router(cela_browser, api_token=api_token))
     app.include_router(create_private_router(cela_browser, private_api_token=private_api_token))
     return app
@@ -219,6 +232,7 @@ def serve(
     port: int = 8080,
     api_token: str | None = None,
     private_api_token: str | None = None,
+    ledger: RunLedger | None = None,
 ) -> None:
     import uvicorn
 
@@ -229,7 +243,12 @@ def serve(
         )
     priv_token = resolve_private_token(private_api_token)
     uvicorn.run(
-        create_app(platform, api_token=token, private_api_token=priv_token),
+        create_app(
+            platform,
+            api_token=token,
+            private_api_token=priv_token,
+            ledger=ledger,
+        ),
         host=host,
         port=port,
         log_level="info",

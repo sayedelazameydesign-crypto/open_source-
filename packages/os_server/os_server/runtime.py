@@ -4,6 +4,10 @@ Extracting the runtime state from ``create_app``'s closure lets the public
 platform endpoints (``/runs``, ``/ws/{id}``, …), the private HTTP namespace
 (``/cela/v1/…``) and the in-process Python facade (:class:`CelaBrowser`) drive
 the exact same execution engine and state tables without drift.
+
+The runtime also owns the run-outcome ledger: it hands the ledger to every
+platform it starts a run with, so all three surfaces leave the same durable
+record of how each execution ended.
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ from typing import Any
 
 from os_core.events import EventBus, EventType
 from os_core.hitl import ApprovalDecision, QueueApprover
+from os_core.ledger import RunLedger, resolve_ledger
 from os_core.state import RunState, RunStatus
 from os_orchestration.platform import Platform
 from os_tools.egress import EgressPolicy
@@ -107,6 +112,7 @@ class ApiRuntime:
         egress_policy: EgressPolicy | None = None,
         ws_ticket_ttl: float = DEFAULT_WS_TICKET_TTL,
         ai_engine: LocalAIEngine | None = None,
+        ledger: RunLedger | None = None,
     ) -> None:
         if ws_ticket_ttl <= 0:
             raise ValueError("ws_ticket_ttl must be positive")
@@ -121,6 +127,13 @@ class ApiRuntime:
         )
         self.ws_ticket_ttl: float = ws_ticket_ttl
         self.ai: LocalAIEngine = ai_engine if ai_engine is not None else LocalAIEngine()
+        # Every run started through this runtime leaves an outcome record,
+        # wherever it was started from (REST, /cela/v1 or CelaBrowser). The
+        # default comes from $CELA_LEDGER_PATH; `CELA_LEDGER_PATH=off` disables
+        # it. An explicitly passed ledger always wins.
+        self.ledger: RunLedger | None = ledger if ledger is not None else resolve_ledger()
+        if self.platform.ledger is None:
+            self.platform.ledger = self.ledger
         self.runs: dict[str, RunHandle] = {}
         self.states: dict[str, RunState] = {}
         self.artifacts: dict[str, dict[str, Any]] = {}
@@ -136,6 +149,10 @@ class ApiRuntime:
     ) -> tuple[RunHandle, str]:
         run_id = f"run_{uuid.uuid4().hex[:10]}"
         run_platform = self.make_platform(mode, max_steps)
+        if run_platform.ledger is None:
+            # A platform that already carries its own ledger keeps it; one that
+            # does not inherits the runtime's so no run escapes the record.
+            run_platform.ledger = self.ledger
         bus = run_platform.make_bus(run_id)
 
         async def _collect(event: Any) -> None:
@@ -238,6 +255,29 @@ class ApiRuntime:
         if run_id not in self.runs:
             return None
         return list(self.artifacts.get(run_id, {}).values())
+
+    # -- run-outcome ledger ---------------------------------------------
+    def ledger_report(self, *, limit: int = 20) -> dict[str, Any]:
+        """The last ``limit`` outcomes plus the aggregate summary.
+
+        Reads the file on every call — correct and cheap at prototype scale;
+        roadmap phase 4 replaces the file with a persistent store behind the
+        same methods.
+        """
+        if self.ledger is None:
+            return {"ledger": {"enabled": False}, "entries": [], "summary": None}
+        return {
+            "ledger": self.ledger.describe(),
+            "entries": [entry.model_dump() for entry in self.ledger.entries(limit=limit)],
+            "summary": self.ledger.summary(),
+        }
+
+    def ledger_entry_for(self, run_id: str) -> dict[str, Any] | None:
+        """The recorded outcome of one run, or ``None`` if it has none."""
+        if self.ledger is None:
+            return None
+        entry = self.ledger.entry_for(run_id)
+        return entry.model_dump() if entry is not None else None
 
     def _prune_expired_tickets(self, now: float) -> None:
         expired = [tok for tok, meta in self.tickets.items() if meta.expires_at <= now]

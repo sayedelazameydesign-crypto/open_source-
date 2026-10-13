@@ -33,7 +33,7 @@ User UI (Next.js split-view)  ← WebSockets / SSE
 
 | الحزمة | المسؤولية | الملفات الرئيسية |
 |---|---|---|
-| `os_core` | الأنواع المشتركة، توجيه النماذج، الحواجز، الأحداث، الحالة | `types.py`, `router.py`, `guardrails.py`, `hitl.py`, `events.py`, `state.py` |
+| `os_core` | الأنواع المشتركة، توجيه النماذج، الحواجز، الأحداث، الحالة، سجل النتائج | `types.py`, `router.py`, `guardrails.py`, `hitl.py`, `events.py`, `state.py`, `ledger.py` |
 | `os_agents` | حلقة ReAct، مخطط DAG، الميزانية، المراجع | `react.py`, `flow.py`, `dag.py`, `budget.py`, `reviewer.py` |
 | `os_tools` | تنفيذ الكود المعزول، المتصفح، حارس SSRF، سجل الأدوات | `code_exec.py`, `browser.py`, `ssrf.py`, `registry.py`, `mcp.py` |
 | `os_orchestration` | واجهة المنصة واختيار الوضع | `platform.py` |
@@ -85,6 +85,22 @@ User UI (Next.js split-view)  ← WebSockets / SSE
 متأخرةً أن تستعيد السجل كاملًا ثم تتابع الحي. `RunState.snapshot()` هو المصدر الوحيد
 للحقيقة المعروض على الواجهة.
 
+### ما يبقى بعد انتهاء التشغيل
+`os_core/events.py` و`os_core/state.py` يصفان التشغيل **أثناء** حدوثه و**داخل
+الذاكرة**؛ لا شيء منهما يجيب عن سؤال المشغّل في اليوم التالي: كم تشغيلًا نُفِّذ، وكم
+منها انتهى فعلًا؟ لذلك يضيف `os_core/ledger.py` سجلًا دائمًا:
+
+* **سطر JSON واحد لكل تنفيذ** في ملف JSONL ثابت (`CELA_LEDGER_PATH`، والافتراضي
+  `.cela/ledger.jsonl`؛ `off` يعطّله)، بلا أي تبعية جديدة — مقبض ملف وقفل و`os.fsync`.
+* **الكتابة في `finally`** داخل `Platform.run`، فيُسجَّل التنفيذ المكتمل والفاشل
+  والمستنفد للميزانية والمقطوع على السواء (`RunOutcome` بأربعة أحكام:
+  `success` / `failed` / `budget` / `aborted`).
+* **فشل السجل لا يُفقد التشغيل:** `LedgerError` يُلتقط ويُبلَّغ كحدث على الناقل، فلا
+  يستبدل خطأ التشغيل نفسه، والأسطر التالفة تُتخطّى وتُعدّ بدل كسر القراءة.
+* **سطح واحد للقراءة:** `GET /ledger` (رمز المنصة)، `GET /cela/v1/ledger` و
+  `GET /cela/v1/runs/{id}/outcome` (الرمز الخاص)، `CelaBrowser.outcome_ledger()`،
+  و`python -m os_server.cli ledger`.
+
 ## 4. الحالات الاستثنائية
 
 ### الحلقات المفرغة
@@ -119,15 +135,15 @@ User UI (Next.js split-view)  ← WebSockets / SSE
 
 ## 6. الاختبار والتقييم
 
-165 اختبارًا، كلها دون مفاتيح API ودون شبكة. على عدّاءات CI تظهر
-`164 passed, 1 skipped` — والاختبار المتخطّى هو فحص الشبكة تحديدًا، لأن العدّاء لا
-يستطيع إنشاء netns (وهو السلوك الصحيح: تخطٍّ صريح بدل ادعاء عزل غير موجود).
+392 اختبارًا، كلها دون مفاتيح API ودون شبكة. على عدّاءات CI التي لا تستطيع إنشاء
+netns يُتخطّى اختبار الشبكة **صراحةً** (`1 skipped`) بدل ادعاء عزل غير موجود؛ وعلى
+العدّاء الذي يوفّر netns تنجح الاختبارات كلها (`392 passed, 0 skipped`).
 
 CI أخضر على Python 3.11 / 3.12 / 3.13 — انظر <https://github.com/sayedelazameydesign-crypto/open_source-/actions>:
 
 ```bash
-pip install -e ".[dev]"
-pytest            # 165 passed
+pip install -e ".[dev,server]"
+pytest            # 392 passed
 ruff check .      # All checks passed
 ```
 
@@ -143,6 +159,7 @@ ruff check .      # All checks passed
 | DAG، التوازي، إعادة التخطيط الديناميكية | `test_flow.py` |
 | المسار الكامل + MCP | `test_e2e.py` |
 | REST + SSE + WebSocket | `test_server.py` |
+| سجل النتائج: الإلحاق، استمرار التسلسل عبر إعادة التشغيل، الأسطر التالفة، الملخّص، `/ledger` | `test_ledger.py` |
 
 **معايير خارجية (غير مُنفَّذة بعد):** GAIA، SWE-bench، OSWorld تحتاج نماذج حقيقية
 وموارد؛ الطبقات جاهزة لكن مقاعد الاختبار (harnesses) لم تُبنَ. انظر
@@ -159,6 +176,9 @@ python -m os_server.cli flow --demo "Plan and execute a 3-step research task"
 
 # واجهة HTTP + WebSocket
 python -m os_server.cli serve --demo --host 0.0.0.0 --port 8080
+
+# سجل نتائج التشغيلات (الافتراضي .cela/ledger.jsonl بجوار العملية)
+python -m os_server.cli ledger --limit 20
 ```
 
 الربط بنماذج حقيقية — استبدل `ScriptedModel` بـ `OpenAICompatModel`:
