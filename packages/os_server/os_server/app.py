@@ -38,7 +38,7 @@ from os_orchestration.platform import Platform
 from os_tools.egress import EgressPolicy
 from pydantic import BaseModel
 
-from os_server.cela import CelaBrowser, create_private_router
+from os_server.cela import CelaBrowser, create_local_ai_router, create_private_router
 from os_server.runtime import (
     DEFAULT_WS_TICKET_TTL,
     PRODUCT_VERSION,
@@ -207,6 +207,7 @@ def create_app(
             raise HTTPException(404, "no such artifact")
         return Response(content=json.dumps(meta), media_type="application/json")
 
+    app.include_router(create_local_ai_router(cela_browser, api_token=api_token))
     app.include_router(create_private_router(cela_browser, private_api_token=private_api_token))
     return app
 
@@ -241,5 +242,6 @@ __all__ = [
     "RunHandle",
     "StartRunRequest",
     "create_app",
+    "create_local_ai_router",
     "serve",
 ]

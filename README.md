@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 
-> **330 اختبارًا ناجحًا · 0 فشل · دون مفاتيح API ودون شبكة.**
+> **345 اختبارًا ناجحًا · 0 فشل · دون مفاتيح API ودون شبكة.**
 
 ---
 
@@ -48,7 +48,8 @@ python -m os_server.cli serve --demo --host 0.0.0.0 --port 8080
 | **التنسيق** | ReAct + PlanningFlow (DAG، توازٍ، إعادة تخطيط ديناميكية) |
 | **التنفيذ** | Sandbox بـ `setrlimit` + مهلة + `unshare --net`، ومتصفح بسلسلة fallback ثلاثية |
 | **الأمان** | حارس SSRF + سياسة خروج صريحة (`EgressPolicy`) + حواجز حقن عربية/إنجليزية + HITL يفشل مغلقًا |
-| **النقل** | FastAPI: REST + WebSocket (مع تذاكر أحادية الاستخدام) + SSE + `/cela/v1` + `CelaBrowser` |
+| **الذكاء المحلي** | `LocalAIEngine` على CPU (NLP عربي/إنجليزي، بحث دلالي هجين، تعلّم آلة، فحص صور، OCR مستندات، تحليل صوت WAV) |
+| **النقل** | FastAPI: REST + WebSocket (مع تذاكر أحادية الاستخدام) + SSE + `/api/*` + `/cela/v1` + `CelaBrowser` |
 
 البنية الكاملة: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · الـ API الخاص: [`docs/CELA_API.md`](docs/CELA_API.md) ·
 القرارات: [`adr/`](adr) · ما تبقّى: [`docs/ROADMAP.md`](docs/ROADMAP.md)
@@ -96,7 +97,7 @@ packages/
 ## الاختبار
 
 ```bash
-pytest -q          # 330 passed
+pytest -q          # 345 passed
 ruff check .       # All checks passed
 ruff format .      # تنسيق موحّد
 ```

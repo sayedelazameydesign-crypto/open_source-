@@ -71,17 +71,22 @@ def demo_browser() -> BrowserTool:
 
 
 def build_registry(
-    *, egress_policy: EgressPolicy | None = None
+    *,
+    egress_policy: EgressPolicy | None = None,
+    ai_engine: Any | None = None,
 ) -> tuple[ToolRegistry, SSRFGuard, BrowserTool]:
     from os_tools.browser import browser_tools
     from os_tools.code_exec import python_execute_tool
+    from os_tools.local_ai import LocalAIEngine, local_ai_tools
 
     registry = ToolRegistry(default_timeout=30.0)
     policy = egress_policy if egress_policy is not None else demo_egress_policy()
     guard = policy.guard
     browser = demo_browser()
+    engine = ai_engine if ai_engine is not None else LocalAIEngine()
     registry.add(python_execute_tool(LocalSubprocessBackend(), timeout=20.0))
     registry.extend(browser_tools(browser, ssrf_check=policy.for_tool("browser")))
+    registry.extend(local_ai_tools(engine))
     return registry, guard, browser
 
 

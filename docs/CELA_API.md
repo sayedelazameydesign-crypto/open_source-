@@ -80,6 +80,19 @@ GET /cela/v1/whoami  + الرمز الخاص (CELA_PRIVATE_API_TOKEN) → 200 {"
 | `POST /cela/v1/runs/{run_id}/approve` | إجابة طلب موافقة بشرية (HITL) | `200 {"delivered": bool}` أو `404` / `409` / `422` |
 | `GET /cela/v1/runs/{run_id}/artifacts` | قائمة المخرجات (بما فيها لقطات الشاشة) | `200 {"run_id": ..., "artifacts": [...]}` |
 | `GET /cela/v1/runs/{run_id}/artifacts/{filename}` | جلب مخرج معيّن بصيغة JSON | `200` أو `404` |
+| `GET /cela/v1/ai/capabilities` | حالة محرك الذكاء المحلي (`local-cpu`) والمكتبات الاختيارية | `200` |
+| `POST /cela/v1/nlp/entities` | استخراج الكيانات والكلمات المفتاحية (عربي/إنجليزي) | `200` |
+| `POST /cela/v1/search/index` | فهرسة المستندات داخل مساحة أسماء (`namespace`) | `200` |
+| `POST /cela/v1/search/semantic` | بحث دلالي هجين عابر للغتين (عربي/إنجليزي) | `200` |
+| `POST /cela/v1/ml/analyze` | تحليل تعلّم الآلة (`classify`, `forecast`, `cluster`, `anomaly`) | `200` أو `422` |
+| `POST /cela/v1/vision/analyze` | فحص ثنائي للصور (`PNG`, `JPEG`, `GIF`, `BMP`, `PPM`) | `200` أو `422` |
+| `POST /cela/v1/documents/ocr` | استخراج النصوص والحقول المنظمة من `PDF`/`PNG`/`HTML` | `200` أو `422` |
+| `POST /cela/v1/audio/transcribe` | تحليل ملفات `WAV` واستخراج النصوص المضمّنة | `200` أو `422` |
+
+وتتوفر المسارات المماثلة على السطح العام تحت `/api/*` محميةً بـ `CELA_API_TOKEN` (أو `OS_API_TOKEN`):
+`GET /api/capabilities`, `POST /api/nlp/entities`, `POST /api/search/index`,
+`POST /api/search/semantic`, `POST /api/ml/analyze`, `POST /api/vision/analyze`,
+`POST /api/documents/ocr`, `POST /api/audio/transcribe` — مع مشاركة قاعدة المعرفة نفسها داخل `ApiRuntime.ai`.
 
 ---
 
@@ -93,6 +106,13 @@ browser = CelaBrowser()
 # قراءة متزامنة
 info = browser.whoami()
 verdict = browser.check_url("https://example.org/search")
+
+# محرك الذكاء الاصطناعي المحلي (CPU — دون اتصال خارجي ودون رسوم لكل طلب)
+caps = browser.ai_capabilities()
+entities = browser.extract_entities("شركة أرامكو في الرياض بتاريخ ١٥ أكتوبر ٢٠٢٦")
+browser.index_documents(["الذكاء الاصطناعي وتعلم الآلة على المعالج المحلي"], namespace="kb")
+hits = browser.semantic_search("machine learning artificial intelligence", namespace="kb")
+forecast = browser.ml_analyze("forecast", series=[10, 20, 30, 40], horizon=2)
 
 # تشغيل وانتظار النتيجة داخل حلقة أحداث asyncio
 snapshot = await browser.browse(

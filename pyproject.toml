@@ -41,6 +41,15 @@ server = [
 browser = [
     "playwright>=1.47",
 ]
+ai = [
+    "scikit-learn>=1.5",
+    "spacy>=3.7",
+    "sentence-transformers>=3.0",
+    "faiss-cpu>=1.8",
+    "opencv-python-headless>=4.10",
+    "paddleocr>=2.8",
+    "faster-whisper>=1.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/sayedelazameydesign-crypto/open_source-"

@@ -21,6 +21,7 @@ from os_core.hitl import ApprovalDecision, QueueApprover
 from os_core.state import RunState, RunStatus
 from os_orchestration.platform import Platform
 from os_tools.egress import EgressPolicy
+from os_tools.local_ai import LocalAIEngine
 from pydantic import BaseModel, ConfigDict
 
 from os_server.demo import demo_egress_policy
@@ -105,6 +106,7 @@ class ApiRuntime:
         *,
         egress_policy: EgressPolicy | None = None,
         ws_ticket_ttl: float = DEFAULT_WS_TICKET_TTL,
+        ai_engine: LocalAIEngine | None = None,
     ) -> None:
         if ws_ticket_ttl <= 0:
             raise ValueError("ws_ticket_ttl must be positive")
@@ -118,6 +120,7 @@ class ApiRuntime:
             egress_policy if egress_policy is not None else demo_egress_policy()
         )
         self.ws_ticket_ttl: float = ws_ticket_ttl
+        self.ai: LocalAIEngine = ai_engine if ai_engine is not None else LocalAIEngine()
         self.runs: dict[str, RunHandle] = {}
         self.states: dict[str, RunState] = {}
         self.artifacts: dict[str, dict[str, Any]] = {}

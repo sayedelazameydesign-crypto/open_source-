@@ -25,6 +25,12 @@ from os_tools.egress import (
     EgressVerdict,
     parse_http_target,
 )
+from os_tools.local_ai import (
+    LocalAIEngine,
+    detect_language,
+    local_ai_tools,
+    normalise_arabic,
+)
 from os_tools.mcp import LocalMCPServer, MCPServer, ToolFilter, build_default_registry
 from os_tools.registry import Tool, ToolRegistry
 from os_tools.ssrf import BlockedURLError, SSRFGuard, URLVerdict
@@ -39,6 +45,7 @@ __all__ = [
     "EgressVerdict",
     "FakeBrowser",
     "InMemoryBackend",
+    "LocalAIEngine",
     "LocalMCPServer",
     "LocalSubprocessBackend",
     "MCPServer",
@@ -54,6 +61,9 @@ __all__ = [
     "URLVerdict",
     "browser_tools",
     "build_default_registry",
+    "detect_language",
+    "local_ai_tools",
+    "normalise_arabic",
     "parse_http_target",
     "python_execute_tool",
 ]
