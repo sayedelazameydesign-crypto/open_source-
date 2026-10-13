@@ -1,4 +1,4 @@
-"""HTTP + WebSocket transport.
+"""HTTP + WebSocket transport with bearer-token protection.
 
 Endpoints
 ---------
@@ -8,8 +8,10 @@ Endpoints
 ``WS   /ws/{id}``               live event stream (canvas synchronisation)
 ``POST /runs/{id}/approve``     human-in-the-loop answer
 ``GET  /artifacts/{id}/{name}`` fetch an artifact for the right-hand pane
-``GET  /health``                liveness + tool inventory
+``GET  /health``                minimal public liveness check
 
+All run, approval, event-stream, WebSocket and artifact routes require an API
+Bearer token configured through ``OS_API_TOKEN`` or ``create_app(api_token=...)``.
 The same :class:`Platform` is used, so server and CLI share security semantics.
 """
 
@@ -17,12 +19,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import secrets
 import uuid
 from collections.abc import Callable
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response, StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from os_core.events import EventBus, EventType
 from os_core.hitl import ApprovalDecision, QueueApprover
 from os_core.state import RunState, RunStatus
@@ -53,6 +58,16 @@ class RunHandle(BaseModel):
 PlatformFactory = Callable[[str, int], Platform]
 
 
+def _valid_bearer_token(authorization: str | None, expected_token: str | None) -> bool:
+    """Constant-time comparison of an HTTP Bearer credential."""
+    if not expected_token or not authorization:
+        return False
+    scheme, separator, supplied = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not separator or not supplied:
+        return False
+    return secrets.compare_digest(supplied.encode("utf-8"), expected_token.encode("utf-8"))
+
+
 def _single_platform_factory(platform: Platform) -> PlatformFactory:
     """Adapt one shared platform into the per-run factory shape."""
 
@@ -64,14 +79,40 @@ def _single_platform_factory(platform: Platform) -> PlatformFactory:
     return factory
 
 
-def create_app(platform_or_factory: Platform | PlatformFactory) -> FastAPI:
+def create_app(
+    platform_or_factory: Platform | PlatformFactory, *, api_token: str | None = None
+) -> FastAPI:
     """Build the API.
 
     Pass a :class:`Platform` for a shared instance, or a factory
     ``(mode, max_steps) -> Platform`` so each run gets an isolated one — the
     latter is what the demo and the tests use, since a run must never mutate
     state that a concurrent run depends on.
+
+    Protected routes fail closed when no token is configured. Set ``OS_API_TOKEN``
+    or pass ``api_token`` explicitly. The public health route reveals status only.
     """
+    configured_token = api_token if api_token is not None else os.environ.get("OS_API_TOKEN")
+    bearer_scheme = HTTPBearer(auto_error=False)
+
+    async def require_api_auth(
+        credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    ) -> None:
+        if not configured_token:
+            raise HTTPException(
+                status_code=503,
+                detail="API authentication is not configured; set OS_API_TOKEN",
+            )
+        authorization = (
+            f"{credentials.scheme} {credentials.credentials}" if credentials is not None else None
+        )
+        if not _valid_bearer_token(authorization, configured_token):
+            raise HTTPException(
+                status_code=401,
+                detail="invalid or missing API token",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
     app = FastAPI(title="open-source autonomous platform", version="0.1.0")
     make_platform: PlatformFactory = (
         platform_or_factory
@@ -85,14 +126,9 @@ def create_app(platform_or_factory: Platform | PlatformFactory) -> FastAPI:
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
-        return {
-            "status": "ok",
-            "tools": platform.registry.names(),
-            "mode": platform.config.mode,
-            "runs_active": sum(1 for h in runs.values() if not h.task.done()),
-        }
+        return {"status": "ok"}
 
-    @app.post("/runs", status_code=202)
+    @app.post("/runs", status_code=202, dependencies=[Depends(require_api_auth)])
     async def start_run(req: StartRunRequest) -> dict[str, str]:
         run_id = f"run_{uuid.uuid4().hex[:10]}"
         run_platform = make_platform(req.mode, req.max_steps)
@@ -108,7 +144,7 @@ def create_app(platform_or_factory: Platform | PlatformFactory) -> FastAPI:
         runs[run_id] = RunHandle(run_id=run_id, bus=bus, task=task, platform=run_platform)
         return {"run_id": run_id, "mode": run_platform.choose_mode(req.task)}
 
-    @app.get("/runs/{run_id}")
+    @app.get("/runs/{run_id}", dependencies=[Depends(require_api_auth)])
     async def get_run(run_id: str) -> dict[str, Any]:
         handle = runs.get(run_id)
         if handle is None:
@@ -123,7 +159,7 @@ def create_app(platform_or_factory: Platform | PlatformFactory) -> FastAPI:
             "pending_approvals": _pending(platform),
         }
 
-    @app.get("/runs/{run_id}/events")
+    @app.get("/runs/{run_id}/events", dependencies=[Depends(require_api_auth)])
     async def stream_events(run_id: str) -> StreamingResponse:
         handle = runs.get(run_id)
         if handle is None:
@@ -147,6 +183,16 @@ def create_app(platform_or_factory: Platform | PlatformFactory) -> FastAPI:
 
     @app.websocket("/ws/{run_id}")
     async def websocket_endpoint(ws: WebSocket, run_id: str) -> None:
+        # Rejecting before accept() is deliberate: an unauthenticated client must
+        # never get a live socket. Note that ASGI servers (uvicorn included)
+        # translate a pre-accept close into an HTTP 403 handshake rejection, so
+        # the close codes below are observable in-process but not on the wire.
+        if not configured_token:
+            await ws.close(code=1011)  # authentication is not configured
+            return
+        if not _valid_bearer_token(ws.headers.get("authorization"), configured_token):
+            await ws.close(code=4401)  # application-specific unauthenticated code
+            return
         handle = runs.get(run_id)
         if handle is None:
             await ws.close(code=4404)
@@ -169,7 +215,7 @@ def create_app(platform_or_factory: Platform | PlatformFactory) -> FastAPI:
         finally:
             await ws.close()
 
-    @app.post("/runs/{run_id}/approve")
+    @app.post("/runs/{run_id}/approve", dependencies=[Depends(require_api_auth)])
     async def approve(run_id: str, req: ApproveRequest) -> dict[str, Any]:
         if run_id not in runs:
             raise HTTPException(404, "unknown run_id")
@@ -183,7 +229,7 @@ def create_app(platform_or_factory: Platform | PlatformFactory) -> FastAPI:
         ok = handle.platform.approver.answer(req.tool_call_id, decision)
         return {"delivered": ok}
 
-    @app.get("/artifacts/{run_id}/{filename}")
+    @app.get("/artifacts/{run_id}/{filename}", dependencies=[Depends(require_api_auth)])
     async def get_artifact(run_id: str, filename: str) -> Response:
         meta = artifacts.get(run_id, {}).get(filename)
         if meta is None:
@@ -205,7 +251,12 @@ def create_app(platform_or_factory: Platform | PlatformFactory) -> FastAPI:
     return app
 
 
-def serve(platform: Platform, *, host: str = "0.0.0.0", port: int = 8080) -> None:
+def serve(
+    platform: Platform, *, host: str = "0.0.0.0", port: int = 8080, api_token: str | None = None
+) -> None:
     import uvicorn
 
-    uvicorn.run(create_app(platform), host=host, port=port, log_level="info")
+    token = api_token if api_token is not None else os.environ.get("OS_API_TOKEN")
+    if not token:
+        raise RuntimeError("API authentication is required; set OS_API_TOKEN before serving")
+    uvicorn.run(create_app(platform, api_token=token), host=host, port=port, log_level="info")
