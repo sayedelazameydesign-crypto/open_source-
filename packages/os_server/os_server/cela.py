@@ -1,4 +1,4 @@
-"""cela_use_browser — Python facade and private ``/cela/v1`` HTTP router.
+"""cela_use_browser — Python facade, private ``/cela/v1`` router, and ``/api`` AI router.
 
 One implementation, two front doors:
 
@@ -7,6 +7,9 @@ One implementation, two front doors:
   own router-level bearer-token dependency (``CELA_PRIVATE_API_TOKEN`` or
   ``create_app(..., private_api_token=...)``), completely isolated from the
   public platform token.
+* :func:`create_local_ai_router` — ``/api`` FastAPI router exposing the local
+  CPU AI engine protected by the platform token (``CELA_API_TOKEN`` /
+  ``OS_API_TOKEN``).
 
 Every browse request validates the target URL and enforces the explicit egress
 policy **before** any agent run is created.
@@ -16,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Sequence
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -25,8 +29,9 @@ from os_core.hitl import ApprovalDecision
 from os_core.state import RunStatus
 from os_orchestration.platform import Platform
 from os_tools.egress import EgressPolicy, EgressVerdict, parse_http_target
+from os_tools.local_ai import LocalAIEngine
 from os_tools.ssrf import BlockedURLError
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from os_server.demo import build_demo_platform_for
 from os_server.runtime import (
@@ -35,10 +40,12 @@ from os_server.runtime import (
     ApiRuntime,
     PlatformFactory,
     resolve_private_token,
+    resolve_token,
     valid_bearer_token,
 )
 
 PRIVATE_API_PREFIX: str = "/cela/v1"
+PUBLIC_AI_API_PREFIX: str = "/api"
 
 
 class BrowseRequest(BaseModel):
@@ -73,6 +80,45 @@ class WaitRunRequest(BaseModel):
 class PrivateApproveRequest(BaseModel):
     tool_call_id: str
     decision: str = "approved"
+
+
+class EntitiesRequest(BaseModel):
+    text: str
+    language: str = "auto"
+
+
+class IndexDocumentsRequest(BaseModel):
+    documents: list[Any]
+    namespace: str = "default"
+    clear: bool = False
+
+
+class SemanticSearchRequest(BaseModel):
+    query: str
+    documents: list[Any] | None = None
+    namespace: str = "default"
+    top_k: int = Field(default=5, ge=1, le=100)
+
+
+class MLAnalyzeRequest(BaseModel):
+    task: str
+
+    model_config = ConfigDict(extra="allow")
+
+
+class VisionAnalyzeRequest(BaseModel):
+    image_b64: str
+
+
+class DocumentOCRRequest(BaseModel):
+    content_b64: str | None = None
+    text: str | None = None
+    extract_fields: bool = True
+
+
+class AudioTranscribeRequest(BaseModel):
+    audio_b64: str
+    language: str = "auto"
 
 
 class CelaBrowser:
@@ -202,6 +248,178 @@ class CelaBrowser:
             raise KeyError(f"{run_id}/{filename}")
         return meta
 
+    # --- Synchronous LocalAIEngine methods ----------------------------------
+
+    def ai_capabilities(self) -> dict[str, Any]:
+        return self.runtime.ai.capabilities()
+
+    def extract_entities(self, text: str, language: str = "auto") -> dict[str, Any]:
+        return self.runtime.ai.extract_entities(text, language=language)
+
+    def index_documents(
+        self,
+        documents: Sequence[str | dict[str, Any]],
+        namespace: str = "default",
+        clear: bool = False,
+    ) -> dict[str, Any]:
+        return self.runtime.ai.index_documents(
+            documents,
+            namespace=namespace,
+            clear=clear,
+        )
+
+    def semantic_search(
+        self,
+        query: str,
+        documents: Sequence[str | dict[str, Any]] | None = None,
+        namespace: str = "default",
+        top_k: int = 5,
+    ) -> dict[str, Any]:
+        return self.runtime.ai.semantic_search(
+            query,
+            documents=documents,
+            namespace=namespace,
+            top_k=top_k,
+        )
+
+    def ml_analyze(self, task: str, **kwargs: Any) -> dict[str, Any]:
+        return self.runtime.ai.ml_analyze(task, **kwargs)
+
+    def vision_analyze(self, image_b64: str) -> dict[str, Any]:
+        return self.runtime.ai.vision_analyze(image_b64)
+
+    def document_ocr(
+        self,
+        content_b64: str | None = None,
+        text: str | None = None,
+        extract_fields: bool = True,
+    ) -> dict[str, Any]:
+        return self.runtime.ai.document_ocr(
+            content_b64=content_b64,
+            text=text,
+            extract_fields=extract_fields,
+        )
+
+    def audio_transcribe(self, audio_b64: str, language: str = "auto") -> dict[str, Any]:
+        return self.runtime.ai.audio_transcribe(audio_b64, language=language)
+
+
+def _resolve_ai_engine(target: CelaBrowser | ApiRuntime | LocalAIEngine) -> LocalAIEngine:
+    if isinstance(target, LocalAIEngine):
+        return target
+    if isinstance(target, ApiRuntime):
+        return target.ai
+    return target.runtime.ai
+
+
+def _register_ai_endpoints(
+    router: APIRouter,
+    engine: LocalAIEngine,
+    *,
+    capabilities_path: str,
+) -> None:
+    @router.get(capabilities_path)
+    async def ai_capabilities() -> dict[str, Any]:
+        return engine.capabilities()
+
+    @router.post("/nlp/entities")
+    async def nlp_entities(req: EntitiesRequest) -> dict[str, Any]:
+        return engine.extract_entities(req.text, language=req.language)
+
+    @router.post("/search/index")
+    async def search_index(req: IndexDocumentsRequest) -> dict[str, Any]:
+        try:
+            return engine.index_documents(
+                req.documents,
+                namespace=req.namespace,
+                clear=req.clear,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @router.post("/search/semantic")
+    async def search_semantic(req: SemanticSearchRequest) -> dict[str, Any]:
+        try:
+            return engine.semantic_search(
+                req.query,
+                documents=req.documents,
+                namespace=req.namespace,
+                top_k=req.top_k,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @router.post("/ml/analyze")
+    async def ml_analyze(req: MLAnalyzeRequest) -> dict[str, Any]:
+        payload = req.model_dump()
+        task = payload.pop("task")
+        try:
+            return engine.ml_analyze(task, **payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @router.post("/vision/analyze")
+    async def vision_analyze(req: VisionAnalyzeRequest) -> dict[str, Any]:
+        try:
+            return engine.vision_analyze(req.image_b64)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @router.post("/documents/ocr")
+    async def documents_ocr(req: DocumentOCRRequest) -> dict[str, Any]:
+        try:
+            return engine.document_ocr(
+                content_b64=req.content_b64,
+                text=req.text,
+                extract_fields=req.extract_fields,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @router.post("/audio/transcribe")
+    async def audio_transcribe(req: AudioTranscribeRequest) -> dict[str, Any]:
+        try:
+            return engine.audio_transcribe(req.audio_b64, language=req.language)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def create_local_ai_router(
+    browser_or_engine: CelaBrowser | ApiRuntime | LocalAIEngine,
+    *,
+    api_token: str | None = None,
+) -> APIRouter:
+    """Build the ``/api/*`` local AI router guarded by ``CELA_API_TOKEN`` / ``OS_API_TOKEN``."""
+    configured_token = resolve_token(api_token)
+    bearer_scheme = HTTPBearer(auto_error=False)
+    engine = _resolve_ai_engine(browser_or_engine)
+
+    async def require_api_auth(
+        credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    ) -> None:
+        if not configured_token:
+            raise HTTPException(
+                status_code=503,
+                detail="API authentication is not configured; set CELA_API_TOKEN or OS_API_TOKEN",
+            )
+        authorization = (
+            f"{credentials.scheme} {credentials.credentials}" if credentials is not None else None
+        )
+        if not valid_bearer_token(authorization, configured_token):
+            raise HTTPException(
+                status_code=401,
+                detail="invalid or missing API token",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+    router = APIRouter(
+        prefix=PUBLIC_AI_API_PREFIX,
+        tags=["local_ai"],
+        dependencies=[Depends(require_api_auth)],
+    )
+    _register_ai_endpoints(router, engine, capabilities_path="/capabilities")
+    return router
+
 
 def create_private_router(
     browser: CelaBrowser,
@@ -316,4 +534,5 @@ def create_private_router(
             raise HTTPException(404, "no such artifact") from exc
         return Response(content=json.dumps(meta), media_type="application/json")
 
+    _register_ai_endpoints(router, browser.runtime.ai, capabilities_path="/ai/capabilities")
     return router
