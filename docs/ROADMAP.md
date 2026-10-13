@@ -14,11 +14,12 @@
 | كاسر الحلقات (سقوف + ركود + مراجع) | ✅ | `test_budget.py`, `test_reviewer.py` |
 | Sandbox حقيقي (rlimits + مهلة + netns) | ✅ | `test_code_exec.py` (12) |
 | حارس SSRF + DNS rebinding | ✅ | `test_ssrf.py` (26) |
+| سياسة شبكة صريحة (allow-list + SSRF floor) | ✅ | `test_egress.py` (94) |
 | سلسلة fallback الثلاثية للمتصفح | ✅ | `test_browser.py` (13) |
 | سجل أدوات بنمط MCP | ✅ | `test_e2e.py` |
-| REST + SSE + WebSocket | ✅ | `test_server.py` (10) |
+| REST + SSE + WebSocket + تذاكر WS | ✅ | `test_server.py` (30) |
 
-**المجموع: 165 اختبارًا، 0 فشل، دون مفاتيح API ودون شبكة.**
+**المجموع: 281 اختبارًا، 0 فشل، دون مفاتيح API ودون شبكة.**
 
 CI أخضر على Python 3.11 / 3.12 / 3.13 (Lint + Test + Smoke-test):
 <https://github.com/sayedelazameydesign-crypto/open_source-/actions>
@@ -36,7 +37,7 @@ CI أخضر على Python 3.11 / 3.12 / 3.13 (Lint + Test + Smoke-test):
 ## 🔲 المرحلة 2 — عزل إنتاجي
 
 - [ ] تنفيذ `CodeExecBackend` فوق E2B أو Firecracker.
-- [ ] سياسة شبكة صريحة (allow-list للمجالات) بدل المنع الافتراضي فقط.
+- [x] سياسة شبكة صريحة (allow-list للمجالات) بدل المنع الافتراضي فقط (`os_tools/egress.py`).
 - [ ] Playwright حقيقي + بث VNC للواجهة (`PlaywrightBrowser` جاهز، البث غير مُنفَّذ).
 - [ ] تدقيق: هل يبقى `unshare` متاحًا في حاوية النشر؟ إن لا، فالعزل المحلي **صفر**.
 
