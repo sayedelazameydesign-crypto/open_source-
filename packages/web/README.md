@@ -29,7 +29,11 @@ Next.js 15 + TailwindCSS + Shadcn/UI، بعرض مقسوم:
 | تدفق حي | `WS /ws/{id}` أو `GET /runs/{id}/events` (SSE) |
 | موافقة بشرية | `POST /runs/{id}/approve` |
 | جلب artifact | `GET /artifacts/{id}/{filename}` |
-| الأدوات المتاحة | `GET /health` |
+| فحص الحياة (عام) | `GET /health` → `{status}` |
+
+كل النقاط أعلاه — عدا `/health` — تتطلب الترويسة
+`Authorization: Bearer $OS_API_TOKEN`. الواجهة تحتاج وسيطًا يعكس الطلبات ليضيف
+الترويسة، لأن المتصفح لا يستطيع ضبطها على اتصال WebSocket مباشرة.
 
 ### أنواع الأحداث التي ترسمها الواجهة
 

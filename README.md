@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 
-> **165 اختبارًا ناجحًا · 0 فشل · دون مفاتيح API ودون شبكة.**
+> **170 اختبارًا ناجحًا · 0 فشل · دون مفاتيح API ودون شبكة.**
 
 ---
 
@@ -23,7 +23,8 @@ python -m os_server.cli run --demo "Sum the integers from 0 to 100"
 # 2) وضع PlanningFlow — DAG بتفرعات متوازية + إعادة تخطيط
 python -m os_server.cli flow --demo "Plan and execute a 3-step research task"
 
-# 3) واجهة HTTP + WebSocket
+# 3) واجهة HTTP + WebSocket — تتطلب رمز مصادقة
+export OS_API_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
 python -m os_server.cli serve --demo --host 0.0.0.0 --port 8080
 ```
 
@@ -51,6 +52,20 @@ python -m os_server.cli serve --demo --host 0.0.0.0 --port 8080
 البنية الكاملة: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · القرارات: [`adr/`](adr) ·
 ما تبقّى: [`docs/ROADMAP.md`](docs/ROADMAP.md)
 
+## مصادقة API
+
+تتطلب نقاط التشغيل والموافقات وSSE وWebSocket والـ artifacts رمز Bearer. يفشل
+الخادم مغلقًا إذا لم يُضبط الرمز؛ أما `/health` فيبقى عامًا ويعيد حالة بسيطة فقط.
+
+```bash
+export OS_API_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+python -m os_server.cli serve --demo --host 127.0.0.1 --port 8080
+curl -H "Authorization: Bearer $OS_API_TOKEN" http://127.0.0.1:8080/runs
+```
+
+أرسل الترويسة `Authorization: Bearer <OS_API_TOKEN>` مع طلبات HTTP وWebSocket. لا
+تضع الرمز في عنوان URL؛ ولا تعرّض الخادم للإنترنت دون TLS وضوابط نشر مناسبة.
+
 ## البنية (Monorepo)
 
 ```
@@ -69,7 +84,7 @@ packages/
 ## الاختبار
 
 ```bash
-pytest -q          # 165 passed
+pytest -q          # 170 passed
 ruff check .       # All checks passed
 ruff format .      # تنسيق موحّد
 ```

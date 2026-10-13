@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 
 from os_core.events import EventType
@@ -90,9 +91,16 @@ def main(argv: list[str] | None = None) -> int:
         from os_server.app import serve
         from os_server.demo import build_demo_platform
 
+        api_token = os.environ.get("OS_API_TOKEN")
+        if not api_token:
+            print(
+                "error: set OS_API_TOKEN to a long random secret before starting the API",
+                file=sys.stderr,
+            )
+            return 2
         platform = build_demo_platform(mode="flow", interactive=True)
         print(f"serving on http://{args.host}:{args.port}")
-        serve(platform, host=args.host, port=args.port)
+        serve(platform, host=args.host, port=args.port, api_token=api_token)
         return 0
 
     if not args.demo:
