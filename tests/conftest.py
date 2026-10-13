@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 from os_core.events import EventBus
+from os_core.ledger import LEDGER_ENV_VAR
 from os_core.models import ModelResponse, Usage
 from os_core.router import ModelRouter, RouterConfig
 from os_core.types import ToolCall
@@ -11,6 +12,18 @@ from os_tools.browser import BrowserTool, FakeBrowser, PageSnapshot, RetryPolicy
 from os_tools.code_exec import LocalSubprocessBackend, python_execute_tool
 from os_tools.registry import ToolRegistry
 from os_tools.ssrf import SSRFGuard
+
+
+@pytest.fixture(autouse=True)
+def ledger_off_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the suite hermetic: no test writes the default ledger file.
+
+    The application surfaces (CLI, server) record every execution by default
+    into ``./.cela/ledger.jsonl``. Tests that exercise the ledger configure one
+    explicitly under ``tmp_path``; a test that needs the default resolution
+    deletes this variable itself.
+    """
+    monkeypatch.setenv(LEDGER_ENV_VAR, "off")
 
 
 @pytest.fixture

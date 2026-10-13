@@ -29,6 +29,9 @@ env/
 .DS_Store
 Thumbs.db
 
+# Local run-outcome ledger (default $CELA_LEDGER_PATH is ./.cela/ledger.jsonl)
+.cela/
+
 # Secrets — never commit these
 .env
 .env.*
