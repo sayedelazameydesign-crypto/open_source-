@@ -8,11 +8,20 @@ portable:
 * Resource ceilings via ``setrlimit``: CPU, address space, file size, process
   count (fork-bomb defence).
 * Hard wall-clock timeout enforced by ``asyncio.wait_for`` + process kill.
-* A private temp ``cwd`` — nothing outside it is readable by name.
+* A clean, allow-listed environment: the parent process environment is
+  *not* inherited, so API keys and other server secrets cannot leak into
+  untrusted code. Only harmless runtime variables (``PATH``, locale,
+  temp-dir and Windows system variables) are passed through.
+* A private temp ``cwd`` as the working directory. This is *not*
+  filesystem isolation: untrusted code can still read host files by
+  absolute path, so production deployments need a microVM/container
+  backend (E2B/Firecracker) as the real boundary.
 * Output truncation so a chatty program cannot OOM the orchestrator.
 * ``unshare_net()`` drops the network namespace when available (Linux +
-  CAP_SYS_ADMIN); otherwise ``network="blocked"`` is reported honestly and
-  the e2b/firecracker backend is the real boundary.
+  CAP_SYS_ADMIN); otherwise ``network="unverified (netns unavailable on
+  this host)"`` is reported honestly — isolation is never claimed when it
+  is not actually in place — and the e2b/firecracker backend is the real
+  boundary.
 
 ``CodeExecBackend`` is the seam: swap :class:`LocalSubprocessBackend` for an
 E2B/Firecracker implementation without touching the agents.
@@ -79,6 +88,43 @@ sys.stdout.write("\n__OS_REPORT__" + report + "__END_OS_REPORT__\n")
 
 _SENTINEL_OPEN = "__OS_REPORT__"
 _SENTINEL_CLOSE = "__END_OS_REPORT__"
+
+# The only parent-process variables the sandbox child may inherit.
+# Deny-by-default: anything not listed here — API keys, tokens, database
+# URLs, cloud credentials — never crosses into untrusted code. ``PATH`` is
+# needed to locate helpers such as ``unshare``; the rest keep the
+# interpreter, locale and temp-file handling working across platforms.
+_INHERITED_ENV_VARS: tuple[str, ...] = (
+    "PATH",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TZ",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    # Windows interpreter / DLL loading essentials.
+    "SYSTEMROOT",
+    "WINDIR",
+    "COMSPEC",
+    "PATHEXT",
+)
+
+
+def _sandbox_env(code: str) -> dict[str, str]:
+    """Build the child's environment from an allow-list, never by inheritance.
+
+    The previous implementation copied ``os.environ`` wholesale (minus
+    ``PYTHONPATH``), so any secret configured on the server — model API
+    keys, database URLs, cloud credentials — was one ``os.environ`` read
+    away from untrusted code. Here only :data:`_INHERITED_ENV_VARS` are
+    passed through, plus the sandbox's own variables.
+    """
+    env = {name: os.environ[name] for name in _INHERITED_ENV_VARS if name in os.environ}
+    env["__SRC_B64__"] = base64.b64encode(code.encode()).decode()
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env["PYTHONNOUSERSITE"] = "1"  # never load user site-packages from the host
+    return env
 
 
 @runtime_checkable
@@ -169,10 +215,7 @@ class LocalSubprocessBackend(BaseModel):
                 ),
                 encoding="utf-8",
             )
-            env = dict(os.environ)
-            env["__SRC_B64__"] = base64.b64encode(code.encode()).decode()
-            env["PYTHONDONTWRITEBYTECODE"] = "1"
-            env.pop("PYTHONPATH", None)
+            env = _sandbox_env(code)
 
             argv = self._argv(runner)
             started = asyncio.get_running_loop().time()
@@ -388,8 +431,11 @@ def python_execute_tool(backend: CodeExecBackend, *, timeout: float = 30.0):
     return Tool(
         name="python_execute",
         description=(
-            "Execute Python code in an isolated sandbox (no network, resource-limited) and "
-            "return stdout, stderr and any files it wrote as artifacts."
+            "Execute Python code in a resource-limited sandbox subprocess (clean "
+            "allow-listed environment, rlimits, wall-clock timeout; network is "
+            "isolated only when the host supports a network namespace — check the "
+            "result metadata) and return stdout, stderr and any files it wrote "
+            "as artifacts."
         ),
         parameters={
             "type": "object",

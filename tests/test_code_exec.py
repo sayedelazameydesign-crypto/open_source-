@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import base64
+
 import pytest
 from os_core.types import ToolStatus
 from os_tools.code_exec import (
     LocalSubprocessBackend,
     SandboxLimits,
     _parse_report,
+    _sandbox_env,
     netns_unshare_available,
 )
 
@@ -94,6 +97,56 @@ def test_corrupt_report_is_reported_as_error() -> None:
     user_output, report, _ = _parse_report("hi\n__OS_REPORT__{not json__END_OS_REPORT__\n")
     assert user_output == "hi"
     assert report["err"] == "ReportParseError"
+
+
+def test_sandbox_env_is_allowlisted_not_inherited(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The child environment must be built deny-by-default.
+
+    Regression test: the backend used to copy ``os.environ`` wholesale, so
+    every secret configured on the server was readable by untrusted code.
+    """
+    monkeypatch.setenv("OS_SANDBOX_TEST_SECRET", "super-secret-value")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-secret")
+    monkeypatch.setenv("DATABASE_URL", "postgres://user:pass@db.internal/app")
+    monkeypatch.setenv("PYTHONPATH", "/host/only/code")
+    monkeypatch.setenv("PATH", "/usr/bin")
+
+    env = _sandbox_env("print(1)")
+
+    assert "OS_SANDBOX_TEST_SECRET" not in env
+    assert "OPENAI_API_KEY" not in env
+    assert "DATABASE_URL" not in env
+    assert "PYTHONPATH" not in env
+    assert "super-secret-value" not in env.values()
+    # Allow-listed runtime variables and the sandbox's own variables survive.
+    assert env["PATH"] == "/usr/bin"
+    assert base64.b64decode(env["__SRC_B64__"]).decode() == "print(1)"
+    assert env["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert env["PYTHONNOUSERSITE"] == "1"
+
+
+async def test_parent_environment_secrets_do_not_leak_into_sandbox(
+    sandbox: LocalSubprocessBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OS_SANDBOX_TEST_SECRET", "super-secret-value")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-secret")
+
+    code = (
+        "import os\n"
+        "print(os.environ.get('OS_SANDBOX_TEST_SECRET', 'MISSING'))\n"
+        "print('OPENAI_API_KEY' in os.environ)\n"
+        "print(os.environ.get('PYTHONDONTWRITEBYTECODE'))\n"
+    )
+    result = await sandbox.execute(code)
+
+    assert result.ok
+    assert "MISSING" in result.output
+    assert "False" in result.output
+    assert "super-secret-value" not in result.output
+    assert "sk-test-secret" not in result.output
+    assert "super-secret-value" not in (result.error or "")
+    # The interpreter still gets the variables it legitimately needs.
+    assert "1" in result.output
 
 
 async def test_sandbox_cannot_reach_the_network(sandbox: LocalSubprocessBackend) -> None:
