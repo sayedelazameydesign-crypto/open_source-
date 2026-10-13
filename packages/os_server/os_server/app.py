@@ -1,38 +1,57 @@
-"""HTTP + WebSocket transport with bearer-token protection.
+"""HTTP + WebSocket transport for the public platform and ``/cela/v1`` private API.
 
-Endpoints
----------
+Public platform endpoints (guarded by ``CELA_API_TOKEN`` / ``OS_API_TOKEN``):
 ``POST /runs``                  start a run, returns ``run_id``
 ``GET  /runs/{id}``             execution-tree snapshot (the UI's source of truth)
 ``GET  /runs/{id}/events``      SSE stream — works through proxies that block WS
-``WS   /ws/{id}``               live event stream (canvas synchronisation)
+``POST /runs/{id}/ws-ticket``   mint a short-lived, single-use, run-scoped WS ticket
+``WS   /ws/{id}``               live event stream (Bearer header or ``?ticket=``)
 ``POST /runs/{id}/approve``     human-in-the-loop answer
 ``GET  /artifacts/{id}/{name}`` fetch an artifact for the right-hand pane
 ``GET  /health``                minimal public liveness check
 
-All run, approval, event-stream, WebSocket and artifact routes require an API
-Bearer token configured through ``OS_API_TOKEN`` or ``create_app(api_token=...)``.
-The same :class:`Platform` is used, so server and CLI share security semantics.
+Private browser namespace (guarded by ``CELA_PRIVATE_API_TOKEN``):
+``GET  /cela/v1/whoami``
+``POST /cela/v1/egress/check``
+``POST /cela/v1/browse``
+``GET  /cela/v1/runs``
+``GET  /cela/v1/runs/{id}``
+``POST /cela/v1/runs/{id}/wait``
+``GET  /cela/v1/runs/{id}/events``
+``POST /cela/v1/runs/{id}/approve``
+``GET  /cela/v1/runs/{id}/artifacts``
+``GET  /cela/v1/runs/{id}/artifacts/{name}``
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
-import os
 import secrets
-import uuid
-from collections.abc import Callable
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from os_core.events import EventBus, EventType
-from os_core.hitl import ApprovalDecision, QueueApprover
-from os_core.state import RunState, RunStatus
+from os_core.events import EventType
+from os_core.hitl import ApprovalDecision
 from os_orchestration.platform import Platform
-from pydantic import BaseModel, ConfigDict
+from os_tools.egress import EgressPolicy
+from pydantic import BaseModel
+
+from os_server.cela import CelaBrowser, create_private_router
+from os_server.runtime import (
+    DEFAULT_WS_TICKET_TTL,
+    PRODUCT_VERSION,
+    ApiRuntime,
+    PlatformFactory,
+    RunHandle,
+    resolve_private_token,
+    resolve_token,
+    valid_bearer_token,
+)
+
+# Backwards-compatible alias for internal callers.
+_valid_bearer_token = valid_bearer_token
 
 
 class StartRunRequest(BaseModel):
@@ -46,53 +65,39 @@ class ApproveRequest(BaseModel):
     decision: str = "approved"  # approved | denied
 
 
-class RunHandle(BaseModel):
-    run_id: str
-    bus: EventBus
-    task: asyncio.Task[RunState]
-    platform: Platform
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-
-PlatformFactory = Callable[[str, int], Platform]
-
-
-def _valid_bearer_token(authorization: str | None, expected_token: str | None) -> bool:
-    """Constant-time comparison of an HTTP Bearer credential."""
-    if not expected_token or not authorization:
-        return False
-    scheme, separator, supplied = authorization.partition(" ")
-    if scheme.lower() != "bearer" or not separator or not supplied:
-        return False
-    return secrets.compare_digest(supplied.encode("utf-8"), expected_token.encode("utf-8"))
-
-
-def _single_platform_factory(platform: Platform) -> PlatformFactory:
-    """Adapt one shared platform into the per-run factory shape."""
-
-    def factory(mode: str, max_steps: int) -> Platform:
-        platform.config.mode = mode
-        platform.config.max_steps = max_steps
-        return platform
-
-    return factory
-
-
 def create_app(
-    platform_or_factory: Platform | PlatformFactory, *, api_token: str | None = None
+    platform_or_factory: Platform | PlatformFactory,
+    *,
+    api_token: str | None = None,
+    private_api_token: str | None = None,
+    egress_policy: EgressPolicy | None = None,
+    ws_ticket_ttl: float = DEFAULT_WS_TICKET_TTL,
+    runtime: ApiRuntime | None = None,
 ) -> FastAPI:
-    """Build the API.
+    """Build the FastAPI application hosting both the platform and ``/cela/v1``."""
+    configured_token = resolve_token(api_token)
+    configured_private_token = resolve_private_token(private_api_token)
+    if (
+        configured_token
+        and configured_private_token
+        and secrets.compare_digest(
+            configured_token.encode("utf-8"), configured_private_token.encode("utf-8")
+        )
+    ):
+        raise ValueError("private_api_token must differ from api_token")
 
-    Pass a :class:`Platform` for a shared instance, or a factory
-    ``(mode, max_steps) -> Platform`` so each run gets an isolated one — the
-    latter is what the demo and the tests use, since a run must never mutate
-    state that a concurrent run depends on.
+    rt = (
+        runtime
+        if runtime is not None
+        else ApiRuntime(
+            platform_or_factory,
+            egress_policy=egress_policy,
+            ws_ticket_ttl=ws_ticket_ttl,
+        )
+    )
+    if egress_policy is not None:
+        rt.egress_policy = egress_policy
 
-    Protected routes fail closed when no token is configured. Set ``OS_API_TOKEN``
-    or pass ``api_token`` explicitly. The public health route reveals status only.
-    """
-    configured_token = api_token if api_token is not None else os.environ.get("OS_API_TOKEN")
     bearer_scheme = HTTPBearer(auto_error=False)
 
     async def require_api_auth(
@@ -101,28 +106,22 @@ def create_app(
         if not configured_token:
             raise HTTPException(
                 status_code=503,
-                detail="API authentication is not configured; set OS_API_TOKEN",
+                detail="API authentication is not configured; set CELA_API_TOKEN or OS_API_TOKEN",
             )
         authorization = (
             f"{credentials.scheme} {credentials.credentials}" if credentials is not None else None
         )
-        if not _valid_bearer_token(authorization, configured_token):
+        if not valid_bearer_token(authorization, configured_token):
             raise HTTPException(
                 status_code=401,
                 detail="invalid or missing API token",
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-    app = FastAPI(title="open-source autonomous platform", version="0.1.0")
-    make_platform: PlatformFactory = (
-        platform_or_factory
-        if callable(platform_or_factory) and not isinstance(platform_or_factory, Platform)
-        else _single_platform_factory(platform_or_factory)  # type: ignore[arg-type]
-    )
-    platform = make_platform("auto", 25)
-    runs: dict[str, RunHandle] = {}
-    states: dict[str, RunState] = {}
-    artifacts: dict[str, dict[str, Any]] = {}
+    app = FastAPI(title="cela_use_browser private + platform API", version=PRODUCT_VERSION)
+    cela_browser = CelaBrowser(runtime=rt)
+    app.state.runtime = rt
+    app.state.cela = cela_browser
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
@@ -130,70 +129,42 @@ def create_app(
 
     @app.post("/runs", status_code=202, dependencies=[Depends(require_api_auth)])
     async def start_run(req: StartRunRequest) -> dict[str, str]:
-        run_id = f"run_{uuid.uuid4().hex[:10]}"
-        run_platform = make_platform(req.mode, req.max_steps)
-        bus = run_platform.make_bus(run_id)
-
-        async def _collect(event) -> None:
-            if event.type is EventType.ARTIFACT:
-                artifacts.setdefault(run_id, {})[event.data["filename"]] = event.data
-
-        bus.subscribe(_collect)
-        task = asyncio.create_task(run_platform.run(req.task, run_id=run_id, bus=bus))
-        task.add_done_callback(lambda _t: states.setdefault(run_id, _final_state(_t, run_id)))
-        runs[run_id] = RunHandle(run_id=run_id, bus=bus, task=task, platform=run_platform)
-        return {"run_id": run_id, "mode": run_platform.choose_mode(req.task)}
+        handle, chosen_mode = rt.start_run(req.task, mode=req.mode, max_steps=req.max_steps)
+        return {"run_id": handle.run_id, "mode": chosen_mode}
 
     @app.get("/runs/{run_id}", dependencies=[Depends(require_api_auth)])
     async def get_run(run_id: str) -> dict[str, Any]:
-        handle = runs.get(run_id)
-        if handle is None:
+        snap = rt.get_run_snapshot(run_id)
+        if snap is None:
             raise HTTPException(404, "unknown run_id")
-        if handle.task.done():
-            state = states.get(run_id)
-            return state.snapshot() if state else {"run_id": run_id, "status": "unknown"}
-        return {
-            "run_id": run_id,
-            "status": RunStatus.RUNNING.value,
-            "events": len(handle.bus.buffer),
-            "pending_approvals": _pending(platform),
-        }
+        return snap
 
     @app.get("/runs/{run_id}/events", dependencies=[Depends(require_api_auth)])
     async def stream_events(run_id: str) -> StreamingResponse:
-        handle = runs.get(run_id)
-        if handle is None:
+        if rt.get_handle(run_id) is None:
             raise HTTPException(404, "unknown run_id")
+        return StreamingResponse(rt.sse_events(run_id), media_type="text/event-stream")
 
-        async def _gen():
-            finished = False
-            for event in handle.bus.replay():
-                yield f"data: {event.to_wire()}\n\n"
-                finished = finished or event.type is EventType.RUN_FINISHED
-            if finished:
-                # The run already ended: the replay above is the whole story.
-                return
-            with handle.bus.stream() as stream:
-                async for event in stream:
-                    yield f"data: {event.to_wire()}\n\n"
-                    if event.type is EventType.RUN_FINISHED:
-                        break
-
-        return StreamingResponse(_gen(), media_type="text/event-stream")
+    @app.post("/runs/{run_id}/ws-ticket", dependencies=[Depends(require_api_auth)])
+    async def create_ws_ticket(run_id: str) -> dict[str, Any]:
+        issued = rt.issue_ws_ticket(run_id)
+        if issued is None:
+            raise HTTPException(404, "unknown run_id")
+        return issued
 
     @app.websocket("/ws/{run_id}")
     async def websocket_endpoint(ws: WebSocket, run_id: str) -> None:
-        # Rejecting before accept() is deliberate: an unauthenticated client must
-        # never get a live socket. Note that ASGI servers (uvicorn included)
-        # translate a pre-accept close into an HTTP 403 handshake rejection, so
-        # the close codes below are observable in-process but not on the wire.
         if not configured_token:
-            await ws.close(code=1011)  # authentication is not configured
+            await ws.close(code=1011)
             return
-        if not _valid_bearer_token(ws.headers.get("authorization"), configured_token):
-            await ws.close(code=4401)  # application-specific unauthenticated code
+        header_ok = valid_bearer_token(ws.headers.get("authorization"), configured_token)
+        ticket_ok = (
+            False if header_ok else rt.consume_ws_ticket(ws.query_params.get("ticket"), run_id)
+        )
+        if not (header_ok or ticket_ok):
+            await ws.close(code=4401)
             return
-        handle = runs.get(run_id)
+        handle = rt.get_handle(run_id)
         if handle is None:
             await ws.close(code=4404)
             return
@@ -217,46 +188,58 @@ def create_app(
 
     @app.post("/runs/{run_id}/approve", dependencies=[Depends(require_api_auth)])
     async def approve(run_id: str, req: ApproveRequest) -> dict[str, Any]:
-        if run_id not in runs:
+        if rt.get_handle(run_id) is None:
             raise HTTPException(404, "unknown run_id")
-        handle = runs[run_id]
-        if not isinstance(handle.platform.approver, QueueApprover):
-            raise HTTPException(409, "this platform is not configured for interactive approval")
         try:
             decision = ApprovalDecision(req.decision)
         except ValueError as exc:
             raise HTTPException(422, "decision must be 'approved' or 'denied'") from exc
-        ok = handle.platform.approver.answer(req.tool_call_id, decision)
+        try:
+            ok = rt.approve(run_id, req.tool_call_id, decision)
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
         return {"delivered": ok}
 
     @app.get("/artifacts/{run_id}/{filename}", dependencies=[Depends(require_api_auth)])
     async def get_artifact(run_id: str, filename: str) -> Response:
-        meta = artifacts.get(run_id, {}).get(filename)
+        meta = rt.get_artifact(run_id, filename)
         if meta is None:
             raise HTTPException(404, "no such artifact")
         return Response(content=json.dumps(meta), media_type="application/json")
 
-    def _final_state(task: asyncio.Task[RunState], run_id: str) -> RunState:
-        try:
-            return task.result()
-        except Exception as exc:
-            state = RunState(run_id=run_id, status=RunStatus.FAILED, error=str(exc))
-            return state
-
-    def _pending(plat: Platform) -> list[dict[str, Any]]:  # pragma: no cover - introspection
-        if not isinstance(plat.approver, QueueApprover):
-            return []
-        return [{"id": c.id, "name": c.name, "args": c.args} for c in plat.approver.pending]
-
+    app.include_router(create_private_router(cela_browser, private_api_token=private_api_token))
     return app
 
 
 def serve(
-    platform: Platform, *, host: str = "0.0.0.0", port: int = 8080, api_token: str | None = None
+    platform: Platform,
+    *,
+    host: str = "0.0.0.0",
+    port: int = 8080,
+    api_token: str | None = None,
+    private_api_token: str | None = None,
 ) -> None:
     import uvicorn
 
-    token = api_token if api_token is not None else os.environ.get("OS_API_TOKEN")
+    token = resolve_token(api_token)
     if not token:
-        raise RuntimeError("API authentication is required; set OS_API_TOKEN before serving")
-    uvicorn.run(create_app(platform, api_token=token), host=host, port=port, log_level="info")
+        raise RuntimeError(
+            "API authentication is required; set CELA_API_TOKEN (or OS_API_TOKEN) before serving"
+        )
+    priv_token = resolve_private_token(private_api_token)
+    uvicorn.run(
+        create_app(platform, api_token=token, private_api_token=priv_token),
+        host=host,
+        port=port,
+        log_level="info",
+    )
+
+
+__all__ = [
+    "ApproveRequest",
+    "PlatformFactory",
+    "RunHandle",
+    "StartRunRequest",
+    "create_app",
+    "serve",
+]

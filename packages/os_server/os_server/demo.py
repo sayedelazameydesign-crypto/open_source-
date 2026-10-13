@@ -23,8 +23,21 @@ from os_core.types import ToolCall
 from os_orchestration.platform import Platform, PlatformConfig
 from os_tools.browser import BrowserTool, FakeBrowser, PageSnapshot, RetryPolicy
 from os_tools.code_exec import LocalSubprocessBackend
+from os_tools.egress import EgressPolicy
 from os_tools.registry import ToolRegistry
 from os_tools.ssrf import SSRFGuard
+
+
+def demo_egress_policy() -> EgressPolicy:
+    """Default-deny egress policy for the offline demo: only example.org is allowed."""
+    return EgressPolicy.allow_hosts(
+        "example.org",
+        "*.example.org",
+        schemes={"https"},
+        ports={443},
+        tools={"browser"},
+        resolve_dns=False,
+    )
 
 
 def demo_browser() -> BrowserTool:
@@ -57,15 +70,18 @@ def demo_browser() -> BrowserTool:
     return BrowserTool(backend=backend, policy=RetryPolicy(max_attempts=2, backoff=0.0))
 
 
-def build_registry() -> tuple[ToolRegistry, SSRFGuard, BrowserTool]:
+def build_registry(
+    *, egress_policy: EgressPolicy | None = None
+) -> tuple[ToolRegistry, SSRFGuard, BrowserTool]:
     from os_tools.browser import browser_tools
     from os_tools.code_exec import python_execute_tool
 
     registry = ToolRegistry(default_timeout=30.0)
-    guard = SSRFGuard()
+    policy = egress_policy if egress_policy is not None else demo_egress_policy()
+    guard = policy.guard
     browser = demo_browser()
     registry.add(python_execute_tool(LocalSubprocessBackend(), timeout=20.0))
-    registry.extend(browser_tools(browser, ssrf_check=guard.check))
+    registry.extend(browser_tools(browser, ssrf_check=policy.for_tool("browser")))
     return registry, guard, browser
 
 

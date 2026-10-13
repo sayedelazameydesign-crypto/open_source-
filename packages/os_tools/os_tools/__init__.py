@@ -18,6 +18,13 @@ from os_tools.code_exec import (
     SandboxLimits,
     python_execute_tool,
 )
+from os_tools.egress import (
+    EgressPolicy,
+    EgressPolicyError,
+    EgressRule,
+    EgressVerdict,
+    parse_http_target,
+)
 from os_tools.mcp import LocalMCPServer, MCPServer, ToolFilter, build_default_registry
 from os_tools.registry import Tool, ToolRegistry
 from os_tools.ssrf import BlockedURLError, SSRFGuard, URLVerdict
@@ -26,6 +33,10 @@ __all__ = [
     "BlockedURLError",
     "BrowserTool",
     "CodeExecBackend",
+    "EgressPolicy",
+    "EgressPolicyError",
+    "EgressRule",
+    "EgressVerdict",
     "FakeBrowser",
     "InMemoryBackend",
     "LocalMCPServer",
@@ -43,5 +54,6 @@ __all__ = [
     "URLVerdict",
     "browser_tools",
     "build_default_registry",
+    "parse_http_target",
     "python_execute_tool",
 ]

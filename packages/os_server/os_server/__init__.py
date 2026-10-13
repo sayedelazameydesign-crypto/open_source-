@@ -1,8 +1,31 @@
-"""os_server — HTTP/WebSocket transport, CLI and the offline demo stack."""
+"""os_server — HTTP/WebSocket transport, CLI, CelaBrowser facade and offline demo stack."""
 
 from __future__ import annotations
 
-from os_server.app import create_app
-from os_server.demo import build_demo_platform, build_registry, demo_browser
+from os_server.app import create_app, serve
+from os_server.cela import PRIVATE_API_PREFIX, CelaBrowser, create_private_router
+from os_server.demo import build_demo_platform, build_registry, demo_browser, demo_egress_policy
+from os_server.runtime import (
+    PRODUCT_NAME,
+    PRODUCT_VERSION,
+    ApiRuntime,
+    resolve_private_token,
+    resolve_token,
+)
 
-__all__ = ["build_demo_platform", "build_registry", "create_app", "demo_browser"]
+__all__ = [
+    "PRIVATE_API_PREFIX",
+    "PRODUCT_NAME",
+    "PRODUCT_VERSION",
+    "ApiRuntime",
+    "CelaBrowser",
+    "build_demo_platform",
+    "build_registry",
+    "create_app",
+    "create_private_router",
+    "demo_browser",
+    "demo_egress_policy",
+    "resolve_private_token",
+    "resolve_token",
+    "serve",
+]

@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import os
 import sys
 
 from os_core.events import EventType
@@ -90,17 +89,26 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "serve":
         from os_server.app import serve
         from os_server.demo import build_demo_platform
+        from os_server.runtime import resolve_private_token, resolve_token
 
-        api_token = os.environ.get("OS_API_TOKEN")
+        api_token = resolve_token()
         if not api_token:
             print(
-                "error: set OS_API_TOKEN to a long random secret before starting the API",
+                "error: set CELA_API_TOKEN (or OS_API_TOKEN) to a long random secret before "
+                "starting the API",
                 file=sys.stderr,
             )
             return 2
+        private_token = resolve_private_token()
         platform = build_demo_platform(mode="flow", interactive=True)
         print(f"serving on http://{args.host}:{args.port}")
-        serve(platform, host=args.host, port=args.port, api_token=api_token)
+        serve(
+            platform,
+            host=args.host,
+            port=args.port,
+            api_token=api_token,
+            private_api_token=private_token,
+        )
         return 0
 
     if not args.demo:

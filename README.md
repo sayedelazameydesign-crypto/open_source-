@@ -1,13 +1,13 @@
-# open_source — Autonomous & Interactive AI Platform
+# cela_use_browser (`open_source`) — Autonomous Browser & Sandboxed AI Platform
 
-نموذج أولي **يعمل فعلًا** لمنصة ذكاء اصطناعي مستقلة على مكدّس مفتوح المصدر بالكامل
-(2026): استدلال وكيلي + مخرجات Artifacts لحظية + تنفيذ معزول — بنمطي Claude
-(Artifacts) و Manus (التنفيذ الذاتي متعدد الخطوات).
+نموذج أولي **يعمل فعلًا** لمنصة **`cela_use_browser`** المستقلة على مكدّس مفتوح المصدر بالكامل
+(2026): استدلال وكيلي + واجهة تصفح خاصة (`/cela/v1` و`CelaBrowser`) + مخرجات Artifacts
+لحظية + تنفيذ معزول — بنمطي Claude (Artifacts) و Manus (التنفيذ الذاتي متعدد الخطوات).
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 
-> **170 اختبارًا ناجحًا · 0 فشل · دون مفاتيح API ودون شبكة.**
+> **330 اختبارًا ناجحًا · 0 فشل · دون مفاتيح API ودون شبكة.**
 
 ---
 
@@ -15,7 +15,7 @@
 
 ```bash
 git clone https://github.com/sayedelazameydesign-crypto/open_source-.git && cd open_source-
-pip install -e ".[dev]"
+pip install -e ".[dev,server]"
 
 # 1) وضع ReAct — تنفيذ كود حقيقي داخل البيئة المعزولة
 python -m os_server.cli run --demo "Sum the integers from 0 to 100"
@@ -23,8 +23,9 @@ python -m os_server.cli run --demo "Sum the integers from 0 to 100"
 # 2) وضع PlanningFlow — DAG بتفرعات متوازية + إعادة تخطيط
 python -m os_server.cli flow --demo "Plan and execute a 3-step research task"
 
-# 3) واجهة HTTP + WebSocket — تتطلب رمز مصادقة
-export OS_API_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+# 3) واجهة HTTP + WebSocket + الـ API الخاص (/cela/v1)
+export CELA_API_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+export CELA_PRIVATE_API_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
 python -m os_server.cli serve --demo --host 0.0.0.0 --port 8080
 ```
 
@@ -46,25 +47,36 @@ python -m os_server.cli serve --demo --host 0.0.0.0 --port 8080
 | **النماذج** | `ModelRouter` بتوجيه متكيّف (DeepSeek-R1 / Qwen2.5 / Qwen2.5-VL / Llama-3.3) + تخفيض تلقائي عند نفاد الميزانية |
 | **التنسيق** | ReAct + PlanningFlow (DAG، توازٍ، إعادة تخطيط ديناميكية) |
 | **التنفيذ** | Sandbox بـ `setrlimit` + مهلة + `unshare --net`، ومتصفح بسلسلة fallback ثلاثية |
-| **الأمان** | حارس SSRF (يشمل DNS rebinding) + حواجز حقن عربية/إنجليزية + HITL يفشل مغلقًا |
-| **النقل** | FastAPI: REST + WebSocket + SSE + `EventBus` بمخزن إعادة |
+| **الأمان** | حارس SSRF + سياسة خروج صريحة (`EgressPolicy`) + حواجز حقن عربية/إنجليزية + HITL يفشل مغلقًا |
+| **النقل** | FastAPI: REST + WebSocket (مع تذاكر أحادية الاستخدام) + SSE + `/cela/v1` + `CelaBrowser` |
 
-البنية الكاملة: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · القرارات: [`adr/`](adr) ·
-ما تبقّى: [`docs/ROADMAP.md`](docs/ROADMAP.md)
+البنية الكاملة: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · الـ API الخاص: [`docs/CELA_API.md`](docs/CELA_API.md) ·
+القرارات: [`adr/`](adr) · ما تبقّى: [`docs/ROADMAP.md`](docs/ROADMAP.md)
 
-## مصادقة API
+## مصادقة API والـ API الخاص (`cela_use_browser`)
 
-تتطلب نقاط التشغيل والموافقات وSSE وWebSocket والـ artifacts رمز Bearer. يفشل
-الخادم مغلقًا إذا لم يُضبط الرمز؛ أما `/health` فيبقى عامًا ويعيد حالة بسيطة فقط.
+ينقسم الخادم إلى سطحين برمزين منفصلين تمامًا:
+
+1. **سطح المنصة (`/runs`, `/ws/{id}`, …)** — يتطلب `CELA_API_TOKEN` (أو المتغيّر القديم `OS_API_TOKEN` للتوافق الخلفي).
+2. **السطح الخاص (`/cela/v1/*`)** — يتطلب رمزًا مستقلًا `CELA_PRIVATE_API_TOKEN`، ويفحص عناوين URL مقابل سياسة الخروج (`EgressPolicy`) **قبل** إنشاء أي تشغيل.
 
 ```bash
-export OS_API_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+export CELA_API_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+export CELA_PRIVATE_API_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
 python -m os_server.cli serve --demo --host 127.0.0.1 --port 8080
-curl -H "Authorization: Bearer $OS_API_TOKEN" http://127.0.0.1:8080/runs
+
+# فحص الهوية عبر الرمز الخاص
+curl -H "Authorization: Bearer $CELA_PRIVATE_API_TOKEN" http://127.0.0.1:8080/cela/v1/whoami
+
+# بدء مهمة تصفح بعد التحقق المسبق من الوجهة
+curl -X POST -H "Authorization: Bearer $CELA_PRIVATE_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://example.org/search","goal":"Inspect search page","wait":true}' \
+  http://127.0.0.1:8080/cela/v1/browse
 ```
 
-أرسل الترويسة `Authorization: Bearer <OS_API_TOKEN>` مع طلبات HTTP وWebSocket. لا
-تضع الرمز في عنوان URL؛ ولا تعرّض الخادم للإنترنت دون TLS وضوابط نشر مناسبة.
+كما يمكن استدعاء المنطق نفسه مباشرةً من Python دون HTTP عبر `CelaBrowser` — راجع
+[`docs/CELA_API.md`](docs/CELA_API.md).
 
 ## البنية (Monorepo)
 
@@ -72,9 +84,9 @@ curl -H "Authorization: Bearer $OS_API_TOKEN" http://127.0.0.1:8080/runs
 packages/
 ├── os_core/          الأنواع، التوجيه، الحواجز، HITL، الأحداث، الحالة
 ├── os_agents/        ReAct، PlanningFlow، DAG، الميزانية، المراجع
-├── os_tools/         Sandbox، المتصفح، SSRF، سجل الأدوات، MCP
+├── os_tools/         Sandbox، المتصفح، SSRF، سياسة الخروج (egress)، سجل الأدوات، MCP
 ├── os_orchestration/ واجهة Platform واختيار الوضع
-├── os_server/        REST/WS/SSE + CLI + حزمة العرض دون مفاتيح
+├── os_server/        REST/WS/SSE + /cela/v1 + CelaBrowser + CLI + حزمة العرض
 └── web/              هيكل فقط (المرحلة 3 — لم يُبنَ)
 ```
 
@@ -84,7 +96,7 @@ packages/
 ## الاختبار
 
 ```bash
-pytest -q          # 170 passed
+pytest -q          # 330 passed
 ruff check .       # All checks passed
 ruff format .      # تنسيق موحّد
 ```
