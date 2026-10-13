@@ -1,17 +1,21 @@
-"""HTTP + WebSocket transport with bearer-token protection.
+"""HTTP + WebSocket transport with bearer-token and single-use WS ticket auth.
 
 Endpoints
 ---------
 ``POST /runs``                  start a run, returns ``run_id``
 ``GET  /runs/{id}``             execution-tree snapshot (the UI's source of truth)
 ``GET  /runs/{id}/events``      SSE stream — works through proxies that block WS
-``WS   /ws/{id}``               live event stream (canvas synchronisation)
+``POST /runs/{id}/ws-ticket``   mint a short-lived, single-use, run-scoped WS ticket
+``WS   /ws/{id}``               live event stream (Bearer header or ``?ticket=``)
 ``POST /runs/{id}/approve``     human-in-the-loop answer
 ``GET  /artifacts/{id}/{name}`` fetch an artifact for the right-hand pane
 ``GET  /health``                minimal public liveness check
 
 All run, approval, event-stream, WebSocket and artifact routes require an API
 Bearer token configured through ``OS_API_TOKEN`` or ``create_app(api_token=...)``.
+Browser clients that cannot set ``Authorization`` on a WebSocket exchange their
+Bearer token for a single-use ticket via ``POST /runs/{id}/ws-ticket`` and
+connect to ``/ws/{id}?ticket=<ticket>``.
 The same :class:`Platform` is used, so server and CLI share security semantics.
 """
 
@@ -21,6 +25,7 @@ import asyncio
 import json
 import os
 import secrets
+import time
 import uuid
 from collections.abc import Callable
 from typing import Any
@@ -33,6 +38,8 @@ from os_core.hitl import ApprovalDecision, QueueApprover
 from os_core.state import RunState, RunStatus
 from os_orchestration.platform import Platform
 from pydantic import BaseModel, ConfigDict
+
+DEFAULT_WS_TICKET_TTL: float = 60.0
 
 
 class StartRunRequest(BaseModel):
@@ -53,6 +60,11 @@ class RunHandle(BaseModel):
     platform: Platform
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
+class _WsTicket(BaseModel):
+    run_id: str
+    expires_at: float
 
 
 PlatformFactory = Callable[[str, int], Platform]
@@ -80,7 +92,10 @@ def _single_platform_factory(platform: Platform) -> PlatformFactory:
 
 
 def create_app(
-    platform_or_factory: Platform | PlatformFactory, *, api_token: str | None = None
+    platform_or_factory: Platform | PlatformFactory,
+    *,
+    api_token: str | None = None,
+    ws_ticket_ttl: float = DEFAULT_WS_TICKET_TTL,
 ) -> FastAPI:
     """Build the API.
 
@@ -92,6 +107,8 @@ def create_app(
     Protected routes fail closed when no token is configured. Set ``OS_API_TOKEN``
     or pass ``api_token`` explicitly. The public health route reveals status only.
     """
+    if ws_ticket_ttl <= 0:
+        raise ValueError("ws_ticket_ttl must be positive")
     configured_token = api_token if api_token is not None else os.environ.get("OS_API_TOKEN")
     bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -123,6 +140,22 @@ def create_app(
     runs: dict[str, RunHandle] = {}
     states: dict[str, RunState] = {}
     artifacts: dict[str, dict[str, Any]] = {}
+    tickets: dict[str, _WsTicket] = {}
+
+    def _prune_expired_tickets(now: float) -> None:
+        expired = [tok for tok, meta in tickets.items() if meta.expires_at <= now]
+        for tok in expired:
+            tickets.pop(tok, None)
+
+    def _consume_ws_ticket(ticket: str | None, run_id: str) -> bool:
+        if not ticket:
+            return False
+        now = time.monotonic()
+        _prune_expired_tickets(now)
+        meta = tickets.pop(ticket, None)
+        if meta is None or meta.expires_at <= now:
+            return False
+        return secrets.compare_digest(meta.run_id, run_id)
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
@@ -181,6 +214,16 @@ def create_app(
 
         return StreamingResponse(_gen(), media_type="text/event-stream")
 
+    @app.post("/runs/{run_id}/ws-ticket", dependencies=[Depends(require_api_auth)])
+    async def create_ws_ticket(run_id: str) -> dict[str, Any]:
+        if run_id not in runs:
+            raise HTTPException(404, "unknown run_id")
+        now = time.monotonic()
+        _prune_expired_tickets(now)
+        ticket = secrets.token_urlsafe(24)
+        tickets[ticket] = _WsTicket(run_id=run_id, expires_at=now + ws_ticket_ttl)
+        return {"ticket": ticket, "run_id": run_id, "expires_in": ws_ticket_ttl}
+
     @app.websocket("/ws/{run_id}")
     async def websocket_endpoint(ws: WebSocket, run_id: str) -> None:
         # Rejecting before accept() is deliberate: an unauthenticated client must
@@ -190,7 +233,11 @@ def create_app(
         if not configured_token:
             await ws.close(code=1011)  # authentication is not configured
             return
-        if not _valid_bearer_token(ws.headers.get("authorization"), configured_token):
+        header_ok = _valid_bearer_token(ws.headers.get("authorization"), configured_token)
+        ticket_ok = (
+            False if header_ok else _consume_ws_ticket(ws.query_params.get("ticket"), run_id)
+        )
+        if not (header_ok or ticket_ok):
             await ws.close(code=4401)  # application-specific unauthenticated code
             return
         handle = runs.get(run_id)
@@ -237,6 +284,8 @@ def create_app(
         return Response(content=json.dumps(meta), media_type="application/json")
 
     def _final_state(task: asyncio.Task[RunState], run_id: str) -> RunState:
+        if task.cancelled():
+            return RunState(run_id=run_id, status=RunStatus.FAILED, error="cancelled")
         try:
             return task.result()
         except Exception as exc:

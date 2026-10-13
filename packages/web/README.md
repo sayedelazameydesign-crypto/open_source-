@@ -26,14 +26,16 @@ Next.js 15 + TailwindCSS + Shadcn/UI، بعرض مقسوم:
 |---|---|
 | بدء مهمة | `POST /runs` → `{run_id, mode}` |
 | استعادة الحالة | `GET /runs/{id}` → `RunState.snapshot()` |
-| تدفق حي | `WS /ws/{id}` أو `GET /runs/{id}/events` (SSE) |
+| تذكرة WebSocket | `POST /runs/{id}/ws-ticket` → `{ticket, run_id, expires_in}` |
+| تدفق حي | `WS /ws/{id}?ticket=...` أو `GET /runs/{id}/events` (SSE) |
 | موافقة بشرية | `POST /runs/{id}/approve` |
 | جلب artifact | `GET /artifacts/{id}/{filename}` |
 | فحص الحياة (عام) | `GET /health` → `{status}` |
 
 كل النقاط أعلاه — عدا `/health` — تتطلب الترويسة
-`Authorization: Bearer $OS_API_TOKEN`. الواجهة تحتاج وسيطًا يعكس الطلبات ليضيف
-الترويسة، لأن المتصفح لا يستطيع ضبطها على اتصال WebSocket مباشرة.
+`Authorization: Bearer $OS_API_TOKEN`. ولأن المتصفح لا يستطيع ضبط `Authorization`
+على اتصال WebSocket مباشرة، يطلب الوسيط تذكرة قصيرة العمر أحادية الاستخدام عبر
+`POST /runs/{id}/ws-ticket` ثم يتصل المتصفح بـ `/ws/{id}?ticket=<ticket>`.
 
 ### أنواع الأحداث التي ترسمها الواجهة
 

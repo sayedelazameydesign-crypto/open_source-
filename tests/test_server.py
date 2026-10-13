@@ -120,6 +120,7 @@ def test_protected_routes_require_bearer_auth(anonymous_client: TestClient) -> N
         ("POST", "/runs", {"json": {"task": "hi", "mode": "react"}}),
         ("GET", "/runs/run_unknown", {}),
         ("GET", "/runs/run_unknown/events", {}),
+        ("POST", "/runs/run_unknown/ws-ticket", {}),
         (
             "POST",
             "/runs/run_unknown/approve",
@@ -152,3 +153,273 @@ def test_websocket_rejects_missing_bearer_token(anonymous_client: TestClient) ->
     ):
         pass
     assert exc_info.value.code == 4401
+
+
+def test_ws_ticket_minting_requires_existing_run(client: TestClient) -> None:
+    assert client.post("/runs/run_unknown/ws-ticket").status_code == 404
+
+
+def test_ws_ticket_minting_returns_ticket_and_ttl(client: TestClient) -> None:
+    run_id = client.post("/runs", json={"task": "Sum 0..100", "mode": "react"}).json()["run_id"]
+    resp = client.post(f"/runs/{run_id}/ws-ticket")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["run_id"] == run_id
+    assert isinstance(body["ticket"], str) and len(body["ticket"]) >= 16
+    assert body["expires_in"] == 60.0
+
+
+def test_websocket_accepts_valid_ticket_without_auth_header(
+    anonymous_client: TestClient,
+) -> None:
+    auth = {"Authorization": "Bearer test-token"}
+    run_id = anonymous_client.post(
+        "/runs", json={"task": "Sum 0..100", "mode": "react"}, headers=auth
+    ).json()["run_id"]
+    ticket = anonymous_client.post(f"/runs/{run_id}/ws-ticket", headers=auth).json()["ticket"]
+    seen: list[str] = []
+    # Connect without Authorization header using the query-string ticket.
+    with anonymous_client.websocket_connect(f"/ws/{run_id}?ticket={ticket}") as ws:
+        while True:
+            msg = ws.receive_text()
+            seen.append(msg)
+            if "run_finished" in msg:
+                break
+    assert any("run_started" in m for m in seen)
+    assert any("run_finished" in m for m in seen)
+
+
+def test_ws_ticket_is_single_use(anonymous_client: TestClient) -> None:
+    from starlette.websockets import WebSocketDisconnect
+
+    auth = {"Authorization": "Bearer test-token"}
+    run_id = anonymous_client.post(
+        "/runs", json={"task": "Sum 0..100", "mode": "react"}, headers=auth
+    ).json()["run_id"]
+    ticket = anonymous_client.post(f"/runs/{run_id}/ws-ticket", headers=auth).json()["ticket"]
+    with anonymous_client.websocket_connect(f"/ws/{run_id}?ticket={ticket}") as ws:
+        assert "run_started" in ws.receive_text()
+
+    with (
+        pytest.raises(WebSocketDisconnect) as exc_info,
+        anonymous_client.websocket_connect(f"/ws/{run_id}?ticket={ticket}"),
+    ):
+        pass
+    assert exc_info.value.code == 4401
+
+
+def test_ws_ticket_is_bound_to_its_run_id(anonymous_client: TestClient) -> None:
+    from starlette.websockets import WebSocketDisconnect
+
+    auth = {"Authorization": "Bearer test-token"}
+    run_a = anonymous_client.post(
+        "/runs", json={"task": "Sum 0..100", "mode": "react"}, headers=auth
+    ).json()["run_id"]
+    run_b = anonymous_client.post(
+        "/runs", json={"task": "Sum 0..100", "mode": "react"}, headers=auth
+    ).json()["run_id"]
+    ticket_a = anonymous_client.post(f"/runs/{run_a}/ws-ticket", headers=auth).json()["ticket"]
+
+    # Presenting run_a's ticket on run_b fails and burns the ticket.
+    with (
+        pytest.raises(WebSocketDisconnect) as exc_info,
+        anonymous_client.websocket_connect(f"/ws/{run_b}?ticket={ticket_a}"),
+    ):
+        pass
+    assert exc_info.value.code == 4401
+
+    with (
+        pytest.raises(WebSocketDisconnect) as exc_info2,
+        anonymous_client.websocket_connect(f"/ws/{run_a}?ticket={ticket_a}"),
+    ):
+        pass
+    assert exc_info2.value.code == 4401
+
+
+def test_ws_ticket_expires_after_ttl(platform_factory) -> None:
+    import time
+
+    from starlette.websockets import WebSocketDisconnect
+
+    auth = {"Authorization": "Bearer test-token"}
+    app = create_app(platform_factory, api_token="test-token", ws_ticket_ttl=0.02)
+    with TestClient(app) as tc:
+        run_id = tc.post(
+            "/runs", json={"task": "Sum 0..100", "mode": "react"}, headers=auth
+        ).json()["run_id"]
+        ticket = tc.post(f"/runs/{run_id}/ws-ticket", headers=auth).json()["ticket"]
+        time.sleep(0.05)
+        with (
+            pytest.raises(WebSocketDisconnect) as exc_info,
+            tc.websocket_connect(f"/ws/{run_id}?ticket={ticket}"),
+        ):
+            pass
+        assert exc_info.value.code == 4401
+
+
+def test_ws_rejects_unknown_and_empty_ticket(anonymous_client: TestClient) -> None:
+    from starlette.websockets import WebSocketDisconnect
+
+    for query in ("?ticket=", "?ticket=forged-ticket"):
+        with (
+            pytest.raises(WebSocketDisconnect) as exc_info,
+            anonymous_client.websocket_connect(f"/ws/run_unknown{query}"),
+        ):
+            pass
+        assert exc_info.value.code == 4401
+
+
+def test_ws_rejects_when_unconfigured_with_1011(platform_factory) -> None:
+    from starlette.websockets import WebSocketDisconnect
+
+    with (
+        TestClient(create_app(platform_factory, api_token="")) as unconfigured,
+        pytest.raises(WebSocketDisconnect) as exc_info,
+        unconfigured.websocket_connect("/ws/run_unknown"),
+    ):
+        pass
+    assert exc_info.value.code == 1011
+
+
+def test_create_app_rejects_non_positive_ticket_ttl(platform_factory) -> None:
+    with pytest.raises(ValueError, match="ws_ticket_ttl"):
+        create_app(platform_factory, api_token="test-token", ws_ticket_ttl=0.0)
+    with pytest.raises(ValueError, match="ws_ticket_ttl"):
+        create_app(platform_factory, api_token="test-token", ws_ticket_ttl=-5.0)
+
+
+def test_multiple_tickets_for_same_run_are_independent(anonymous_client: TestClient) -> None:
+    auth = {"Authorization": "Bearer test-token"}
+    run_id = anonymous_client.post(
+        "/runs", json={"task": "Sum 0..100", "mode": "react"}, headers=auth
+    ).json()["run_id"]
+    t1 = anonymous_client.post(f"/runs/{run_id}/ws-ticket", headers=auth).json()["ticket"]
+    t2 = anonymous_client.post(f"/runs/{run_id}/ws-ticket", headers=auth).json()["ticket"]
+    assert t1 != t2
+    with anonymous_client.websocket_connect(f"/ws/{run_id}?ticket={t1}") as ws1:
+        assert "run_started" in ws1.receive_text()
+    with anonymous_client.websocket_connect(f"/ws/{run_id}?ticket={t2}") as ws2:
+        assert "run_started" in ws2.receive_text()
+
+
+def test_bearer_header_takes_precedence_and_spares_ticket(anonymous_client: TestClient) -> None:
+    auth = {"Authorization": "Bearer test-token"}
+    run_id = anonymous_client.post(
+        "/runs", json={"task": "Sum 0..100", "mode": "react"}, headers=auth
+    ).json()["run_id"]
+    ticket = anonymous_client.post(f"/runs/{run_id}/ws-ticket", headers=auth).json()["ticket"]
+    # Connect with valid Bearer header; ticket should remain unconsumed.
+    with anonymous_client.websocket_connect(f"/ws/{run_id}?ticket={ticket}", headers=auth) as ws:
+        assert "run_started" in ws.receive_text()
+    with anonymous_client.websocket_connect(f"/ws/{run_id}?ticket={ticket}") as ws2:
+        assert "run_started" in ws2.receive_text()
+
+
+def test_case_insensitive_bearer_scheme(platform_factory) -> None:
+    app = create_app(platform_factory, api_token="test-token")
+    with TestClient(app, headers={"Authorization": "bearer test-token"}) as lower_client:
+        resp = lower_client.post("/runs", json={"task": "Sum 0..100", "mode": "react"})
+        assert resp.status_code == 202
+
+
+def test_malformed_authorization_headers_are_rejected(platform_factory) -> None:
+    app = create_app(platform_factory, api_token="test-token")
+    with TestClient(app) as anon:
+        for header in ("Basic dGVzdA==", "Bearer", "Bearer ", "Token test-token"):
+            resp = anon.get("/runs/run_x", headers={"Authorization": header})
+            assert resp.status_code == 401
+
+
+def test_env_token_fallback_when_api_token_is_none(
+    platform_factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OS_API_TOKEN", "from-env-token")
+    with TestClient(
+        create_app(platform_factory),
+        headers={"Authorization": "Bearer from-env-token"},
+    ) as env_client:
+        assert env_client.get("/runs/run_x").status_code == 404
+
+
+def test_serve_refuses_to_start_without_token(
+    platform_factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from os_server.app import serve
+
+    monkeypatch.delenv("OS_API_TOKEN", raising=False)
+    monkeypatch.delenv("CELA_API_TOKEN", raising=False)
+    with pytest.raises(RuntimeError, match="API authentication is required"):
+        serve(platform_factory("react", 5), api_token="")
+
+
+def test_cli_serve_exits_2_without_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    from os_server.cli import main
+
+    monkeypatch.delenv("OS_API_TOKEN", raising=False)
+    monkeypatch.delenv("CELA_API_TOKEN", raising=False)
+    assert main(["serve", "--demo"]) == 2
+
+
+async def test_real_socket_e2e_bearer_and_ws_ticket(platform_factory) -> None:
+    """Real TCP socket E2E via uvicorn + httpx + websockets."""
+    import socket
+
+    import httpx
+    import uvicorn
+    import websockets
+    from websockets.exceptions import InvalidStatus
+
+    app = create_app(platform_factory, api_token="wire-secret-token")
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
+    server = uvicorn.Server(config)
+    import asyncio
+
+    serve_task = asyncio.create_task(server.serve(sockets=[sock]))
+    try:
+        for _ in range(200):
+            if server.started:
+                break
+            await asyncio.sleep(0.01)
+        assert server.started
+
+        base_http = f"http://127.0.0.1:{port}"
+        base_ws = f"ws://127.0.0.1:{port}"
+        auth_headers = {"Authorization": "Bearer wire-secret-token"}
+
+        async with httpx.AsyncClient(base_url=base_http) as http:
+            assert (await http.get("/health")).json() == {"status": "ok"}
+            assert (await http.post("/runs", json={"task": "Sum 0..100"})).status_code == 401
+
+            start = await http.post(
+                "/runs", json={"task": "Sum 0..100", "mode": "react"}, headers=auth_headers
+            )
+            assert start.status_code == 202
+            run_id = start.json()["run_id"]
+
+            ticket_resp = await http.post(f"/runs/{run_id}/ws-ticket", headers=auth_headers)
+            assert ticket_resp.status_code == 200
+            ticket = ticket_resp.json()["ticket"]
+
+        # 1) Unauthenticated WS handshake is rejected before accept() -> HTTP 403
+        with pytest.raises(InvalidStatus) as exc_info:
+            async with websockets.connect(f"{base_ws}/ws/{run_id}"):
+                pass
+        assert exc_info.value.response.status_code == 403
+
+        # 2) Browser-style ?ticket= WS handshake succeeds without Authorization header
+        async with websockets.connect(f"{base_ws}/ws/{run_id}?ticket={ticket}") as ws:
+            first_frame = await ws.recv()
+            assert "run_started" in first_frame
+
+        # 3) Replaying the single-use ticket over the wire is rejected -> HTTP 403
+        with pytest.raises(InvalidStatus) as replay_exc:
+            async with websockets.connect(f"{base_ws}/ws/{run_id}?ticket={ticket}"):
+                pass
+        assert replay_exc.value.response.status_code == 403
+    finally:
+        server.should_exit = True
+        await serve_task
+        sock.close()
