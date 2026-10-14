@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 
-> **403 اختبارًا ناجحًا · 0 فشل · دون مفاتيح API ودون شبكة.**
+> **408 اختبارًا ناجحًا · 0 فشل · دون مفاتيح API ودون شبكة.**
 
 ---
 
@@ -97,7 +97,7 @@ packages/
 ## الاختبار
 
 ```bash
-pytest -q          # 403 passed
+pytest -q          # 408 passed (1 اختبار مُعلَّق اختياريًا: psycopg)
 ruff check .       # All checks passed
 ruff format .      # تنسيق موحّد
 ```
@@ -118,6 +118,28 @@ model = OpenAICompatModel(
 ```
 
 نفس المسار البرمجي؛ لا تغيير في الوكلاء أو الأدوات.
+
+## التقييم المعياري (`os_evals`)
+
+أمر واحد يشغّل المجموعة المدمجة مقابل نموذج حقيقي، بعقد A/B للمهارات
+([ADR-0012](adr/0012-real-model-eval-verification.md)):
+
+```bash
+pip install -e ".[dev,server]"
+CELA_EVAL_API_KEY="<token>" python -m os_evals run --suite builtin \
+  --model-url https://gateway.example.com/v1 --model-id <model> \
+  --auth-header Authorization --api-key-env CELA_EVAL_API_KEY \
+  --out eval-report.json --ab-skills
+```
+
+* **المفتاح لا يُمرَّر كوسيط**: يُقرأ عند الطلب من المتغيّر المسمّى بـ
+  `--api-key-env` (هنا `CELA_EVAL_API_KEY`، يُحقن من سر CI)، ولا يُخزَّن ولا يُطبع.
+* `--auth-header` يقبل `Authorization` (بصيغة `Bearer`) أو `x-api-key`.
+* `--suite builtin` **فحص توصيل من حالتين وليس مقياس جودة** (يُطبع تنبيه بذلك)؛
+  الأرقام الحقيقية تحتاج `--dataset gaia.jsonl` بصيغة GAIA أو SWE-bench.
+* رموز الخروج: `0` نجاح كل الحالات (أو «لا تراجع» في `--ab-skills`)، `1` فشل
+  حالة/تراجع، `2` لا قياس (تشغيل A/B انهارت فيه كل الحالات في الذراعين).
+  التقرير يُكتب قبل رمز الخروج في كل الحالات.
 
 ## حدود صادقة
 
