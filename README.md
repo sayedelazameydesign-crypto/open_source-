@@ -54,13 +54,16 @@ python -m os_server.cli serve --demo --host 0.0.0.0 --port 8080
 | **الذكاء المحلي** | `LocalAIEngine` على CPU (NLP عربي/إنجليزي، بحث دلالي هجين، تعلّم آلة، فحص صور، OCR مستندات، تحليل صوت WAV) |
 | **النقل** | FastAPI: REST + WebSocket (مع تذاكر أحادية الاستخدام) + SSE + `/api/*` + `/cela/v1` + `CelaBrowser` |
 | **سجل النتائج** | `RunLedger`: سطر JSONL دائم **لكل** تنفيذ (نجاح/فشل/ميزانية/انقطاع) + ملخّص إجمالي (معدّل النجاح، p50/p95)، عبر `/ledger` و`/cela/v1/ledger` |
+| **الذاكرة والمعرفة** | `os_memory` (بوابة كتابة تفحص الحقن والأسرار **قبل** التخزين + خصم موثوقية) و`os_know` (تقطيع حتمي + اقتباس مُتحقَّق منه بـ`sha256`) — محليّتان بالكامل، بلا تبعية جديدة، ومُفعَّلتان بالعنوان فقط |
 
 البنية الكاملة: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · الـ API الخاص: [`docs/CELA_API.md`](docs/CELA_API.md) ·
 القرارات: [`adr/`](adr) · ما تبقّى: [`docs/ROADMAP.md`](docs/ROADMAP.md)
 ربط Agent Mode بـ GitHub: [`docs/arena-github-integration.md`](docs/arena-github-integration.md)
 دمج ArtCraft Launcher (مضيف + محوّل): [`docs/CRAFT_LAUNCHER_PLAN.md`](docs/CRAFT_LAUNCHER_PLAN.md)
 توسيع القدرات (ذاكرة/معرفة/مهارات/مراقبة): [`docs/INTEGRATIONS_PLAN.md`](docs/INTEGRATIONS_PLAN.md) —
-**خطة غير مُنفَّذة** بمعايير خروج ومرشّحات فُحصت من مصدرها؛ القرار المقترح في مسودة `adr/0016`.
+المراحل ٠–٤ **مُنفَّذة بمعاييرها** (القرار مُعتمَد في `adr/0016`)، والمرحلتان ٥ و٦ **مؤجَّلتان بقرار مُعلَن**:
+محوّلات المزوّدين تحتاج خدمة جانبية، وقناة Graphify لا مستودع كود في CI يستدعيها.
+أرقام الاسترجاع المقيسة — ومنها **ما لا يُظهر تحسّنًا** — في §١٠-أ من نفس الملف.
 
 ## مصادقة API والـ API الخاص (`cela_use_browser`)
 
