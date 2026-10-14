@@ -71,6 +71,7 @@ packages = [
     "packages/os_orchestration/os_orchestration",
     "packages/os_server/os_server",
     "packages/os_evals/os_evals",
+    "packages/os_skills/os_skills",
 ]
 
 # --- Monorepo path setup: every package is importable without installation ---
@@ -87,6 +88,7 @@ pythonpath = [
     "packages/os_orchestration",
     "packages/os_server",
     "packages/os_evals",
+    "packages/os_skills",
     "packages/legacy/src",
 ]
 markers = [
@@ -97,7 +99,7 @@ filterwarnings = ["error::RuntimeWarning"]
 
 [tool.coverage.run]
 branch = true
-source = ["os_core", "os_agents", "os_tools", "os_orchestration", "os_server", "os_evals"]
+source = ["os_core", "os_agents", "os_tools", "os_orchestration", "os_server", "os_evals", "os_skills"]
 
 [tool.ruff]
 line-length = 100
