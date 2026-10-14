@@ -47,6 +47,9 @@ class EvalCase(BaseModel):
 
 
 class CaseResult(BaseModel):
+    skill_id: str | None = None
+    skill_injected: bool = False
+    skill_learned: bool = False
     id: str
     suite: str
     passed: bool
@@ -91,7 +94,17 @@ def compare_reports(baseline: EvalReport, skilled: EvalReport) -> dict[str, Any]
         vals = [getattr(r, field) for r in report.results]
         return round(sum(vals) / len(vals), 3) if vals else 0.0
 
+    total = max(1, skilled.total)
+    injected = [r for r in skilled.results if r.skill_injected]
     return {
+        "skill_hit_rate": round(len(injected) / total, 4),
+        "skill_reuse_rate": round(len(injected) / total, 4),
+        "skill_learn_rate": round(sum(int(r.skill_learned) for r in skilled.results) / total, 4),
+        # Proxy, not a judge: an injected skill on a failed case is a
+        # *suspected* false injection; the true rate needs human/LLM review.
+        "false_injection_rate_proxy": round(
+            (sum(int(not r.passed) for r in injected) / len(injected)) if injected else 0.0, 4
+        ),
         "pass_rate_delta": round(skilled.pass_rate - baseline.pass_rate, 4),
         "avg_steps_delta": round(avg(skilled, "steps_used") - avg(baseline, "steps_used"), 3),
         "avg_tokens_delta": round(avg(skilled, "tokens_used") - avg(baseline, "tokens_used"), 3),
@@ -118,6 +131,9 @@ class EvalRunner:
             return CaseResult(
                 id=case.id,
                 suite=case.suite,
+                skill_id=state.metadata.get("skill_id"),
+                skill_injected=bool(state.metadata.get("skill_id")),
+                skill_learned=bool(state.metadata.get("learned_skill_id")),
                 passed=case.checker.check(text),
                 status=state.status.value,
                 steps_used=state.steps_used,

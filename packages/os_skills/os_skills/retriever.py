@@ -15,7 +15,9 @@ class SkillRetriever:
         self.min_score = min_score
 
     def find(self, task: str, *, top_k: int = 1) -> list[tuple[Skill, float]]:
-        skills = [s for s in self.store.list_skills() if s.status != "quarantined"]
+        skills = [
+            s for s in self.store.list_skills() if s.status not in {"quarantined", "deprecated"}
+        ]
         if not skills:
             return []
         docs = [

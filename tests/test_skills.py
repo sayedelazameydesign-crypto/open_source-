@@ -148,3 +148,96 @@ def test_quarantined_skill_is_not_retrieved() -> None:
         manager.record_outcome(skill.skill_id, success=False)
     assert manager.store.get_skill(skill.skill_id).status == "quarantined"
     assert manager.find_relevant("Sum the integers from 0 to 100") is None
+
+
+def test_laplace_smoothing_and_probation_revive() -> None:
+    manager = _manager()
+    skill = manager.learn_from_run(_completed_run())
+    assert skill is not None
+    # One success must NOT read as certainty anymore.
+    assert skill.reliability == 2 / 3
+    for _ in range(3):
+        manager.record_outcome(skill.skill_id, success=False)
+    assert manager.store.get_skill(skill.skill_id).status == "quarantined"
+    assert manager.find_relevant("Sum the integers from 0 to 100") is None
+
+    revived = manager.revive(skill.skill_id)
+    assert revived is not None and revived.status == "probationary" and revived.requires_approval
+    manager.record_outcome(skill.skill_id, success=True)
+    manager.record_outcome(skill.skill_id, success=True)
+    assert manager.store.get_skill(skill.skill_id).status == "active"
+
+
+def test_permission_expansion_requires_approval_and_is_versioned() -> None:
+    import pytest as _pytest
+
+    manager = _manager()
+    skill = manager.learn_from_run(_completed_run())
+    assert skill is not None
+    assert skill.tool_scopes == ["code:execute:sandbox"]
+    with _pytest.raises(PermissionError):
+        manager.expand_permissions(skill.skill_id, ["browser_navigate"], approved=False)
+    updated = manager.expand_permissions(skill.skill_id, ["browser_navigate"], approved=True)
+    assert "network:browser" in updated.tool_scopes
+    assert updated.permission_grants and updated.version == skill.version + 1
+    assert manager.list_versions(skill.skill_id), "grant must be snapshotted as an anomalous change"
+
+
+def test_context_parameterization_and_validated_fill() -> None:
+    from os_skills.parameterize import fill_steps
+
+    from os_skills import parameterize_steps
+
+    steps = [
+        {
+            "title": "Run",
+            "tool": "python_execute",
+            "args": {"code": "print(sum(range(101)))", "path": "config.yaml"},
+        }
+    ]
+    templated, inputs = parameterize_steps("Read the settings file", steps)
+    by_type = {i.input_type for i in inputs}
+    assert "int" in by_type  # range(101) caught by parameter position, not task text
+    _filled, mapping = fill_steps(templated, inputs, "Read other.yaml please")
+    # path placeholder (string pool) has no quoted value in the new task: the
+    # original-value fallback is validated, never blindly invented.
+    assert mapping, inputs
+
+
+def test_composition_cycle_detection_and_child_penalty() -> None:
+    from os_skills.composition import (
+        CompositionError,
+        detect_cycle,
+        skill_as_tools,
+        validate_composition,
+    )
+
+    from os_skills import Skill as _Skill
+
+    manager = _manager()
+    a = manager.learn_from_run(_completed_run("Sum the integers from 0 to 100"))
+    assert a is not None
+    b = _Skill(skill_id="skill_b", name="B", description="second pattern", tools=["python_execute"])
+    manager.store.save_skill(b)
+    parent = manager.learn_composite(_completed_run("Sum then report"), [a.skill_id, b.skill_id])
+    assert parent is not None and parent.dependencies == [a.skill_id, b.skill_id]
+    names = [t.name for t in skill_as_tools(manager)]
+    assert f"skill:{a.skill_id}" in names
+
+    # Force a cycle: child depends on the parent that depends on the child.
+    b.dependencies = [parent.skill_id]
+    manager.store.save_skill(b)
+    assert detect_cycle(manager.store, parent) is not None
+    try:
+        validate_composition(manager.store, parent)
+        raise AssertionError("cycle must be rejected")
+    except CompositionError:
+        pass
+    b.dependencies = []
+    manager.store.save_skill(b)
+
+    before = manager.store.get_skill(parent.skill_id)
+    manager.record_composite_outcome(parent.skill_id, {a.skill_id: True, b.skill_id: False})
+    after = manager.store.get_skill(parent.skill_id)
+    assert after is not None and before is not None
+    assert after.confidence_penalty > before.confidence_penalty

@@ -17,6 +17,17 @@ class SkillInput(BaseModel):
     placeholder: str  # e.g. "{{limit}}"
     original_value: str
     kind: str = "string"  # number | string
+    input_type: str = "str"  # int | float | str | path | url
+    constraints: dict[str, Any] = Field(default_factory=dict)  # min/max/pattern
+
+
+class PermissionGrant(BaseModel):
+    """An approved, recorded expansion of a skill's tool permissions."""
+
+    tools: list[str]
+    scopes: list[str] = Field(default_factory=list)
+    approved_by: str = "hitl"
+    granted_at: float = Field(default_factory=time.time)
 
 
 class Skill(BaseModel):
@@ -40,7 +51,12 @@ class Skill(BaseModel):
     confidence: float = 0.5
     last_outcome_at: float | None = None
     allowed_tools: list[str] = Field(default_factory=list)
+    tool_scopes: list[str] = Field(default_factory=list)
+    permission_grants: list[PermissionGrant] = Field(default_factory=list)
     requires_approval: bool = False
+    dependencies: list[str] = Field(default_factory=list)  # composed child skill_ids
+    consecutive_successes: int = 0
+    confidence_penalty: float = 0.0
     uses: int = 0
     total_tokens: int = 0
     total_seconds: float = 0.0
@@ -60,15 +76,23 @@ class Skill(BaseModel):
 
     @property
     def reliability(self) -> float:
+        """Laplace-smoothed success rate: one success is evidence, not proof.
+
+        ``(success + 1) / (total + 2)`` keeps a single-use skill at 0.67
+        instead of a reckless 1.0, and a never-used skill at a neutral 0.5.
+        """
         total = self.success_count + self.failure_count
-        return self.success_count / total if total else 0.0
+        return (self.success_count + 1) / (total + 2)
 
     def refresh_status(self, *, now: float | None = None) -> None:
         """Decay confidence with age and quarantine persistent failures."""
         import time as _time
 
         moment = now if now is not None else _time.time()
-        self.confidence = round(0.7 * self.reliability + 0.3 * self._recency(moment), 4)
+        raw = 0.7 * self.reliability + 0.3 * self._recency(moment)
+        self.confidence = round(max(0.0, raw - self.confidence_penalty), 4)
+        if self.status in {"probationary", "deprecated"}:
+            return  # explicit states are managed by SkillManager transitions
         trials = self.success_count + self.failure_count
         if trials >= 3 and self.failure_count > self.success_count:
             self.status = "quarantined"
@@ -83,7 +107,11 @@ class Skill(BaseModel):
         if self.last_outcome_at is None:
             return 0.5
         age_days = max(0.0, (now - self.last_outcome_at) / 86400.0)
-        return math.exp(-age_days / 30.0)  # 30-day decay horizon
+        # Adaptive horizon: proven skills decay slower. A quarterly ritual
+        # with 10 successes gets ~100 days, not the daily-skill 30.
+        trials = self.success_count + self.failure_count
+        window_days = 30.0 * (1.0 + math.log1p(trials))
+        return math.exp(-age_days / window_days)
 
     def search_text(self) -> str:
         return " ".join([self.name, self.description, *self.triggers, *self.tools])

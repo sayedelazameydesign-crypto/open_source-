@@ -72,10 +72,13 @@ def test_cli_ab_skills_reports_delta(tmp_path) -> None:
     code = eval_main(["run", "--suite", "builtin", "--ab-skills", "--out", str(out)])
     assert code == 0
     bundle = json.loads(out.read_text(encoding="utf-8"))
-    assert set(bundle["delta"]) == {
+    assert {
         "pass_rate_delta",
         "avg_steps_delta",
         "avg_tokens_delta",
         "avg_seconds_delta",
-    }
+        "skill_hit_rate",
+        "skill_reuse_rate",
+        "false_injection_rate_proxy",
+    } <= set(bundle["delta"])
     assert bundle["skills_learned"], "the skilled arm must learn from its cases"

@@ -18,8 +18,14 @@ def build_skill_guidance(skill: Skill, score: float, task: str = "") -> str:
         f"reliability={skill.reliability:.2f}, used successfully {skill.success_count}x)]",
         *([f"Inputs filled from the current task: {filled}"] if filled else []),
         *(
+            ["PROBATIONARY skill: human approval is required before following it."]
+            if skill.status == "probationary"
+            else []
+        ),
+        *(
             [
-                f"Allowed tools for this skill: {', '.join(skill.allowed_tools)}; "
+                f"Allowed tools/scopes for this skill: {', '.join(skill.allowed_tools)} "
+                f"[{', '.join(skill.tool_scopes)}]; "
                 "any other or dangerous tool still requires the normal approval flow."
             ]
             if skill.allowed_tools

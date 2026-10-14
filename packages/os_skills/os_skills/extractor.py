@@ -12,6 +12,16 @@ from os_skills.parameterize import parameterize_steps
 from os_skills.types import Skill
 
 
+def tool_scope(tool: str) -> str:
+    if tool == "python_execute":
+        return "code:execute:sandbox"
+    if tool.startswith("browser_"):
+        return "network:browser"
+    if tool in {"send_email", "transfer_money", "delete_database", "publish", "exec_shell"}:
+        return f"dangerous:{tool}"
+    return f"tool:{tool}"
+
+
 class SkillExtractor:
     """Only successful, tool-using runs teach the system anything."""
 
@@ -69,5 +79,6 @@ class SkillExtractor:
             preconditions=["A previous run with this pattern completed successfully."],
             expected_outcome=(run_state.final_answer or "")[:200],
             allowed_tools=tools_sorted,
+            tool_scopes=sorted({tool_scope(t) for t in tools_sorted}),
             requires_approval=bool(set(tools_sorted) & set(DANGEROUS_ACTIONS)),
         )
