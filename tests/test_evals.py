@@ -82,3 +82,70 @@ def test_cli_ab_skills_reports_delta(tmp_path) -> None:
         "false_injection_rate_proxy",
     } <= set(bundle["delta"])
     assert bundle["skills_learned"], "the skilled arm must learn from its cases"
+
+
+def _dead_port() -> int:
+    """A port that was just closed, so connecting to it fails immediately."""
+    import socket
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
+def test_cli_ab_unreachable_model_fails_instead_of_reporting_a_zero_delta(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """A wrong URL/key must not look like a green A/B run that measured nothing."""
+    monkeypatch.setenv("CELA_EVAL_API_KEY", "never-sent-anywhere")
+    out = tmp_path / "ab.json"
+    code = eval_main(
+        [
+            "run",
+            "--suite",
+            "builtin",
+            "--ab-skills",
+            "--model-url",
+            f"http://127.0.0.1:{_dead_port()}/v1",
+            "--model-id",
+            "nothing-listens-here",
+            "--api-key-env",
+            "CELA_EVAL_API_KEY",
+            "--out",
+            str(out),
+        ]
+    )
+    assert code == 2
+    assert "every case in both arms errored" in capsys.readouterr().err
+    bundle = json.loads(out.read_text(encoding="utf-8"))
+    assert bundle["baseline"]["results"] and bundle["skilled"]["results"]
+    assert all(r["status"] == "error" for r in bundle["baseline"]["results"])
+    assert all(r["status"] == "error" for r in bundle["skilled"]["results"])
+    assert bundle["delta"]["pass_rate_delta"] == 0.0
+    # Secret hygiene: the key value never reaches the report or the console.
+    assert "never-sent-anywhere" not in json.dumps(bundle)
+
+
+def test_cli_missing_key_names_the_env_var(tmp_path, monkeypatch) -> None:
+    """The empty-secret case must say which variable is empty, not just fail."""
+    monkeypatch.delenv("CELA_MISSING_KEY_XYZ", raising=False)
+    out = tmp_path / "report.json"
+    code = eval_main(
+        [
+            "run",
+            "--suite",
+            "builtin",
+            "--model-url",
+            "https://gateway.example.com/v1",
+            "--model-id",
+            "some-model",
+            "--api-key-env",
+            "CELA_MISSING_KEY_XYZ",
+            "--out",
+            str(out),
+        ]
+    )
+    assert code == 1  # not a pass: nothing ran
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["passed"] == 0
+    assert "CELA_MISSING_KEY_XYZ is not set" in payload["results"][0]["error"]

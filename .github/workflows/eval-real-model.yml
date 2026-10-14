@@ -38,16 +38,46 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev,server]"
+      - name: Check the secret reached the runner
+        env:
+          CELA_EVAL_API_KEY: ${{ secrets.APIDOG_ACCESS_TOKEN }}
+        run: |
+          if [ -z "${CELA_EVAL_API_KEY:-}" ]; then
+            echo "::error title=Missing secret::Repository secret APIDOG_ACCESS_TOKEN is empty or unset — add it in Settings > Secrets and variables > Actions, then re-run."
+            exit 1
+          fi
       - name: Run eval against the private API
         env:
           # The secret value exists only inside this step's environment.
           CELA_EVAL_API_KEY: ${{ secrets.APIDOG_ACCESS_TOKEN }}
+          # Inputs reach the shell as environment variables, never spliced into
+          # the script text: a '${{ inputs.model_url }}' placeholder expanded
+          # inside quotes would hand argparse the URL with its quote
+          # characters still attached, and fail every case.
+          MODEL_URL: ${{ inputs.model_url }}
+          MODEL_ID: ${{ inputs.model_id }}
+          AUTH_HEADER: ${{ inputs.auth_header }}
+          AB_SKILLS: ${{ inputs.ab_skills }}
         run: |
-          ARGS="run --suite builtin --model-url '${{ inputs.model_url }}' --model-id '${{ inputs.model_id }}' --auth-header '${{ inputs.auth_header }}' --api-key-env CELA_EVAL_API_KEY --out eval-report.json"
-          if [ "${{ inputs.ab_skills }}" = "true" ]; then ARGS="$ARGS --ab-skills"; fi
-          python -m os_evals $ARGS
+          set -euo pipefail
+          args=(run --suite builtin
+            --model-url "$MODEL_URL"
+            --model-id "$MODEL_ID"
+            --auth-header "$AUTH_HEADER"
+            --api-key-env CELA_EVAL_API_KEY
+            --out eval-report.json)
+          if [ "$AB_SKILLS" = "true" ]; then args+=(--ab-skills); fi
+          # Safe to echo: every argument is non-secret by construction — the
+          # key travels only through $CELA_EVAL_API_KEY, and argparse receives
+          # the *name* of that variable, never its value.
+          echo "running: python -m os_evals ${args[*]}"
+          python -m os_evals "${args[@]}"
       - name: Upload report
+        # Always: even a failed run (A/B regression, unreachable endpoint)
+        # produces the report that explains why.
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: eval-report
           path: eval-report.json
+          if-no-files-found: warn
