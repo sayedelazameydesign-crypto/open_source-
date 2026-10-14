@@ -28,6 +28,7 @@ pip install "mcp-arena[github,agents]"   # github preset + LangChain bridge; quo
 
 ```python
 import os
+# yes: "presents" — the literal directory name in the published package, not a typo here
 from mcp_arena.presents.github import GithubMCPServer
 from mcp_arena.agent import make_mcp_agent
 
@@ -40,7 +41,8 @@ server = GithubMCPServer(token=os.environ["GITHUB_TOKEN"])  # or no-arg: reads $
 - Requires **Python 3.12+** (package metadata: `Requires-Python >= 3.12`); the package is Alpha-status on PyPI.
 - The `github` extra installs only the PyGithub-backed preset (`pygithub>=2.8,<3`). The **`agents` extra is what makes `make_mcp_agent` importable** (it pulls in `langchain` + `langchain-mcp-adapters`) — installing `[github]` alone fails at import with `ModuleNotFoundError: No module named 'langchain_core'`.
 - Always **quote the pip spec** (`"mcp-arena[github]"`) so zsh does not glob the brackets.
-- The package directory is `mcp_arena/presents/` (singular "presents" — there is no `mcp_arena/presets/`); both imports above were exercised against the 0.4.1 wheel.
+- The package directory is **literally named `presents`** — that is the published package's own spelling, **not a typo in this document**, and there is no `mcp_arena/presets/`. Do not "fix" it to `presets`: the import fails with `ModuleNotFoundError: No module named 'mcp_arena.presets'`. Both imports above were exercised against the 0.4.1 wheel.
+- **Check caveat (kept visible on purpose):** the import probes behind these notes ran under Python 3.11.2 in a sandbox without 3.12, installed with `pip --ignore-requires-python`. That establishes which module paths exist in the 0.4.1 wheel; it does not claim 3.11 runtime support. The package's own requirement stands: Python 3.12+.
 
 ---
 
