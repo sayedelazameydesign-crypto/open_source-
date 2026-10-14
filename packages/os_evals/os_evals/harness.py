@@ -48,6 +48,7 @@ class EvalCase(BaseModel):
 
 class CaseResult(BaseModel):
     skill_id: str | None = None
+    skill_status: str | None = None
     skill_injected: bool = False
     skill_learned: bool = False
     id: str
@@ -96,9 +97,16 @@ def compare_reports(baseline: EvalReport, skilled: EvalReport) -> dict[str, Any]
 
     total = max(1, skilled.total)
     injected = [r for r in skilled.results if r.skill_injected]
+    # Explicit definitions (ADR-0010) — these three measure different things:
+    #   hit_rate   = tasks that found a pre-existing candidate at run start
+    #   reuse_rate = tasks that actually reused an *active* existing skill
+    #   learn_rate = tasks that produced a new/updated card
+    # A first-ever task therefore scores learn=1, hit=reuse=0 by design.
     return {
         "skill_hit_rate": round(len(injected) / total, 4),
-        "skill_reuse_rate": round(len(injected) / total, 4),
+        "skill_reuse_rate": round(
+            sum(int(r.skill_status == "active") for r in injected) / total, 4
+        ),
         "skill_learn_rate": round(sum(int(r.skill_learned) for r in skilled.results) / total, 4),
         # Proxy, not a judge: an injected skill on a failed case is a
         # *suspected* false injection; the true rate needs human/LLM review.
@@ -132,6 +140,7 @@ class EvalRunner:
                 id=case.id,
                 suite=case.suite,
                 skill_id=state.metadata.get("skill_id"),
+                skill_status=state.metadata.get("skill_status"),
                 skill_injected=bool(state.metadata.get("skill_id")),
                 skill_learned=bool(state.metadata.get("learned_skill_id")),
                 passed=case.checker.check(text),

@@ -101,6 +101,7 @@ class Platform(BaseModel):
                 used_skill_id = skill.skill_id
                 self.last_skill_id = skill.skill_id
                 state.metadata["skill_id"] = skill.skill_id
+                state.metadata["skill_status"] = skill.status
                 state.metadata["skill_match"] = score
                 await stream.publish(
                     Event(

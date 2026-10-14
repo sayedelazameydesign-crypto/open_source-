@@ -24,7 +24,42 @@ import copy
 import re
 from typing import Any
 
+from pydantic import BaseModel, Field
+
 from os_skills.types import SkillInput
+
+
+class BoundContext(BaseModel):
+    """Explicit value provenance for composition (ADR-0010).
+
+    A child skill is fed from three distinct layers, and every input on the
+    card declares which layer it binds from (``SkillInput.source``):
+
+    * ``task_inputs`` — harvested from the original user task wording;
+    * ``parent_bound`` — values the parent actually filled into its own
+      template at injection time (the resolved layer, not the raw task);
+    * ``parent_locals`` — values derived while the parent executed
+      (outputs, computed results) that no task wording ever contained.
+    """
+
+    task_inputs: dict[str, str] = Field(default_factory=dict)
+    parent_bound: dict[str, str] = Field(default_factory=dict)
+    parent_locals: dict[str, str] = Field(default_factory=dict)
+
+    def lookup(self, inp: SkillInput) -> str | None:
+        pool = {
+            "task": self.task_inputs,
+            "parent": self.parent_bound,
+            "local": self.parent_locals,
+        }.get(inp.source, self.task_inputs)
+        if inp.name in pool:
+            return pool[inp.name]
+        # Cross-layer fallback by name only, provenance stays recorded.
+        for fallback in (self.parent_bound, self.parent_locals, self.task_inputs):
+            if inp.name in fallback:
+                return fallback[inp.name]
+        return None
+
 
 _NUMBER_RE = re.compile(r"\b\d+(?:\.\d+)?\b")
 _STRING_RE = re.compile(r"'([^'\n]{2,})'|\"([^\"\n]{2,})\"")
@@ -173,6 +208,42 @@ def fill_steps(
             for inp in inputs:
                 if inp.name in filled:
                     out = out.replace(inp.placeholder, filled[inp.name])
+            return out
+        if isinstance(value, dict):
+            return {k: _sub(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [_sub(v) for v in value]
+        return value
+
+    return _sub(rendered), filled
+
+
+def fill_steps_from_context(
+    steps: list[dict[str, Any]], inputs: list[SkillInput], context: BoundContext
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """Fill child templates from a :class:`BoundContext`, with validation.
+
+    Each input binds from its declared ``source`` layer; values failing
+    type/constraint validation are refused exactly as in :func:`fill_steps`.
+    """
+    filled: dict[str, str] = {}
+    for inp in inputs:
+        candidate = context.lookup(inp)
+        if candidate is None:
+            candidate = inp.original_value
+        if validate_value(inp, candidate):
+            filled[inp.name] = candidate
+    rendered = copy.deepcopy(steps)
+
+    def _sub(value: Any) -> Any:
+        if isinstance(value, str):
+            out = value
+            for inp in inputs:
+                if inp.name in filled:
+                    out = out.replace(inp.placeholder, filled[inp.name])
+                    out = out.replace("{{parent." + inp.name + "}}", filled[inp.name])
+                    out = out.replace("{{task." + inp.name + "}}", filled[inp.name])
+                    out = out.replace("{{local." + inp.name + "}}", filled[inp.name])
             return out
         if isinstance(value, dict):
             return {k: _sub(v) for k, v in value.items()}

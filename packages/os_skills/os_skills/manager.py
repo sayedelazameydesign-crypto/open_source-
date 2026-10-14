@@ -51,6 +51,7 @@ class SkillManager:
 
     # -- retrieval / injection ---------------------------------------------
     def find_relevant(self, task: str) -> tuple[Skill, float] | None:
+        self._expire_untried_probation()
         self._auto_revive_stale_quarantine()
         ranked = self.retriever.find(task, top_k=1)
         return ranked[0] if ranked else None
@@ -77,6 +78,7 @@ class SkillManager:
             return skill
         skill.status = "probationary" if probation else "candidate"
         skill.consecutive_successes = 0
+        skill.probationary_entered_at = time.time() if probation else None
         skill.requires_approval = True
         self.store.save_skill(skill)
         return skill
@@ -99,6 +101,25 @@ class SkillManager:
             ):
                 self.revive(skill.skill_id)
 
+    def _expire_untried_probation(self, *, probation_days: float = 30.0) -> None:
+        """Probation is a trial, not a parking lot (two separate timers).
+
+        ``probationary_entered_at`` governs the trial window;
+        ``last_outcome_at`` governs only confidence decay. A probationary
+        skill never attempted within the window is deprecated — it did not
+        earn retention. A sequence of probation successes is only counted
+        inside this window; a failure breaks it immediately (-> quarantine).
+        """
+        now = time.time()
+        for skill in self.store.list_skills():
+            if skill.status != "probationary" or skill.probationary_entered_at is None:
+                continue
+            entered = skill.probationary_entered_at
+            attempted = skill.last_outcome_at is not None and skill.last_outcome_at >= entered
+            if not attempted and now - entered > probation_days * 86400:
+                skill.status = "deprecated"
+                self.store.save_skill(skill)
+
     # -- permissions ---------------------------------------------------------
     def expand_permissions(
         self, skill_id: str, tools: list[str], *, approved: bool, approved_by: str = "hitl"
@@ -114,8 +135,15 @@ class SkillManager:
         scopes = sorted({tool_scope(t) for t in tools})
         skill.allowed_tools = sorted(set(skill.allowed_tools) | set(tools))
         skill.tool_scopes = sorted(set(skill.tool_scopes) | set(scopes))
+        import uuid
+
         skill.permission_grants.append(
-            PermissionGrant(tools=tools, scopes=scopes, approved_by=approved_by)
+            PermissionGrant(
+                grant_id=f"grant_{uuid.uuid4().hex[:8]}",
+                tools=tools,
+                scopes=scopes,
+                approved_by=approved_by,
+            )
         )
         skill.version += 1  # anomalous change: snapshotted in skill_versions
         self.store.save_skill(skill)
@@ -150,7 +178,12 @@ class SkillManager:
         return parent
 
     def record_composite_outcome(
-        self, parent_id: str, child_outcomes: dict[str, bool], *, tokens_used: int = 0
+        self,
+        parent_id: str,
+        child_outcomes: dict[str, bool],
+        *,
+        tokens_used: int = 0,
+        parent_success: bool | None = None,
     ) -> Skill | None:
         """Score children individually; a child failure taxes the parent.
 
@@ -164,8 +197,13 @@ class SkillManager:
         if self.store.get_skill(parent_id) is None:
             return None
         failed = sum(1 for ok in child_outcomes.values() if not ok)
-        updated = self.record_outcome(parent_id, success=(failed == 0), tokens_used=tokens_used)
-        if updated is not None and child_outcomes and failed:
+        # Parent success = the *overall task* succeeded, which is not the
+        # same as "every child succeeded". The child-failure tax applies
+        # only when the parent succeeded (a fragile parent); a failed
+        # parent already records its failure — no double punishment.
+        succeeded = (failed == 0) if parent_success is None else parent_success
+        updated = self.record_outcome(parent_id, success=succeeded, tokens_used=tokens_used)
+        if updated is not None and child_outcomes and failed and succeeded:
             updated.confidence_penalty = round(
                 updated.confidence_penalty + failed / len(child_outcomes), 4
             )
@@ -205,7 +243,42 @@ class SkillManager:
         return skill
 
     def rollback(self, skill_id: str) -> Skill | None:
-        return self.store.rollback(skill_id)
+        """Restore card *behaviour* — never its permission ledger.
+
+        Grants are security decisions kept outside card versions: a
+        rollback neither re-opens a revoked grant nor revokes a live one.
+        """
+        current = self.store.get_skill(skill_id)
+        restored = self.store.rollback(skill_id)
+        if restored is None or current is None:
+            return restored
+        live_grants = current.permission_grants
+        if [g.grant_id for g in live_grants] != [g.grant_id for g in restored.permission_grants]:
+            restored.permission_grants = live_grants
+            granted_tools = {t for g in live_grants for t in g.tools}
+            granted_scopes = {sc for g in live_grants for sc in g.scopes}
+            restored.allowed_tools = sorted(set(restored.allowed_tools) | granted_tools)
+            restored.tool_scopes = sorted(set(restored.tool_scopes) | granted_scopes)
+            self.store.save_skill(restored)
+        return restored
+
+    def revoke_permission(self, skill_id: str, grant_id: str) -> Skill | None:
+        """The only way a grant dies: explicitly, by id, never via rollback."""
+        skill = self.store.get_skill(skill_id)
+        if skill is None:
+            return None
+        removed = [g for g in skill.permission_grants if g.grant_id == grant_id]
+        if not removed:
+            return skill
+        skill.permission_grants = [g for g in skill.permission_grants if g.grant_id != grant_id]
+        removed_tools = {t for g in removed for t in g.tools}
+        remaining_tools = {t for g in skill.permission_grants for t in g.tools}
+        skill.allowed_tools = sorted(
+            (set(skill.allowed_tools) - removed_tools) | remaining_tools | set(skill.tools)
+        )
+        skill.version += 1
+        self.store.save_skill(skill)
+        return skill
 
     def list_versions(self, skill_id: str) -> list[Skill]:
         return self.store.list_versions(skill_id)

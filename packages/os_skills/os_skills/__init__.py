@@ -9,7 +9,12 @@ from os_skills.composition import (
 from os_skills.extractor import SkillExtractor
 from os_skills.injector import SkillInjector, build_skill_guidance
 from os_skills.manager import SkillManager, skill_tools
-from os_skills.parameterize import fill_steps, parameterize_steps
+from os_skills.parameterize import (
+    BoundContext,
+    fill_steps,
+    fill_steps_from_context,
+    parameterize_steps,
+)
 from os_skills.retriever import SkillRetriever
 from os_skills.store import (
     InMemorySkillStore,
@@ -21,6 +26,7 @@ from os_skills.store import (
 from os_skills.types import Skill, SkillInput
 
 __all__ = [
+    "BoundContext",
     "CompositionError",
     "InMemorySkillStore",
     "PostgresSkillStore",
@@ -35,6 +41,7 @@ __all__ = [
     "build_skill_guidance",
     "detect_cycle",
     "fill_steps",
+    "fill_steps_from_context",
     "parameterize_steps",
     "skill_as_tools",
     "skill_store_from_url",

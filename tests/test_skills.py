@@ -9,6 +9,7 @@ from os_tools.local_ai import LocalAIEngine
 
 from os_skills import (
     InMemorySkillStore,
+    Skill,
     SkillManager,
     SQLiteSkillStore,
     skill_store_from_url,
@@ -237,7 +238,89 @@ def test_composition_cycle_detection_and_child_penalty() -> None:
     manager.store.save_skill(b)
 
     before = manager.store.get_skill(parent.skill_id)
-    manager.record_composite_outcome(parent.skill_id, {a.skill_id: True, b.skill_id: False})
+    manager.record_composite_outcome(
+        parent.skill_id, {a.skill_id: True, b.skill_id: False}, parent_success=True
+    )
     after = manager.store.get_skill(parent.skill_id)
     assert after is not None and before is not None
     assert after.confidence_penalty > before.confidence_penalty
+
+
+def test_horizon_is_short_for_thin_evidence() -> None:
+    import math
+
+    thin = Skill(skill_id="s1", name="thin", description="d", success_count=1)
+    thin.last_outcome_at = 1_000_000.0
+    # 25 days later: a 1-trial candidate should have substantially decayed.
+    assert thin._recency(1_000_000.0 + 25 * 86400) < math.exp(-25 / 50)
+
+
+def test_probation_expires_untried_and_grants_survive_rollback() -> None:
+    manager = _manager()
+    skill = manager.learn_from_run(_completed_run())
+    assert skill is not None
+    updated = manager.expand_permissions(skill.skill_id, ["browser_navigate"], approved=True)
+    grant_id = updated.permission_grants[0].grant_id
+    assert grant_id
+
+    # Behaviour rollback must not touch the permission ledger.
+    updated.description = "behaviour change"
+    updated.version += 1
+    manager.store.save_skill(updated)
+    restored = manager.rollback(skill.skill_id)
+    assert restored is not None and restored.description != "behaviour change"
+    assert [g.grant_id for g in restored.permission_grants] == [grant_id]
+
+    revoked = manager.revoke_permission(skill.skill_id, grant_id)
+    assert revoked is not None and revoked.permission_grants == []
+
+    # Probation that is never tried expires to deprecated.
+    for _ in range(3):
+        manager.record_outcome(skill.skill_id, success=False)
+    revived = manager.revive(skill.skill_id)
+    assert revived is not None and revived.probationary_entered_at is not None
+    revived.probationary_entered_at -= 31 * 86400
+    revived.last_outcome_at = revived.probationary_entered_at - 3600  # nothing tried since entry
+    manager.store.save_skill(revived)
+    manager.find_relevant("anything at all")
+    assert manager.store.get_skill(skill.skill_id).status == "deprecated"
+
+
+def test_child_penalty_only_when_parent_succeeds() -> None:
+    from os_skills import Skill as _Skill
+
+    manager = _manager()
+    a = manager.learn_from_run(_completed_run())
+    b = _Skill(skill_id="skill_c", name="C", description="third", tools=["python_execute"])
+    manager.store.save_skill(b)
+    assert a is not None
+    parent = manager.learn_composite(_completed_run("compose task"), [a.skill_id, b.skill_id])
+    assert parent is not None
+    # Parent failed overall: failure recorded, but NO extra confidence tax.
+    manager.record_composite_outcome(
+        parent.skill_id, {a.skill_id: True, b.skill_id: False}, parent_success=False
+    )
+    after_fail = manager.store.get_skill(parent.skill_id)
+    assert after_fail is not None and after_fail.confidence_penalty == 0.0
+    # Parent succeeded despite a child failure: fragile parent gets taxed.
+    manager.record_composite_outcome(
+        parent.skill_id, {a.skill_id: True, b.skill_id: False}, parent_success=True
+    )
+    after_fragile = manager.store.get_skill(parent.skill_id)
+    assert after_fragile is not None and after_fragile.confidence_penalty > 0.0
+
+
+def test_bound_context_layers() -> None:
+    from os_skills.parameterize import fill_steps_from_context
+    from os_skills.types import SkillInput
+
+    from os_skills import BoundContext
+
+    inp = SkillInput(
+        name="limit", placeholder="{{limit}}", original_value="10", kind="number", source="parent"
+    )
+    steps = [{"title": "t", "tool": "python_execute", "args": {"code": "print(range({{limit}}))"}}]
+    ctx = BoundContext(task_inputs={"limit": "5"}, parent_bound={"limit": "42"})
+    filled_steps, filled = fill_steps_from_context(steps, [inp], ctx)
+    assert filled["limit"] == "42"  # resolved parent layer wins over raw task
+    assert "42" in filled_steps[0]["args"]["code"]

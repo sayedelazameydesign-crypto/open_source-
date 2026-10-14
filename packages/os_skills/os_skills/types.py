@@ -17,13 +17,20 @@ class SkillInput(BaseModel):
     placeholder: str  # e.g. "{{limit}}"
     original_value: str
     kind: str = "string"  # number | string
+    source: str = "task"  # task | parent | local — where the value binds from
     input_type: str = "str"  # int | float | str | path | url
     constraints: dict[str, Any] = Field(default_factory=dict)  # min/max/pattern
 
 
 class PermissionGrant(BaseModel):
-    """An approved, recorded expansion of a skill's tool permissions."""
+    """An approved, recorded expansion of a skill's tool permissions.
 
+    Grants are a security ledger, not card behaviour: ``rollback`` never
+    re-opens a revoked grant and never revokes a live one; only
+    ``revoke_permission(grant_id)`` changes this list.
+    """
+
+    grant_id: str = ""
     tools: list[str]
     scopes: list[str] = Field(default_factory=list)
     approved_by: str = "hitl"
@@ -56,6 +63,7 @@ class Skill(BaseModel):
     requires_approval: bool = False
     dependencies: list[str] = Field(default_factory=list)  # composed child skill_ids
     consecutive_successes: int = 0
+    probationary_entered_at: float | None = None
     confidence_penalty: float = 0.0
     uses: int = 0
     total_tokens: int = 0
@@ -107,10 +115,12 @@ class Skill(BaseModel):
         if self.last_outcome_at is None:
             return 0.5
         age_days = max(0.0, (now - self.last_outcome_at) / 86400.0)
-        # Adaptive horizon: proven skills decay slower. A quarterly ritual
-        # with 10 successes gets ~100 days, not the daily-skill 30.
+        # Adaptive horizon, short where evidence is thin: a one-trial
+        # candidate must fade in ~24 days (it is the thing to doubt most),
+        # while proven skills earn a longer memory.
+        # trials=1 -> ~24d, trials=10 -> ~50d, trials=100 -> ~83d.
         trials = self.success_count + self.failure_count
-        window_days = 30.0 * (1.0 + math.log1p(trials))
+        window_days = 14.0 + 15.0 * math.log1p(trials)
         return math.exp(-age_days / window_days)
 
     def search_text(self) -> str:

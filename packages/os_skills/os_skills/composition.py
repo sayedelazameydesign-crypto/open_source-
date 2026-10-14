@@ -80,7 +80,7 @@ def skill_as_tools(manager: Any) -> list[Any]:
     """
     from os_tools.registry import Tool
 
-    from os_skills.parameterize import fill_steps
+    from os_skills.parameterize import BoundContext, fill_steps_from_context
 
     tools: list[Any] = []
     for skill in manager.list_skills():
@@ -89,8 +89,27 @@ def skill_as_tools(manager: Any) -> list[Any]:
         validate_composition(manager.store, skill)
 
         def _make(child: Skill):
-            def _invoke(task: str = "") -> dict[str, Any]:
-                steps, filled = fill_steps(child.steps_template, child.inputs, task)
+            def _invoke(
+                task: str = "",
+                parent_bound: dict[str, str] | None = None,
+                parent_locals: dict[str, str] | None = None,
+            ) -> dict[str, Any]:
+                # Children bind from the parent's *resolved* layer first
+                # (BoundContext), not by re-reading the raw task wording.
+                context = BoundContext(
+                    task_inputs={},
+                    parent_bound=parent_bound or {},
+                    parent_locals=parent_locals or {},
+                )
+                if task:
+                    from os_skills.parameterize import _task_values
+
+                    numbers, strings = _task_values(task)
+                    pool = numbers + strings
+                    context.task_inputs = {
+                        inp.name: pool[i] for i, inp in enumerate(child.inputs) if i < len(pool)
+                    }
+                steps, filled = fill_steps_from_context(child.steps_template, child.inputs, context)
                 return {
                     "skill_id": child.skill_id,
                     "status": child.status,
