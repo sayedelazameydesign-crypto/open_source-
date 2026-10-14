@@ -76,10 +76,13 @@ def test_tickets_are_single_use_expiring_and_hashed_at_rest(tmp_path) -> None:
 def test_run_store_from_url_rejects_unimplemented_backends_loudly() -> None:
     assert isinstance(run_store_from_url(None), InMemoryRunStore)
     assert isinstance(run_store_from_url("memory://"), InMemoryRunStore)
-    with pytest.raises(RuntimeError, match="not implemented"):
-        run_store_from_url("postgres://localhost/cela")
-    with pytest.raises(RuntimeError, match="not implemented"):
+    from os_server.storage import PostgresRunStore
+
+    assert isinstance(run_store_from_url("postgres://localhost/cela"), PostgresRunStore)
+    with pytest.raises(RuntimeError, match="not a full RunStore"):
         run_store_from_url("redis://localhost:6379/0")
+    with pytest.raises(RuntimeError, match="CELA_POSTGRES_URL"):
+        run_store_from_url("distributed://")
 
 
 async def test_runtime_recovers_finished_run_after_restart(tmp_path, factory) -> None:

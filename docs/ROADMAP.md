@@ -21,7 +21,7 @@
 | `cela_use_browser` (`/cela/v1` + `CelaBrowser`) | ✅ | `test_cela_api.py` (50) |
 | محرك الذكاء المحلي (`LocalAIEngine` + `/api/*` + `/cela/v1/*`) | ✅ | `test_local_ai.py` (15) |
 
-**المجموع: 375 اختبارًا، 0 فشل، دون مفاتيح API ودون شبكة.**
+**المجموع: 382 اختبارًا، 0 فشل، دون مفاتيح API ودون شبكة.**
 
 CI أخضر على Python 3.11 / 3.12 / 3.13 (Lint + Test + Smoke-test):
 <https://github.com/sayedelazameydesign-crypto/open_source-/actions>
@@ -54,22 +54,22 @@ CI أخضر على Python 3.11 / 3.12 / 3.13 (Lint + Test + Smoke-test):
 
 ## 🔲 المرحلة 4 — التوسع الأفقي
 
-- [ ] `EventBus` خلف Redis Streams أو NATS (الواجهة الحالية تسمح بذلك دون تغيير الوكلاء).
+- [x] أحداث خلف **Redis Streams** وتذاكر على Redis ضمن `DistributedRunStore` (‏ADR-0006) — دون تغيير الوكلاء؛ مُختبَر بمضاعفة Redis وDBAPI محقون، والتشغيل الحي متعدد النسخ يحتاج خدمتين حقيقيتين.
 - [x] مؤشر استئناف تسلسلي (`Event.seq`) بدل `replay(after_ts)` المعتمد على `ts`
       (ADR-0002): `?after_seq=N` على النقلين + إغلاق عند مؤشر منتهٍ بدل تعليق الاتصال،
       مُختبَر في `test_events.py` و`test_server.py` و`test_cela_api.py`.
 - [ ] **المتبقّي من البند أعلاه:** الترقيم يجب أن يصدر عن الناقل الخارجي نفسه عند
       الانتقال إلى Redis/NATS، وإلا تعارضت أرقام النسختين.
 - [x] مخزن تنفيذ خلف `RunStore` (‏ADR-0004): `SQLiteRunStore` دائم يعيد التشغيلات المنتهية بعد إعادة تشغيل الخادم (لقطات/أحداث `seq`/Artifacts/تذاكر مجزّأة)، والافتراضي يبقى داخل الذاكرة — `tests/test_storage.py`.
-- [ ] تنفيذ `RunStore` فوق Postgres + Redis للتوسع الأفقي الحقيقي متعدد النسخ (SQLite كاتب واحد).
+- [x] تنفيذ `RunStore` فوق Postgres + Redis (`PostgresRunStore`/`DistributedRunStore`، ‏ADR-0006) خلف `distributed://` وإضافة اختيارية `[distributed]`.
 - [ ] طابور مهام (Celery/Arq) لفصل API عن التنفيذ.
 - [x] **قيد معروف (خُفّف):** المقابض الحية ما زالت داخل العملية، لكن الحالات/الأحداث/Artifacts/التذاكر تُكتب عبر `RunStore`؛ مع `sqlite:///<path>` تنجو التشغيلات المنتهية من إعادة التشغيل. تعدد النسخ المتزامن ما زال يحتاج Postgres+Redis.
 
 ## 🔲 المرحلة 5 — التقييم المعياري
 
-- [ ] **GAIA** — مقعد اختبار متعدد الخطوات.
-- [ ] **SWE-bench / HumanEval** — دقة توليد الكود.
-- [ ] **OSWorld** — التفاعل مع واجهات شبيهة بنظام التشغيل.
+- [x] **إطار GAIA** — `os_evals` يقرأ JSONL بصيغة GAIA ويقيس نجاح/خطوات/توكنز/زمن؛ الأرقام الفعلية تحتاج الداتاست ونموذجًا حقيقيًا (`--model-url`).
+- [x] **إطار SWE-bench** — نفس الإطار يربط صفوف `instance_id/problem_statement`؛ الأرقام تحتاج الداتاست ونموذجًا حقيقيًا.
+- [ ] **OSWorld** — التفاعل مع واجهات شبيهة بنظام التشغيل. (خارج إطار `os_evals` الحالي.)
 - [ ] خط أساس قابل للمقارنة قبل/بعد كل تغيير في الموجه أو المخطط.
 
 ---

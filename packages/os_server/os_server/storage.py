@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -316,18 +317,319 @@ class SQLiteRunStore:
             self._conn.close()
 
 
+class PostgresRunStore:
+    """PostgreSQL store for multi-instance deployments (optional extra).
+
+    Requires ``pip install 'cela-use-browser[distributed]'``. The connection
+    is created lazily on first use, so constructing the store (or selecting
+    it by URL) never hides a missing driver behind a silent fallback: first
+    use raises a clear ``RuntimeError`` instead. SQL is written in the
+    dialect shared by PostgreSQL (``%s`` placeholders, ``ON CONFLICT``);
+    ``connection_factory`` is the test/injection seam.
+    """
+
+    def __init__(self, dsn: str | None = None, *, connection_factory: Any = None) -> None:
+        self.dsn = dsn
+        self._factory = connection_factory
+        self._conn: Any = None
+        self._lock = threading.RLock()
+        self._schema_ready = False
+
+    def _connection(self) -> Any:
+        if self._conn is None:
+            if self._factory is not None:
+                self._conn = self._factory()
+            else:
+                try:
+                    import psycopg
+                except ImportError:
+                    raise RuntimeError(
+                        "psycopg is not installed; run: pip install 'cela-use-browser[distributed]'"
+                    ) from None
+                self._conn = psycopg.connect(self.dsn) if self.dsn else psycopg.connect()
+            self._ensure_schema()
+        return self._conn
+
+    def _ensure_schema(self) -> None:
+        if self._schema_ready:
+            return
+        with self._lock:
+            cur = self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS run_meta("
+                "run_id TEXT PRIMARY KEY, mode TEXT, target_url TEXT, "
+                "status TEXT, created_at DOUBLE PRECISION)"
+            )
+            del cur
+            for ddl in (
+                "CREATE TABLE IF NOT EXISTS run_states("
+                "run_id TEXT PRIMARY KEY, state_json TEXT NOT NULL)",
+                "CREATE TABLE IF NOT EXISTS run_events(run_id TEXT NOT NULL, "
+                "seq INTEGER NOT NULL, event_json TEXT NOT NULL, PRIMARY KEY(run_id, seq))",
+                "CREATE TABLE IF NOT EXISTS run_artifacts(run_id TEXT NOT NULL, "
+                "filename TEXT NOT NULL, data_json TEXT NOT NULL, "
+                "PRIMARY KEY(run_id, filename))",
+                "CREATE TABLE IF NOT EXISTS ws_tickets(ticket_hash TEXT PRIMARY KEY, "
+                "run_id TEXT NOT NULL, expires_at DOUBLE PRECISION)",
+            ):
+                self._conn.execute(ddl)
+            self._conn.commit()
+            self._schema_ready = True
+
+    def _one(self, sql: str, params: tuple) -> Any:
+        with self._lock:
+            return self._connection().execute(sql, params).fetchone()
+
+    def _all(self, sql: str, params: tuple) -> list:
+        with self._lock:
+            return self._connection().execute(sql, params).fetchall()
+
+    def _write(self, sql: str, params: tuple) -> None:
+        with self._lock:
+            conn = self._connection()
+            conn.execute(sql, params)
+            conn.commit()
+
+    def save_run_meta(self, meta: RunMeta) -> None:
+        self._write(
+            "INSERT INTO run_meta VALUES(%s,%s,%s,%s,%s) ON CONFLICT(run_id) DO UPDATE SET "
+            "mode=EXCLUDED.mode, target_url=EXCLUDED.target_url, status=EXCLUDED.status",
+            (meta.run_id, meta.mode, meta.target_url, meta.status, meta.created_at),
+        )
+
+    def get_run_meta(self, run_id: str) -> RunMeta | None:
+        row = self._one(
+            "SELECT run_id, mode, target_url, status, created_at FROM run_meta WHERE run_id=%s",
+            (run_id,),
+        )
+        if row is None:
+            return None
+        return RunMeta(
+            run_id=row[0],
+            mode=row[1] or "auto",
+            target_url=row[2],
+            status=row[3] or "running",
+            created_at=row[4] or 0.0,
+        )
+
+    def has_run(self, run_id: str) -> bool:
+        return self.get_run_meta(run_id) is not None or self.get_state(run_id) is not None
+
+    def list_run_ids(self) -> list[str]:
+        return [
+            r[0]
+            for r in self._all(
+                "SELECT run_id FROM run_meta UNION SELECT run_id FROM run_states", ()
+            )
+        ]
+
+    def save_state(self, state: RunState) -> None:
+        self._write(
+            "INSERT INTO run_states VALUES(%s,%s) ON CONFLICT(run_id) "
+            "DO UPDATE SET state_json=EXCLUDED.state_json",
+            (state.run_id, state.model_dump_json()),
+        )
+        self._write(
+            "INSERT INTO run_meta(run_id, mode, status, created_at) VALUES(%s,%s,%s,%s) "
+            "ON CONFLICT(run_id) DO UPDATE SET status=EXCLUDED.status, mode=EXCLUDED.mode",
+            (state.run_id, state.mode, state.status.value, time.time()),
+        )
+
+    def get_state(self, run_id: str) -> RunState | None:
+        row = self._one("SELECT state_json FROM run_states WHERE run_id=%s", (run_id,))
+        return RunState.model_validate_json(row[0]) if row else None
+
+    def save_event(self, event: Event) -> None:
+        if not event.run_id or not event.seq:
+            return
+        with self._lock:
+            conn = self._connection()
+            conn.execute(
+                "INSERT INTO run_events VALUES(%s,%s,%s) ON CONFLICT(run_id, seq) DO NOTHING",
+                (event.run_id, event.seq, event.model_dump_json()),
+            )
+            conn.commit()
+
+    def list_events(self, run_id: str, *, after_seq: int = 0) -> list[Event]:
+        rows = self._all(
+            "SELECT event_json FROM run_events WHERE run_id=%s AND seq>%s ORDER BY seq",
+            (run_id, after_seq),
+        )
+        return [Event.model_validate_json(r[0]) for r in rows]
+
+    def last_seq(self, run_id: str) -> int:
+        row = self._one("SELECT COALESCE(MAX(seq),0) FROM run_events WHERE run_id=%s", (run_id,))
+        return int(row[0])
+
+    def save_artifact(self, run_id: str, filename: str, data: dict[str, Any]) -> None:
+        self._write(
+            "INSERT INTO run_artifacts VALUES(%s,%s,%s) ON CONFLICT(run_id, filename) "
+            "DO UPDATE SET data_json=EXCLUDED.data_json",
+            (run_id, filename, json.dumps(data, ensure_ascii=False)),
+        )
+
+    def get_artifact(self, run_id: str, filename: str) -> dict[str, Any] | None:
+        row = self._one(
+            "SELECT data_json FROM run_artifacts WHERE run_id=%s AND filename=%s",
+            (run_id, filename),
+        )
+        return json.loads(row[0]) if row else None
+
+    def list_artifacts(self, run_id: str) -> list[dict[str, Any]]:
+        return [
+            json.loads(r[0])
+            for r in self._all(
+                "SELECT data_json FROM run_artifacts WHERE run_id=%s ORDER BY filename", (run_id,)
+            )
+        ]
+
+    def save_ticket(self, ticket: str, run_id: str, expires_at: float) -> None:
+        self._write(
+            "INSERT INTO ws_tickets VALUES(%s,%s,%s) ON CONFLICT(ticket_hash) "
+            "DO UPDATE SET run_id=EXCLUDED.run_id, expires_at=EXCLUDED.expires_at",
+            (_ticket_key(ticket), run_id, expires_at),
+        )
+
+    def pop_ticket(self, ticket: str) -> StoredTicket | None:
+        key = _ticket_key(ticket)
+        row = self._one("SELECT run_id, expires_at FROM ws_tickets WHERE ticket_hash=%s", (key,))
+        if row is not None:
+            self._write("DELETE FROM ws_tickets WHERE ticket_hash=%s", (key,))
+        return StoredTicket(run_id=row[0], expires_at=row[1]) if row else None
+
+    def prune_tickets(self, now: float) -> None:
+        self._write("DELETE FROM ws_tickets WHERE expires_at<=%s", (now,))
+
+    def close(self) -> None:
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
+
+
+class DistributedRunStore:
+    """Postgres (durable records) + Redis Streams (events) / Redis (tickets).
+
+    This is the horizontal-scaling composition: any server instance can read
+    any run's state from Postgres, replay its event log from the Redis
+    Stream ``cela:run:{run_id}:events`` (entries deduplicated per ``seq``
+    with a companion key, since Streams have no unique constraint), and
+    consume a WS ticket minted by another instance (native TTL expiry).
+    Requires ``pip install 'cela-use-browser[distributed]'`` in production;
+    both clients are injectable for testing.
+    """
+
+    def __init__(
+        self, durable: Any, *, redis_client: Any = None, redis_url: str | None = None
+    ) -> None:
+        self.durable = durable
+        self._redis_client = redis_client
+        self.redis_url = redis_url
+
+    @property
+    def redis(self) -> Any:
+        if self._redis_client is None:
+            try:
+                import redis
+            except ImportError:
+                raise RuntimeError(
+                    "redis-py is not installed; run: pip install 'cela-use-browser[distributed]'"
+                ) from None
+            self._redis_client = redis.Redis.from_url(
+                self.redis_url or os.environ.get("CELA_REDIS_URL", "redis://localhost:6379/0"),
+                decode_responses=True,
+            )
+        return self._redis_client
+
+    # durable records delegate to Postgres
+    def save_run_meta(self, meta: RunMeta) -> None:
+        self.durable.save_run_meta(meta)
+
+    def get_run_meta(self, run_id: str) -> RunMeta | None:
+        return self.durable.get_run_meta(run_id)
+
+    def has_run(self, run_id: str) -> bool:
+        return self.durable.has_run(run_id)
+
+    def list_run_ids(self) -> list[str]:
+        return self.durable.list_run_ids()
+
+    def save_state(self, state: RunState) -> None:
+        self.durable.save_state(state)
+
+    def get_state(self, run_id: str) -> RunState | None:
+        return self.durable.get_state(run_id)
+
+    def save_artifact(self, run_id: str, filename: str, data: dict[str, Any]) -> None:
+        self.durable.save_artifact(run_id, filename, data)
+
+    def get_artifact(self, run_id: str, filename: str) -> dict[str, Any] | None:
+        return self.durable.get_artifact(run_id, filename)
+
+    def list_artifacts(self, run_id: str) -> list[dict[str, Any]]:
+        return self.durable.list_artifacts(run_id)
+
+    # events on Redis Streams
+    @staticmethod
+    def _stream(run_id: str) -> str:
+        return f"cela:run:{run_id}:events"
+
+    def save_event(self, event: Event) -> None:
+        if not event.run_id or not event.seq:
+            return
+        dedupe = f"cela:run:{event.run_id}:seq:{event.seq}"
+        if self.redis.setnx(dedupe, "1"):
+            self.redis.xadd(
+                self._stream(event.run_id),
+                {"seq": str(event.seq), "event": event.model_dump_json()},
+            )
+
+    def list_events(self, run_id: str, *, after_seq: int = 0) -> list[Event]:
+        entries = self.redis.xrange(self._stream(run_id))
+        events = [Event.model_validate_json(fields["event"]) for _id, fields in entries]
+        return sorted((e for e in events if e.seq > after_seq), key=lambda e: e.seq)
+
+    def last_seq(self, run_id: str) -> int:
+        entries = self.redis.xrange(self._stream(run_id))
+        return max((int(fields["seq"]) for _id, fields in entries), default=0)
+
+    # tickets on Redis with native expiry (hashed at rest, as everywhere)
+    def save_ticket(self, ticket: str, run_id: str, expires_at: float) -> None:
+        payload = StoredTicket(run_id=run_id, expires_at=expires_at).model_dump_json()
+        self.redis.set(f"cela:ticket:{_ticket_key(ticket)}", payload, pxat=int(expires_at * 1000))
+
+    def pop_ticket(self, ticket: str) -> StoredTicket | None:
+        raw = self.redis.getdel(f"cela:ticket:{_ticket_key(ticket)}")
+        return StoredTicket.model_validate_json(raw) if raw else None
+
+    def prune_tickets(self, now: float) -> None:
+        pass  # Redis expires tickets natively via pxat
+
+    def close(self) -> None:
+        self.durable.close()
+
+
 def run_store_from_url(url: str | None) -> RunStore:
     """Build a store from ``memory://`` / ``sqlite:///<path>`` / a bare path.
 
-    ``postgres://`` and ``redis://`` are recognised but rejected loudly:
-    silently downgrading them to memory would fake a durability guarantee.
+    ``postgres://`` selects :class:`PostgresRunStore`; ``distributed://``
+    (with ``CELA_POSTGRES_URL`` + ``CELA_REDIS_URL``) selects the Postgres +
+    Redis Streams composition. A bare ``redis://`` is rejected loudly:
+    silently downgrading it to memory would fake a durability guarantee.
     """
     if not url or url == "memory://":
         return InMemoryRunStore()
-    if url.startswith(("postgres://", "postgresql://", "redis://", "rediss://")):
+    if url.startswith(("postgres://", "postgresql://")):
+        return PostgresRunStore(url)
+    if url in {"distributed://", "distributed"}:
+        pg_url = os.environ.get("CELA_POSTGRES_URL")
+        if not pg_url:
+            raise RuntimeError("distributed:// requires CELA_POSTGRES_URL (and CELA_REDIS_URL)")
+        return DistributedRunStore(
+            PostgresRunStore(pg_url), redis_url=os.environ.get("CELA_REDIS_URL")
+        )
+    if url.startswith(("redis://", "rediss://")):
         raise RuntimeError(
-            f"run store backend {url.split('://', 1)[0]!r} is not implemented yet; "
-            "implement RunStore over Postgres/Redis or use sqlite:///<path>"
+            "Redis alone is not a full RunStore (states/artifacts need a durable store); "
+            "use distributed:// with CELA_POSTGRES_URL + CELA_REDIS_URL"
         )
     if url.startswith("sqlite:///"):
         return SQLiteRunStore(url[len("sqlite:///") :])
@@ -337,7 +639,9 @@ def run_store_from_url(url: str | None) -> RunStore:
 
 
 __all__ = [
+    "DistributedRunStore",
     "InMemoryRunStore",
+    "PostgresRunStore",
     "RunMeta",
     "RunStore",
     "SQLiteRunStore",

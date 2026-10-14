@@ -44,6 +44,10 @@ browser = [
 sandbox = [
     "e2b-code-interpreter>=1.5",
 ]
+distributed = [
+    "psycopg[binary]>=3.2",
+    "redis>=5.0",
+]
 ai = [
     "scikit-learn>=1.5",
     "spacy>=3.7",
@@ -66,6 +70,7 @@ packages = [
     "packages/os_tools/os_tools",
     "packages/os_orchestration/os_orchestration",
     "packages/os_server/os_server",
+    "packages/os_evals/os_evals",
 ]
 
 # --- Monorepo path setup: every package is importable without installation ---
@@ -81,6 +86,7 @@ pythonpath = [
     "packages/os_tools",
     "packages/os_orchestration",
     "packages/os_server",
+    "packages/os_evals",
     "packages/legacy/src",
 ]
 markers = [
@@ -91,7 +97,7 @@ filterwarnings = ["error::RuntimeWarning"]
 
 [tool.coverage.run]
 branch = true
-source = ["os_core", "os_agents", "os_tools", "os_orchestration", "os_server"]
+source = ["os_core", "os_agents", "os_tools", "os_orchestration", "os_server", "os_evals"]
 
 [tool.ruff]
 line-length = 100
