@@ -18,6 +18,7 @@ from os_server.runtime import (
     resolve_private_token,
     resolve_token,
 )
+from os_server.storage import InMemoryRunStore, RunStore, SQLiteRunStore, run_store_from_url
 
 __all__ = [
     "PRIVATE_API_PREFIX",
@@ -26,6 +27,9 @@ __all__ = [
     "PUBLIC_AI_API_PREFIX",
     "ApiRuntime",
     "CelaBrowser",
+    "InMemoryRunStore",
+    "RunStore",
+    "SQLiteRunStore",
     "build_demo_platform",
     "build_registry",
     "create_app",
@@ -35,5 +39,6 @@ __all__ = [
     "demo_egress_policy",
     "resolve_private_token",
     "resolve_token",
+    "run_store_from_url",
     "serve",
 ]

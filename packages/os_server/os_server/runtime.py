@@ -26,6 +26,7 @@ from os_tools.local_ai import LocalAIEngine
 from pydantic import BaseModel, ConfigDict
 
 from os_server.demo import demo_egress_policy
+from os_server.storage import RunMeta, RunStore, run_store_from_url
 
 PRODUCT_NAME: str = "cela_use_browser"
 PRODUCT_VERSION: str = "0.1.0"
@@ -99,7 +100,16 @@ def single_platform_factory(platform: Platform) -> PlatformFactory:
 
 
 class ApiRuntime:
-    """In-memory state shared by the platform routes, ``/cela/v1`` and :class:`CelaBrowser`."""
+    """State shared by the platform routes, ``/cela/v1`` and :class:`CelaBrowser`.
+
+    Live handles (task + bus) stay process-local by nature; final states,
+    events, artifacts and WS tickets are written through to ``store``
+    (in-memory by default, durable via ``store_url="sqlite:///<path>"``
+    or the ``CELA_RUN_STORE_URL`` environment variable). A restarted
+    process over the same durable store therefore keeps serving finished
+    runs: snapshots, artifact listings and ``after_seq`` replay all work
+    without the original live handle.
+    """
 
     def __init__(
         self,
@@ -108,6 +118,8 @@ class ApiRuntime:
         egress_policy: EgressPolicy | None = None,
         ws_ticket_ttl: float = DEFAULT_WS_TICKET_TTL,
         ai_engine: LocalAIEngine | None = None,
+        store: RunStore | None = None,
+        store_url: str | None = None,
     ) -> None:
         if ws_ticket_ttl <= 0:
             raise ValueError("ws_ticket_ttl must be positive")
@@ -122,6 +134,14 @@ class ApiRuntime:
         )
         self.ws_ticket_ttl: float = ws_ticket_ttl
         self.ai: LocalAIEngine = ai_engine if ai_engine is not None else LocalAIEngine()
+        self.store: RunStore = (
+            store
+            if store is not None
+            else run_store_from_url(store_url or os.environ.get("CELA_RUN_STORE_URL"))
+        )
+        # Live handles are inherently process-local; the dicts below are
+        # write-through caches kept for backwards compatibility, while the
+        # store is the durable record consulted after a restart.
         self.runs: dict[str, RunHandle] = {}
         self.states: dict[str, RunState] = {}
         self.artifacts: dict[str, dict[str, Any]] = {}
@@ -139,16 +159,22 @@ class ApiRuntime:
         run_platform = self.make_platform(mode, max_steps)
         bus = run_platform.make_bus(run_id)
 
-        async def _collect(event: Any) -> None:
+        def _collect(event: Any) -> None:
+            # Persist every event so `after_seq` replay survives a restart;
+            # events are keyed (run_id, seq) in the store, so a re-delivered
+            # event can never duplicate a cursor position.
+            self.store.save_event(event)
             if event.type is EventType.ARTIFACT:
                 self.artifacts.setdefault(run_id, {})[event.data["filename"]] = event.data
+                self.store.save_artifact(run_id, event.data["filename"], event.data)
 
         bus.subscribe(_collect)
         chosen_mode = run_platform.choose_mode(task)
-        run_task = asyncio.create_task(run_platform.run(task, run_id=run_id, bus=bus))
-        run_task.add_done_callback(
-            lambda _t: self.states.setdefault(run_id, self._final_state(_t, run_id))
+        self.store.save_run_meta(
+            RunMeta(run_id=run_id, mode=chosen_mode, target_url=target_url, status="running")
         )
+        run_task = asyncio.create_task(run_platform.run(task, run_id=run_id, bus=bus))
+        run_task.add_done_callback(lambda _t: self._persist_final_state(_t, run_id))
         handle = RunHandle(
             run_id=run_id,
             bus=bus,
@@ -162,13 +188,36 @@ class ApiRuntime:
     def get_handle(self, run_id: str) -> RunHandle | None:
         return self.runs.get(run_id)
 
+    def has_run(self, run_id: str) -> bool:
+        """True for live runs and for runs recovered from the store."""
+        return run_id in self.runs or self.store.has_run(run_id)
+
+    def stored_events(self, run_id: str, *, after_seq: int = 0) -> list[Any]:
+        return self.store.list_events(run_id, after_seq=after_seq)
+
+    def _persist_final_state(self, task: asyncio.Task[RunState], run_id: str) -> RunState:
+        state = self.states.get(run_id) or self._final_state(task, run_id)
+        self.states[run_id] = state
+        self.store.save_state(state)
+        return state
+
+    def _stored_snapshot(self, run_id: str) -> dict[str, Any] | None:
+        state = self.states.get(run_id) or self.store.get_state(run_id)
+        if state is None:
+            return None
+        self.states[run_id] = state
+        snap = state.snapshot()
+        meta = self.store.get_run_meta(run_id)
+        if meta is not None and meta.target_url is not None:
+            snap.setdefault("target_url", meta.target_url)
+        return snap
+
     def get_run_snapshot(self, run_id: str) -> dict[str, Any] | None:
         handle = self.runs.get(run_id)
         if handle is None:
-            return None
+            return self._stored_snapshot(run_id)
         if handle.task.done():
-            state = self.states.get(run_id) or self._final_state(handle.task, run_id)
-            self.states.setdefault(run_id, state)
+            state = self._persist_final_state(handle.task, run_id)
             snap = state.snapshot()
             if handle.target_url is not None:
                 snap.setdefault("target_url", handle.target_url)
@@ -185,7 +234,11 @@ class ApiRuntime:
 
     def list_runs(self) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
-        for run_id in self.runs:
+        seen: set[str] = set()
+        for run_id in [*self.runs, *self.store.list_run_ids()]:
+            if run_id in seen:
+                continue
+            seen.add(run_id)
             snap = self.get_run_snapshot(run_id)
             if snap is not None:
                 result.append(snap)
@@ -199,11 +252,20 @@ class ApiRuntime:
         """
         handle = self.runs.get(run_id)
         if handle is None:
-            return False
+            state = self.store.get_state(run_id)
+            return bool(
+                state is not None and state.is_terminal and after_seq >= self.store.last_seq(run_id)
+            )
         return handle.task.done() and after_seq >= handle.bus.last_seq
 
     async def sse_events(self, run_id: str, *, after_seq: int = 0) -> AsyncIterator[str]:
-        handle = self.runs[run_id]
+        handle = self.runs.get(run_id)
+        if handle is None:
+            # Recovered run: replay the durable log, then close — there is
+            # no live bus in this process to stream from.
+            for event in self.store.list_events(run_id, after_seq=after_seq):
+                yield f"data: {event.to_wire()}\n\n"
+            return
         if self.stream_exhausted(run_id, after_seq):
             return
         # Subscribe before the backlog is delivered: events published while the
@@ -215,23 +277,29 @@ class ApiRuntime:
                     break
 
     def issue_ws_ticket(self, run_id: str) -> dict[str, Any] | None:
-        if run_id not in self.runs:
+        if not self.has_run(run_id):
             return None
-        now = time.monotonic()
+        # Wall clock, not monotonic: a ticket minted just before a restart
+        # must keep its (short) TTL meaning in the new process. The store
+        # only ever sees the SHA-256 hash of the ticket.
+        now = time.time()
         self._prune_expired_tickets(now)
         ticket = secrets.token_urlsafe(24)
-        self.tickets[ticket] = WsTicket(run_id=run_id, expires_at=now + self.ws_ticket_ttl)
+        expires_at = now + self.ws_ticket_ttl
+        self.tickets[ticket] = WsTicket(run_id=run_id, expires_at=expires_at)
+        self.store.save_ticket(ticket, run_id, expires_at)
         return {"ticket": ticket, "run_id": run_id, "expires_in": self.ws_ticket_ttl}
 
     def consume_ws_ticket(self, ticket: str | None, run_id: str) -> bool:
         if not ticket:
             return False
-        now = time.monotonic()
+        now = time.time()
         self._prune_expired_tickets(now)
-        meta = self.tickets.pop(ticket, None)
-        if meta is None or meta.expires_at <= now:
+        self.tickets.pop(ticket, None)
+        stored = self.store.pop_ticket(ticket)
+        if stored is None or stored.expires_at <= now:
             return False
-        return secrets.compare_digest(meta.run_id, run_id)
+        return secrets.compare_digest(stored.run_id, run_id)
 
     def approve(self, run_id: str, tool_call_id: str, decision: ApprovalDecision) -> bool:
         handle = self.runs.get(run_id)
@@ -242,17 +310,23 @@ class ApiRuntime:
         return handle.platform.approver.answer(tool_call_id, decision)
 
     def get_artifact(self, run_id: str, filename: str) -> dict[str, Any] | None:
-        return self.artifacts.get(run_id, {}).get(filename)
+        cached = self.artifacts.get(run_id, {}).get(filename)
+        return cached if cached is not None else self.store.get_artifact(run_id, filename)
 
     def list_artifacts(self, run_id: str) -> list[dict[str, Any]] | None:
-        if run_id not in self.runs:
+        if not self.has_run(run_id):
             return None
-        return list(self.artifacts.get(run_id, {}).values())
+        cached = list(self.artifacts.get(run_id, {}).values())
+        return cached if cached else self.store.list_artifacts(run_id)
+
+    def close(self) -> None:
+        self.store.close()
 
     def _prune_expired_tickets(self, now: float) -> None:
         expired = [tok for tok, meta in self.tickets.items() if meta.expires_at <= now]
         for tok in expired:
             self.tickets.pop(tok, None)
+        self.store.prune_tickets(now)
 
     @staticmethod
     def _final_state(task: asyncio.Task[RunState], run_id: str) -> RunState:

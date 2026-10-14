@@ -213,7 +213,8 @@ class CelaBrowser:
         """Wait for ``run_id`` to complete without cancelling it on caller timeout."""
         handle = self.runtime.get_handle(run_id)
         if handle is None:
-            raise KeyError(run_id)
+            # Finished run recovered from the durable store after a restart.
+            return self.get_run(run_id)
         await asyncio.wait_for(asyncio.shield(handle.task), timeout=timeout)
         return self.get_run(run_id)
 
@@ -241,7 +242,7 @@ class CelaBrowser:
         return items
 
     def get_artifact(self, run_id: str, filename: str) -> dict[str, Any]:
-        if self.runtime.get_handle(run_id) is None:
+        if not self.runtime.has_run(run_id):
             raise KeyError(run_id)
         meta = self.runtime.get_artifact(run_id, filename)
         if meta is None:
@@ -506,7 +507,7 @@ def create_private_router(
     async def stream_run_events(
         run_id: str, after_seq: int = Query(default=0, ge=0)
     ) -> StreamingResponse:
-        if browser.runtime.get_handle(run_id) is None:
+        if not browser.runtime.has_run(run_id):
             raise HTTPException(404, "unknown run_id")
         return StreamingResponse(
             browser.runtime.sse_events(run_id, after_seq=after_seq),
