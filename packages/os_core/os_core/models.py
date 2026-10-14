@@ -88,7 +88,32 @@ class OpenAICompatModel(BaseModel):
     model_id: str = "Qwen/Qwen2.5-72B-Instruct"
     base_url: str = "http://localhost:8000/v1"
     api_key: str = "EMPTY"
+    # Secret handling: when ``api_key_env`` is set, the key is read from that
+    # environment variable at request time and never stored on the object,
+    # logged, or serialised. This is how CI injects a repository secret
+    # (e.g. APIDOG_ACCESS_TOKEN) without it ever appearing in code or chat.
+    api_key_env: str | None = None
+    auth_header: str = "Authorization"  # or "x-api-key" for gateways that use it
+    auth_prefix: str = "Bearer "
     timeout: float = 120.0
+    transport: Any = Field(default=None, exclude=True)
+
+    def _headers(self) -> dict[str, str]:
+        key = ""
+        if self.api_key_env:
+            import os
+
+            key = os.environ.get(self.api_key_env, "")
+            if not key:
+                raise RuntimeError(
+                    f"environment variable {self.api_key_env} is not set; "
+                    "inject the API key there (e.g. from a CI secret) — never in code"
+                )
+        else:
+            key = self.api_key
+        if self.auth_header.lower() == "authorization":
+            return {"Authorization": f"{self.auth_prefix}{key}"}
+        return {self.auth_header: key}
 
     async def complete(
         self,
@@ -110,10 +135,10 @@ class OpenAICompatModel(BaseModel):
             payload["tools"] = list(tools)
             payload["tool_choice"] = "auto"
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with httpx.AsyncClient(timeout=self.timeout, transport=self.transport) as client:
             resp = await client.post(
                 f"{self.base_url.rstrip('/')}/chat/completions",
-                headers={"Authorization": f"Bearer {self.api_key}"},
+                headers=self._headers(),
                 json=payload,
             )
             resp.raise_for_status()

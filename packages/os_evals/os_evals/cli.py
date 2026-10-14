@@ -24,14 +24,25 @@ def _demo_factory(mode: str, max_steps: int):
     return build_demo_platform_for(mode)
 
 
-def _real_factory(model_url: str, model_id: str):
+def _real_factory(
+    model_url: str,
+    model_id: str,
+    *,
+    api_key_env: str | None = None,
+    auth_header: str = "Authorization",
+):
     from os_core.models import OpenAICompatModel
     from os_orchestration.platform import build_platform
     from os_server.demo import build_registry
 
     def factory(mode: str, max_steps: int):
         registry, _guard, _browser = build_registry()
-        model = OpenAICompatModel(base_url=model_url, model_id=model_id)
+        model = OpenAICompatModel(
+            base_url=model_url,
+            model_id=model_id,
+            api_key_env=api_key_env,
+            auth_header=auth_header,
+        )
         return build_platform(model, registry=registry, mode=mode, max_steps=max_steps)
 
     return factory
@@ -45,6 +56,15 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--dataset", default=None, help="GAIA/SWE-bench-style JSONL")
     run.add_argument("--model-url", default=os.environ.get("CELA_EVAL_MODEL_URL"))
     run.add_argument("--model-id", default=os.environ.get("CELA_EVAL_MODEL_ID", ""))
+    run.add_argument(
+        "--api-key-env",
+        default=os.environ.get("CELA_EVAL_API_KEY_ENV", "CELA_EVAL_API_KEY"),
+        help="name of the environment variable holding the API key (injected "
+        "from a CI secret); the key value itself is never a CLI argument",
+    )
+    run.add_argument(
+        "--auth-header", default="Authorization", choices=["Authorization", "x-api-key"]
+    )
     run.add_argument("--out", default=None, help="write the JSON report here")
     run.add_argument(
         "--ab-skills",
@@ -72,7 +92,12 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
-        factory = _real_factory(args.model_url, args.model_id)
+        factory = _real_factory(
+            args.model_url,
+            args.model_id,
+            api_key_env=args.api_key_env,
+            auth_header=args.auth_header,
+        )
     elif args.dataset and not args.model_url:
         print(
             "error: dataset runs need a real model (--model-url); "
@@ -84,20 +109,21 @@ def main(argv: list[str] | None = None) -> int:
         factory = _demo_factory
 
     if args.ab_skills:
-        if args.model_url or args.dataset:
-            print("error: --ab-skills currently covers the offline demo suite", file=sys.stderr)
-            return 2
+        # A/B over whichever factory was selected above — offline demo or a
+        # real model via --model-url (key injected by environment, see
+        # --api-key-env). The skilled arm shares ONE SkillManager across all
+        # cases so learning accumulates exactly as it would in production.
         from os_tools.local_ai import LocalAIEngine
 
         from os_skills import InMemorySkillStore, SkillManager
 
         def skilled_factory(mode: str, max_steps: int):
-            platform = _demo_factory(mode, max_steps)
+            platform = factory(mode, max_steps)
             platform.skill_manager = shared_manager
             return platform
 
         shared_manager = SkillManager(InMemorySkillStore(), LocalAIEngine())
-        baseline = asyncio.run(EvalRunner(_demo_factory).run_suite(cases))
+        baseline = asyncio.run(EvalRunner(factory).run_suite(cases))
         skilled = asyncio.run(EvalRunner(skilled_factory).run_suite(cases))
         from os_evals.harness import compare_reports
 
