@@ -5,23 +5,23 @@
 | المكوّن | الحالة | الدليل |
 |---|---|---|
 | طبقة الأنواع المشتركة (Pydantic) | ✅ | `os_core/types.py` |
-| التوجيه المتكيّف + سقوف التكلفة | ✅ | `test_router.py` (14 اختبارًا) |
+| التوجيه المتكيّف + سقوف التكلفة | ✅ | `test_router.py` (15 اختبارًا) |
 | حواجز الحقن (عربي/إنجليزي) | ✅ | `test_guardrails.py` (20) |
 | HITL بأربعة مُقرِّرين | ✅ | `test_react.py`, `test_e2e.py` |
-| Event Bus + replay + snapshot | ✅ | `test_react.py`, `test_server.py` |
+| Event Bus + replay + تسليم بلا فجوة + مؤشر `seq` | ✅ | `test_events.py` (9), `test_react.py`, `test_server.py` |
 | حلقة ReAct كاملة | ✅ | `test_react.py` (13) |
 | PlanningFlow: DAG + توازٍ + إعادة تخطيط | ✅ | `test_flow.py` (22) |
 | كاسر الحلقات (سقوف + ركود + مراجع) | ✅ | `test_budget.py`, `test_reviewer.py` |
-| Sandbox حقيقي (rlimits + مهلة + netns) | ✅ | `test_code_exec.py` (12) |
-| حارس SSRF + DNS rebinding | ✅ | `test_ssrf.py` (26) |
+| Sandbox حقيقي (rlimits + مهلة + netns) | ✅ | `test_code_exec.py` (14) |
+| حارس SSRF + DNS rebinding | ✅ | `test_ssrf.py` (28) |
 | سياسة شبكة صريحة (allow-list + SSRF floor) | ✅ | `test_egress.py` (94) |
-| سلسلة fallback الثلاثية للمتصفح | ✅ | `test_browser.py` (13) |
+| سلسلة fallback الثلاثية للمتصفح | ✅ | `test_browser.py` (12) |
 | سجل أدوات بنمط MCP | ✅ | `test_e2e.py` |
-| REST + SSE + WebSocket + تذاكر WS | ✅ | `test_server.py` (30) |
-| `cela_use_browser` (`/cela/v1` + `CelaBrowser`) | ✅ | `test_cela_api.py` (49) |
+| REST + SSE + WebSocket + تذاكر WS + استئناف `after_seq` | ✅ | `test_server.py` (37) |
+| `cela_use_browser` (`/cela/v1` + `CelaBrowser`) | ✅ | `test_cela_api.py` (50) |
 | محرك الذكاء المحلي (`LocalAIEngine` + `/api/*` + `/cela/v1/*`) | ✅ | `test_local_ai.py` (15) |
 
-**المجموع: 345 اختبارًا، 0 فشل، دون مفاتيح API ودون شبكة.**
+**المجموع: 362 اختبارًا، 0 فشل، دون مفاتيح API ودون شبكة.**
 
 CI أخضر على Python 3.11 / 3.12 / 3.13 (Lint + Test + Smoke-test):
 <https://github.com/sayedelazameydesign-crypto/open_source-/actions>
@@ -55,6 +55,11 @@ CI أخضر على Python 3.11 / 3.12 / 3.13 (Lint + Test + Smoke-test):
 ## 🔲 المرحلة 4 — التوسع الأفقي
 
 - [ ] `EventBus` خلف Redis Streams أو NATS (الواجهة الحالية تسمح بذلك دون تغيير الوكلاء).
+- [x] مؤشر استئناف تسلسلي (`Event.seq`) بدل `replay(after_ts)` المعتمد على `ts`
+      (ADR-0002): `?after_seq=N` على النقلين + إغلاق عند مؤشر منتهٍ بدل تعليق الاتصال،
+      مُختبَر في `test_events.py` و`test_server.py` و`test_cela_api.py`.
+- [ ] **المتبقّي من البند أعلاه:** الترقيم يجب أن يصدر عن الناقل الخارجي نفسه عند
+      الانتقال إلى Redis/NATS، وإلا تعارضت أرقام النسختين.
 - [ ] مخزن تنفيذ دائم (Postgres) بدل القواميس في الذاكرة داخل `app.py`.
 - [ ] طابور مهام (Celery/Arq) لفصل API عن التنفيذ.
 - [ ] **قيد معروف:** `runs`/`states`/`artifacts` في `app.py` قواميس داخل العملية، فلا
@@ -113,7 +118,7 @@ CI أخضر على Python 3.11 / 3.12 / 3.13 (Lint + Test + Smoke-test):
 
 ### من المرحلة 4 ← الأفق (توسع أفقي)
 
-- [ ] `EventBus` خلف Redis Streams أو NATS + اختبار انقطاع وإعادة اتصال.
+- [ ] `EventBus` خلف Redis Streams أو NATS + اختبار انقطاع وإعادة اتصال عبر ناقلين (مؤشر الاستئناف التسلسلي مُنفَّذ محليًا؛ يلزم ترقيم الناقل نفسه).
 - [ ] عامل منفصل عن الـAPI مع سياسة انتظار صريحة، فلا يفشل تشغيل طويل لمجرد غياب المراقب البشري.
 - [ ] تشغيلان متزامنان عبر نسختين مختلفتين ينجحان في CI — اختبار إغلاق خطر الذاكرة.
 

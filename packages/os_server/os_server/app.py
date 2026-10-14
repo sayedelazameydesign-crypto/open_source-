@@ -6,6 +6,9 @@ Public platform endpoints (guarded by ``CELA_API_TOKEN`` / ``OS_API_TOKEN``):
 ``GET  /runs/{id}/events``      SSE stream — works through proxies that block WS
 ``POST /runs/{id}/ws-ticket``   mint a short-lived, single-use, run-scoped WS ticket
 ``WS   /ws/{id}``               live event stream (Bearer header or ``?ticket=``)
+
+Both event streams accept ``?after_seq=N`` to resume a disconnected client from
+the last sequence number it received (see ADR-0002).
 ``POST /runs/{id}/approve``     human-in-the-loop answer
 ``GET  /artifacts/{id}/{name}`` fetch an artifact for the right-hand pane
 ``GET  /health``                minimal public liveness check
@@ -27,12 +30,13 @@ from __future__ import annotations
 
 import json
 import secrets
+from contextlib import aclosing
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from os_core.events import EventType
+from os_core.events import EventType, replay_and_stream
 from os_core.hitl import ApprovalDecision
 from os_orchestration.platform import Platform
 from os_tools.egress import EgressPolicy
@@ -140,10 +144,14 @@ def create_app(
         return snap
 
     @app.get("/runs/{run_id}/events", dependencies=[Depends(require_api_auth)])
-    async def stream_events(run_id: str) -> StreamingResponse:
+    async def stream_events(
+        run_id: str, after_seq: int = Query(default=0, ge=0)
+    ) -> StreamingResponse:
         if rt.get_handle(run_id) is None:
             raise HTTPException(404, "unknown run_id")
-        return StreamingResponse(rt.sse_events(run_id), media_type="text/event-stream")
+        return StreamingResponse(
+            rt.sse_events(run_id, after_seq=after_seq), media_type="text/event-stream"
+        )
 
     @app.post("/runs/{run_id}/ws-ticket", dependencies=[Depends(require_api_auth)])
     async def create_ws_ticket(run_id: str) -> dict[str, Any]:
@@ -168,15 +176,23 @@ def create_app(
         if handle is None:
             await ws.close(code=4404)
             return
+        after_seq = 0
+        raw_cursor = ws.query_params.get("after_seq")
+        if raw_cursor is not None:
+            try:
+                after_seq = int(raw_cursor)
+            except ValueError:
+                after_seq = -1
+            if after_seq < 0:
+                await ws.close(code=4422)  # malformed resume cursor
+                return
         await ws.accept()
         try:
-            finished = False
-            for event in handle.bus.replay():
-                await ws.send_text(event.to_wire())
-                finished = finished or event.type is EventType.RUN_FINISHED
-            if finished:
-                return
-            with handle.bus.stream() as stream:
+            if rt.stream_exhausted(run_id, after_seq):
+                return  # nothing left to send; the finally block closes cleanly
+            # Subscribe before the backlog is delivered so a client that connects
+            # mid-run loses nothing between replay and live streaming.
+            async with aclosing(replay_and_stream(handle.bus, after_seq=after_seq)) as stream:
                 async for event in stream:
                     await ws.send_text(event.to_wire())
                     if event.type is EventType.RUN_FINISHED:

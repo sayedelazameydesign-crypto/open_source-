@@ -22,7 +22,7 @@ import json
 from collections.abc import Sequence
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from os_core.hitl import ApprovalDecision
@@ -503,10 +503,15 @@ def create_private_router(
             raise HTTPException(status_code=504, detail="timed out waiting for browse run") from exc
 
     @router.get("/runs/{run_id}/events")
-    async def stream_run_events(run_id: str) -> StreamingResponse:
+    async def stream_run_events(
+        run_id: str, after_seq: int = Query(default=0, ge=0)
+    ) -> StreamingResponse:
         if browser.runtime.get_handle(run_id) is None:
             raise HTTPException(404, "unknown run_id")
-        return StreamingResponse(browser.runtime.sse_events(run_id), media_type="text/event-stream")
+        return StreamingResponse(
+            browser.runtime.sse_events(run_id, after_seq=after_seq),
+            media_type="text/event-stream",
+        )
 
     @router.post("/runs/{run_id}/approve")
     async def approve_run(run_id: str, req: PrivateApproveRequest) -> dict[str, Any]:
