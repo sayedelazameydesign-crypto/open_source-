@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 
-> **466 اختبارًا ناجحًا · 0 فشل · دون مفاتيح API ودون شبكة.**
+> **597 اختبارًا ناجحًا · 0 فشل · دون مفاتيح API ودون شبكة.**
 
 ---
 
@@ -97,7 +97,7 @@ packages/
 ## الاختبار
 
 ```bash
-pytest -q          # 466 passed (1 اختبار مُعلَّق اختياريًا: psycopg)
+pytest -q          # 597 passed (1 اختبار مُعلَّق اختياريًا: psycopg)
 ruff check .       # All checks passed
 ruff format .      # تنسيق موحّد
 ```
@@ -155,8 +155,24 @@ python -c "from os_server.demo import build_registry; print(build_registry()[0].
 
 تسجَّل الأدوات `web_read`, `rss_read`, `github_repo`, `github_search` (بخطر `network`)
 و`reach_doctor` (فحص محلي بلا جلب). القنوات الأصلية تعمل بـ`httpx` وحدها بلا أي تثبيت
-خارجي؛ ومع `pip install -e ".[dev,server,reach]"` يُضاف محوّل Agent-Reach لقنواته
-الستة عشر (مرحلة 2، قيد التنفيذ). التفاصيل: [`docs/REACH_PLAN.md`](docs/REACH_PLAN.md).
+خارجي، وكل نداء — وكل قفزة إعادة توجيه — يمرّ على `EgressPolicy` فوق أرضية `SSRFGuard`.
+
+```bash
+cela reach list                    # الطبقتان: ما هو متاح ولماذا
+cela reach doctor                  # الصحة الكاملة (بلا جلب)
+cela reach enable github_search    # تفعيل قناة CLI — بعد تأكيد، ويكتب reach.toml (0600)
+cela reach run github_search "agents" --yes
+```
+
+**قنوات CLI (opt-in صريح):** مع `pip install -e ".[dev,server,reach]"` (Agent-Reach
+مثبَّت بـSHA من GitHub) تُضاف أوامر تعمل على المضيف — `gh`, `yt-dlp`, `bili`,
+`mcporter`, `twitter`, `rdt`. **هذه القنوات لا يمكن تقييدها بـ`EgressPolicy`**: البرنامج
+يفتح اتصالاته بنفسه. لذلك هي مغلقة افتراضيًا، تُفعَّل قناةً قناة، ترفض العمل داخل
+الصندوق المعزول (`CELA_SANDBOXED=1`)، وكل نداء يُسجَّل في تدقيق
+(`timestamp/user/channel/decision/exit_code/bytes_out/correlation_id` — والاستعلام
+كـ`sha256` وطول فقط، لا نصًّا). الأسطح: `GET /api/reach/channels`،
+`POST /api/reach/read|rss|github|cli/{channel}`، ونظيرها في `/cela/v1/reach/*` —
+برمز المصادقة نفسه لكل فضاء. التفاصيل: [`docs/REACH_PLAN.md`](docs/REACH_PLAN.md).
 
 ## حدود صادقة
 
@@ -165,9 +181,13 @@ python -c "from os_server.demo import build_registry; print(build_registry()[0].
 * `packages/web` هيكل موثّق فقط — الواجهة لم تُبنَ.
 * حالة التشغيل الحية داخل العملية افتراضيًا؛ مع `CELA_RUN_STORE_URL=sqlite:///<path>` (أو `--store-url`) تُحفظ الحالات والأحداث والـArtifacts والتذاكر (مجزّأة) بشكل دائم وتنجو التشغيلات المنتهية من إعادة التشغيل — لكن تعدد النسخ المتزامن ما زال يحتاج Postgres+Redis (ADR-0004).
 * مقاعد GAIA / SWE-bench / OSWorld غير مبنية؛ الطبقات جاهزة لكن لا أرقام بعد.
-* قنوات المحتوى تقرأ الإنترنت العام: `web_read`/`rss_read`/`github_*` تصل إلى أي مضيف
-  عام، وتُقيَّد بـ`CELA_REACH_ALLOW_HOSTS`؛ أما محوّل CLI (مرحلة 2) فلا يمكن تقييد
-  شبكته بالسياسة إطلاقًا — لذلك تفعيله لكل قناة وله أحداث تدقيق.
+* قنوات المحتوى الأصلية تقرأ الإنترنت العام، وتُقيَّد بـ`CELA_REACH_ALLOW_HOSTS`
+  وتُستثنى بـ`CELA_REACH_DENY_HOSTS`، ويمكن تضييقها لنشرٍ ما بـ`create_app(..., reach_policy=...)`.
+* **قنوات CLI تفلت من `EgressPolicy` بحكم طبيعتها** (عملية على المضيف تفتح شبكتها
+  بنفسها): الضوابط البديلة هي التفعيل الصريح لكل قناة، وإقرار منفصل للقنوات التي
+  تستعير جلستك (`CELA_REACH_CLI_ALLOW_AUTH`)، والرفض داخل الصندوق، والتدقيق الكامل
+  لكل نداء — لا حماية مزعومة لا تُنفَّذ. ومع ذلك، لا أرقام عن أدائها: القياس عبر
+  `os_evals` فقط (مرحلة 4).
 * لا استخراج كوكيز من متصفح المستخدم ولا قراءة إعدادات Agent-Reach، ولا عمليات كتابة
   (نشر/تعليق) — القراءة فقط.
 

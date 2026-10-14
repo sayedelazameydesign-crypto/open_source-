@@ -263,6 +263,67 @@ KNOWN_UPSTREAM_CHANNELS: tuple[str, ...] = (
 )
 
 
+def render_config(enabled: list[str], allow_auth: bool) -> str:
+    """The ``reach.toml`` body for *enabled* — comments explain the two gates."""
+    names = ", ".join(f'"{name}"' for name in enabled)
+    return (
+        "# Created by `cela reach enable`. Read at startup (and by the HTTP reach"
+        " surface).\n"
+        "#\n"
+        "# Channels listed here run host-side programs: they do NOT go through\n"
+        "# EgressPolicy and they do NOT run inside the sandbox. Each call is audited.\n"
+        "[cli_channels]\n"
+        f"enabled = [{names}]\n"
+        f"allow_auth = {'true' if allow_auth else 'false'}\n"
+    )
+
+
+def write_cli_config(
+    path: Path,
+    *,
+    enable: list[str] | None = None,
+    disable: list[str] | None = None,
+    allow_auth: bool | None = None,
+) -> tuple[list[str], bool]:
+    """Add/remove channels in the operator's config; return the new state.
+
+    Written atomically and owner-only (0600), and it refuses to write through a
+    symlink: a file that grants host-side execution should not be plantable by
+    anything but the operator. Only names that exist as specs are accepted, so a
+    typo cannot look like a successful enable.
+    """
+    enabled, auth, _note = load_cli_config(path)
+    current = list(enabled)
+    for name in enable or []:
+        if name not in CLI_CHANNEL_SPECS:
+            raise ValueError(
+                f"unknown channel '{name}'; known: {', '.join(sorted(CLI_CHANNEL_SPECS))}"
+            )
+        if name not in current:
+            current.append(name)
+    for name in disable or []:
+        if name in current:
+            current.remove(name)
+    if allow_auth is not None:
+        auth = allow_auth
+
+    if path.is_symlink():
+        raise ValueError(f"refusing to write through the symlink {path}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = render_config(current, auth)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+        os.chmod(tmp_name, 0o600)
+        os.replace(tmp_name, path)
+    except BaseException:  # never leave a half-written config behind
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_name)
+        raise
+    return current, auth
+
+
 def parse_channel_list(raw: str) -> list[str]:
     """Split an enablement list; ``*`` means every implemented channel."""
     names = [part.strip() for part in (raw or "").split(",") if part.strip()]
@@ -625,15 +686,38 @@ async def _default_runner(
                 truncated=True,
             )
         exit_code = await process.wait()
+        _close_transport(process)
     except TimeoutError:
         await _kill_and_reap(process)
         return CLIProcessResult(exit_code=None, timed_out=True)
+    except BaseException:
+        # Cancelled or failing caller: do not leave a host-side program running
+        # (or its transport open) just because nobody is waiting for the result.
+        if process.returncode is None:
+            _terminate(process)
+        _close_transport(process)
+        raise
     return CLIProcessResult(
         exit_code=exit_code,
         stdout=stdout_raw.decode("utf-8", errors="replace"),
         stderr=stderr_raw.decode("utf-8", errors="replace"),
         bytes_read=len(stdout_raw) + len(stderr_raw),
     )
+
+
+def _close_transport(process: Any) -> None:
+    """Release the subprocess transport before its loop goes away.
+
+    Without this, a transport that outlives the event loop is finalized at some
+    later, unrelated moment and raises "Event loop is closed" from ``__del__`` —
+    an unraisable exception that surfaces as a warning in whatever code happens
+    to trigger the collection. The asyncio API has no public close, so the
+    transport is closed directly.
+    """
+    transport = getattr(process, "_transport", None)
+    if transport is not None:
+        with contextlib.suppress(Exception):
+            transport.close()
 
 
 def _terminate(process: Any) -> None:
@@ -664,6 +748,7 @@ async def _kill_and_reap(process: Any, *, grace: float = 5.0) -> int | None:
     # The kill already happened: a slow reap must never turn into an error.
     with contextlib.suppress(Exception):
         await asyncio.wait_for(settle(), timeout=grace)
+    _close_transport(process)
     return process.returncode
 
 

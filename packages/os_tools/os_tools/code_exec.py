@@ -159,6 +159,22 @@ _NETNS_FLAGS = ("--net", "--map-root-user", "--fork", "--kill-child")
 
 
 @functools.lru_cache(maxsize=1)
+def _release_transport(proc: Any) -> None:
+    """Close a finished subprocess transport instead of leaving it to the GC.
+
+    An unclosed transport is finalized at an arbitrary later moment; if its
+    event loop has already closed, ``__del__`` raises "Event loop is closed" as
+    an unraisable exception, which surfaces as a warning inside whatever
+    unrelated code happens to trigger the collection. asyncio exposes no public
+    close, so the transport is closed directly and errors are ignored: this runs
+    on a path that has already produced its result.
+    """
+    transport = getattr(proc, "_transport", None)
+    if transport is not None:
+        with contextlib.suppress(Exception):
+            transport.close()
+
+
 def netns_unshare_available() -> bool:
     """Can this host *actually* create a network namespace?
 
@@ -256,6 +272,13 @@ class LocalSubprocessBackend(BaseModel):
                     status=ToolStatus.TIMEOUT,
                     error=f"execution exceeded {deadline}s and was killed",
                 )
+            finally:
+                # Every way out of this block — success, timeout, and the case
+                # that used to leak: the caller's task being cancelled mid-run,
+                # which left the child running and its transport unclosed.
+                if proc.returncode is None:
+                    proc.kill()
+                _release_transport(proc)
             elapsed = asyncio.get_running_loop().time() - started
 
             raw_out = stdout.decode(errors="replace")

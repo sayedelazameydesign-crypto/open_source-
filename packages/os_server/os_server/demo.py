@@ -97,10 +97,13 @@ def build_registry(
         from os_reach.adapters.cli import build_reach_layer
         from os_reach.tools import register_reach_tools
 
-        # build_reach_layer also reads the *CLI* switches (CELA_REACH_CLI_ENABLE,
-        # CELA_REACH_CLI_ALLOW_AUTH). With neither set the layer is inert and this
-        # is exactly the native-only wiring as before.
-        register_reach_tools(registry, reach=build_reach_layer(policy=policy))
+        # The native tier keeps its own public-internet policy (narrowable with
+        # CELA_REACH_ALLOW_HOSTS / CELA_REACH_DENY_HOSTS) — that is what makes
+        # enabling reach *not* a widening of the browser policy above. The CLI
+        # switches (CELA_REACH_CLI_ENABLE, CELA_REACH_CLI_ALLOW_AUTH) are read by
+        # build_reach_layer: with neither set the CLI half stays inert and this is
+        # the native-only wiring as before.
+        register_reach_tools(registry, reach=build_reach_layer())
     return registry, guard, browser
 
 
