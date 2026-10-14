@@ -112,7 +112,9 @@ class Platform(BaseModel):
                             type=EventType.LOG,
                             run_id=state.run_id,
                             data={
-                                "text": f"reusing learned skill {skill.skill_id} (match={score:.2f})",
+                                "text": (
+                                    f"reusing learned skill {skill.skill_id} (match={score:.2f})"
+                                ),
                                 "skill_id": skill.skill_id,
                                 "skill_match": score,
                             },
