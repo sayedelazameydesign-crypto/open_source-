@@ -80,6 +80,8 @@ GET /cela/v1/whoami  + الرمز الخاص (CELA_PRIVATE_API_TOKEN) → 200 {"
 | `POST /cela/v1/runs/{run_id}/approve` | إجابة طلب موافقة بشرية (HITL) | `200 {"delivered": bool}` أو `404` / `409` / `422` |
 | `GET /cela/v1/runs/{run_id}/artifacts` | قائمة المخرجات (بما فيها لقطات الشاشة) | `200 {"run_id": ..., "artifacts": [...]}` |
 | `GET /cela/v1/runs/{run_id}/artifacts/{filename}` | جلب مخرج معيّن بصيغة JSON | `200` أو `404` |
+| `GET /cela/v1/runs/{run_id}/outcome` | سطر السجل المسجَّل لتشغيل واحد | `200 LedgerEntry` أو `404` |
+| `GET /cela/v1/ledger?limit=N` | سجل نتائج التشغيلات: آخر `N` مدخل + الملخّص | `200` (`limit` بين 1 و500، وإلا `422`) |
 | `GET /cela/v1/ai/capabilities` | حالة محرك الذكاء المحلي (`local-cpu`) والمكتبات الاختيارية | `200` |
 | `POST /cela/v1/nlp/entities` | استخراج الكيانات والكلمات المفتاحية (عربي/إنجليزي) | `200` |
 | `POST /cela/v1/search/index` | فهرسة المستندات داخل مساحة أسماء (`namespace`) | `200` |
@@ -93,6 +95,9 @@ GET /cela/v1/whoami  + الرمز الخاص (CELA_PRIVATE_API_TOKEN) → 200 {"
 `GET /api/capabilities`, `POST /api/nlp/entities`, `POST /api/search/index`,
 `POST /api/search/semantic`, `POST /api/ml/analyze`, `POST /api/vision/analyze`,
 `POST /api/documents/ocr`, `POST /api/audio/transcribe` — مع مشاركة قاعدة المعرفة نفسها داخل `ApiRuntime.ai`.
+
+وعلى سطح المنصة نفسه يوجد `GET /ledger?limit=N` (برمز `CELA_API_TOKEN`) ويعيد التقرير
+ذاته الذي يعيده `/cela/v1/ledger`: **نفس ملف السجل، رمزان مختلفان، ولا خلط بينهما**.
 
 ---
 
@@ -121,4 +126,64 @@ snapshot = await browser.browse(
     mode="flow",
     wait=True,
 )
+
+# سجل النتائج: آخر 10 تشغيلات + الملخّص، وسطر تشغيل واحد
+report = browser.outcome_ledger(limit=10)  # {"ledger": {...}, "entries": [...], "summary": {...}}
+entry = browser.outcome_for_run(snapshot["run_id"])  # KeyError إن لم يُسجَّل
 ```
+
+---
+
+## 7. سجل نتائج التشغيل (Run-Outcome Ledger)
+
+`ApiRuntime` يملك سجلًا واحدًا (`os_core/ledger.py`) يمرّره إلى كل منصة يبدأ بها
+تشغيلًا، فالأسطح الثلاثة (REST، `/cela/v1`، `CelaBrowser`) تكتب في الملف نفسه:
+
+| الخاصية | القيمة |
+|---|---|
+| الموضع | `$CELA_LEDGER_PATH`، والافتراضي `.cela/ledger.jsonl` بجوار العملية |
+| التعطيل | `CELA_LEDGER_PATH=off` (أو `none` / `disabled` / `false` / `0` / سلسلة فارغة) |
+| متى يُكتب | في `finally` داخل `Platform.run` — لكل تنفيذ، بما فيه الفاشل والمقطوع |
+| الصيغة | JSON Lines: سطر واحد لكل تشغيل، مع `schema_version` و`seq` متزايد |
+| المتانة | `fsync` بعد كل سطر؛ سطر تالٍ يُتخطّى ويُعدّ (`corrupt_lines`) ولا يكسر القراءة |
+| عند تعطيله | `GET /ledger` يعيد `{"ledger": {"enabled": false}, "entries": [], "summary": null}` — القراءة ليست خطأ |
+
+```bash
+curl -H "Authorization: Bearer $CELA_API_TOKEN" \
+  "http://127.0.0.1:8080/ledger?limit=20"
+```
+
+```json
+{
+  "ledger": {"enabled": true, "path": ".cela/ledger.jsonl", "schema_version": 1, "entries": 1, "corrupt_lines": 0},
+  "entries": [{"seq": 1, "run_id": "run_96ea63e213", "mode": "react", "status": "completed",
+               "outcome": "success", "steps_used": 2, "tokens_used": 370, "tool_calls": 1,
+               "tool_failures": 0, "duration_ms": 33.691, "error": null}],
+  "summary": {"total": 1, "outcomes": {"success": 1, "failed": 0, "budget": 0, "aborted": 0},
+              "success_rate": 1.0, "duration_ms": {"p50": 33.691, "p95": 33.691, "max": 33.691}}
+}
+```
+
+القرار وسببه: [`adr/0014-run-outcome-ledger.md`](../adr/0014-run-outcome-ledger.md).
+
+## 9. أحداث مهمة (Events)
+
+يعرض هذا القسم الأحداث الداخلية الرئيسية التي تُصدرها المنصة أثناء دورة حياة التشغيل، ويستخدمها الواجهة الأمامية وعملاء Python.
+
+| الحدث | البيانات الرئيسية | الوصف |
+|---|---|---|
+| `run_started` | `data.task, data.mode, data.max_steps` | بداية مهمة جديدة |
+| `model_selected` | `data.model, data.role, data.reason, data.est_tokens, data.cost_units` | اختيار نموذج للتشغيل |
+| `plan_created` | `data.steps[].id, data.steps[].title, data.steps[].tool, data.steps[].args` | خطة خطوات تنفيذية (وضع PlanningFlow) |
+| `step_started` | `data.title, data.step` | شروع خطوة ما |
+| `tool_call` | `data.id, data.name, data.args` | استدعاء أداة قبل التنفيذ |
+| `tool_result` | `data.id, data.name, data.status, data.output, data.duration_ms` | نتيجة أداة بعد التنفيذ |
+| `artifact` | `data.kind, data.filename, data.mime_type, data.size` | خروج artefact (لقطات شاشة) |
+| `thought` | `data.text` | Thought من النموذج |
+| `browser_action` | `data.action, data.url, data.selector, data.x, data.y, data.step` | أحداث إجراءات المتصفح (goto, click, fill/type) |
+| `approval_requested` | `data.id, data.name, data.args, data.risk` | طلب موافقة بشرية (HITL) |
+| `approval_resolved` | `data.id, data.decision` | قرار الموافقة أو الرفض |
+| `run_finished` | `data.status, data.answer, data.reason, data.steps, data.tokens, data.budget` | انتهاء المهمة ونتيجة final answer |
+| `run_finished` *(مع `answer`) | مضاف حديثاً: `data.answer` يحتوي على النص النهائي للمهمة | |
+
+ملاحظة: الحقل `data.answer` في حدث `run_finished` تم إضافته مؤخراً ليحتوي على texto النهائي للمهمة بدلاً من `reason` فقط. يفضل استخدام `answer` للحصول على النص الكامل، و `reason` كملخص مختصر.

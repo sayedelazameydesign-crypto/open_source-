@@ -249,6 +249,23 @@ class CelaBrowser:
             raise KeyError(f"{run_id}/{filename}")
         return meta
 
+    # --- Run-outcome ledger -------------------------------------------------
+
+    def outcome_ledger(self, limit: int = 20) -> dict[str, Any]:
+        """Recent outcomes plus the aggregate summary of every recorded run.
+
+        ``{"ledger": {"enabled": False}, ...}`` when the ledger is disabled
+        (``CELA_LEDGER_PATH=off``) — reading history is never an error.
+        """
+        return self.runtime.ledger_report(limit=limit)
+
+    def outcome_for_run(self, run_id: str) -> dict[str, Any]:
+        """The ledger line for one run. Raises ``KeyError`` if it has none."""
+        entry = self.runtime.ledger_entry_for(run_id)
+        if entry is None:
+            raise KeyError(run_id)
+        return entry
+
     # --- Synchronous LocalAIEngine methods ----------------------------------
 
     def ai_capabilities(self) -> dict[str, Any]:
@@ -550,6 +567,21 @@ def create_private_router(
         except KeyError as exc:
             raise HTTPException(404, "no such artifact") from exc
         return Response(content=json.dumps(meta), media_type="application/json")
+
+    @router.get("/ledger")
+    async def run_outcome_ledger(
+        limit: int = Query(default=20, ge=1, le=500),
+    ) -> dict[str, Any]:
+        """The persisted outcome record: recent entries + aggregate summary."""
+        return browser.outcome_ledger(limit=limit)
+
+    @router.get("/runs/{run_id}/outcome")
+    async def run_outcome(run_id: str) -> dict[str, Any]:
+        """The single ledger line recorded for one run."""
+        try:
+            return browser.outcome_for_run(run_id)
+        except KeyError as exc:
+            raise HTTPException(404, "no recorded outcome for this run") from exc
 
     _register_ai_endpoints(router, browser.runtime.ai, capabilities_path="/ai/capabilities")
     return router

@@ -187,3 +187,50 @@ async def test_token_usage_is_accumulated(registry, bus, tool_response) -> None:
     )
     result = await make_agent(model, registry, bus).run("count tokens")
     assert result.run.tokens_used >= 150
+
+
+async def test_browser_action_maps_tool_names_to_canonical_actions(
+    browser_registry, browser_tool, bus, tool_response
+) -> None:
+    from os_agents.react import BROWSER_ACTIONS, browser_action
+
+    for tool_name, canonical in (
+        ("browser_navigate", "goto"),
+        ("browser_click", "click"),
+        ("browser_fill", "fill"),
+        ("browser_type", "type"),
+        ("browser_scroll", "scroll"),
+        ("browser_key", "key"),
+    ):
+        assert BROWSER_ACTIONS[tool_name] == canonical
+    await browser_tool.navigate("https://example.org/search")
+    r = await browser_action(browser_tool, "click", selector="#go")
+    assert r.metadata["action"] == "click"
+    assert isinstance(r.metadata["x"], int) and isinstance(r.metadata["y"], int)
+
+
+async def test_react_agent_passes_browser_action_x_y_and_finishes_with_data_answer(
+    browser_registry, bus, events, tool_response
+) -> None:
+    """End-to-end ReAct run that uses browser_click, records x,y, and surfaces
+    the finished answer via run.finished.data."""
+    call = ToolCall(name="browser_click", args={"selector": "#go"})
+    model = ScriptedModel(
+        script=[tool_response(call, content="clicking")],
+        final_content="done-clicked",
+    )
+    result = await make_agent(model, browser_registry, bus, max_steps=5).run(
+        "click search on example.org"
+    )
+    assert result.answer == "done-clicked"
+    assert result.run.status is RunStatus.COMPLETED
+    click_results = [r for r in result.run.results if r.tool_name == "browser_click"]
+    assert click_results, "expected a browser_click result"
+    meta = click_results[0].metadata
+    assert meta.get("action") == "click"
+    assert isinstance(meta.get("x"), int) and isinstance(meta.get("y"), int)
+    finished = [e for e in events if e.type is EventType.RUN_FINISHED]
+    assert finished
+    # The answer must be recoverable from the final run state after finish.
+    assert result.run.final_answer == "done-clicked"
+    assert finished[0].data.get("status") == RunStatus.COMPLETED.value

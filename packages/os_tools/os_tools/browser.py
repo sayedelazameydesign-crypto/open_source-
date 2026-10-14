@@ -28,6 +28,18 @@ from pydantic import BaseModel, Field, PrivateAttr
 
 SelectorStrategy = Literal["css", "text", "vision"]
 
+# Tool-name -> canonical action mapping used by browser_action().
+_BROWSER_ACTION_MAP: dict[str, str] = {
+    "browser_navigate": "goto",
+    "browser_goto": "goto",
+    "browser_click": "click",
+    "browser_fill": "fill",
+    "browser_type": "type",
+    "browser_scroll": "scroll",
+    "browser_key": "key",
+    "browser_press": "key",
+}
+
 
 class PageSnapshot(BaseModel):
     url: str
@@ -46,8 +58,32 @@ class BrowserBackend(Protocol):
     async def navigate(self, url: str) -> PageSnapshot: ...
     async def click(self, selector: str) -> PageSnapshot: ...
     async def fill(self, selector: str, value: str) -> PageSnapshot: ...
+    async def type(self, selector: str, text: str) -> PageSnapshot: ...
+    async def scroll(self, selector: str, dx: int = 0, dy: int = 0) -> PageSnapshot: ...
+    async def key(self, key: str, selector: str = "") -> PageSnapshot: ...
     async def snapshot(self) -> PageSnapshot: ...
     async def close(self) -> None: ...
+
+
+def _deterministic_center(
+    selector: str, *, width: int = 1280, height: int = 800
+) -> tuple[int, int]:
+    """Stable integer center point derived from the selector string.
+
+    Hashing the selector gives a reproducible (x, y) inside the viewport so the
+    fake backend's click/fill always report a concrete click location without
+    needing a real DOM layout.
+    """
+    import hashlib
+
+    digest = hashlib.sha256(selector.encode("utf-8")).digest()
+    # First 4 bytes -> x in [40, width-40], next 4 -> y in [40, height-40]
+    xi = int.from_bytes(digest[:4], "big", signed=False)
+    yi = int.from_bytes(digest[4:8], "big", signed=False)
+    margin = 40
+    x = margin + (xi % (width - 2 * margin))
+    y = margin + (yi % (height - 2 * margin))
+    return int(x), int(y)
 
 
 class FakeBrowser(BaseModel):
@@ -60,6 +96,7 @@ class FakeBrowser(BaseModel):
     current: PageSnapshot | None = None
     actions: list[str] = Field(default_factory=list)
     navigated: list[str] = Field(default_factory=list)
+    viewport: tuple[int, int] = (1280, 800)
 
     async def navigate(self, url: str) -> PageSnapshot:
         self.navigated.append(url)
@@ -83,11 +120,44 @@ class FakeBrowser(BaseModel):
         self.actions.append(f"fill:{selector}={value}")
         return self.current or PageSnapshot(url="about:blank")
 
+    async def type(self, selector: str, text: str) -> PageSnapshot:
+        self._bump(selector)
+        if self._should_fail(selector):
+            raise StaleElementError(f"selector '{selector}' did not resolve (DOM mutated)")
+        self.actions.append(f"type:{selector}={text}")
+        return self.current or PageSnapshot(url="about:blank")
+
+    async def scroll(self, selector: str, dx: int = 0, dy: int = 0) -> PageSnapshot:
+        self.actions.append(f"scroll:{selector}:{dx},{dy}")
+        return self.current or PageSnapshot(url="about:blank")
+
+    async def key(self, key: str, selector: str = "") -> PageSnapshot:
+        target = selector or "<document>"
+        self.actions.append(f"key:{target}:{key}")
+        return self.current or PageSnapshot(url="about:blank")
+
     async def snapshot(self) -> PageSnapshot:
         return self.current or PageSnapshot(url="about:blank")
 
     async def close(self) -> None:
         self.current = None
+
+    def bounding_box(self, selector: str) -> dict[str, int]:
+        """Deterministic element bounding box used to drive center coords."""
+        x, y = _deterministic_center(selector, width=self.viewport[0], height=self.viewport[1])
+        return {
+            "x": x - 32,
+            "y": y - 12,
+            "width": 64,
+            "height": 24,
+        }
+
+    def center(self, selector: str) -> tuple[int, int]:
+        """Integer (x, y) center of the deterministic bounding box."""
+        box = self.bounding_box(selector)
+        cx = box["x"] + box["width"] // 2
+        cy = box["y"] + box["height"] // 2
+        return int(cx), int(cy)
 
     def _bump(self, selector: str) -> None:
         self.attempts[selector] = self.attempts.get(selector, 0) + 1
@@ -110,6 +180,7 @@ class PlaywrightBrowser(BaseModel):
     _pw: Any = PrivateAttr(default=None)
     _browser: Any = PrivateAttr(default=None)
     _page: Any = PrivateAttr(default=None)
+    _last_center: tuple[int, int] | None = PrivateAttr(default=None)
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -140,17 +211,76 @@ class PlaywrightBrowser(BaseModel):
     async def click(self, selector: str) -> PageSnapshot:
         page = await self._ensure_page()
         try:
+            box = await page.locator(selector).first.bounding_box()
             await page.click(selector)
         except Exception as exc:
             raise StaleElementError(f"click failed for '{selector}': {exc}") from exc
+        if box is not None:
+            self._last_center = (
+                round(box["x"] + box["width"] / 2),
+                round(box["y"] + box["height"] / 2),
+            )
+        else:
+            self._last_center = None
         return await self._snapshot(page)
 
     async def fill(self, selector: str, value: str) -> PageSnapshot:
         page = await self._ensure_page()
         try:
+            box = await page.locator(selector).first.bounding_box()
             await page.fill(selector, value)
         except Exception as exc:
             raise StaleElementError(f"fill failed for '{selector}': {exc}") from exc
+        if box is not None:
+            self._last_center = (
+                round(box["x"] + box["width"] / 2),
+                round(box["y"] + box["height"] / 2),
+            )
+        else:
+            self._last_center = None
+        return await self._snapshot(page)
+
+    async def type(self, selector: str, text: str) -> PageSnapshot:
+        page = await self._ensure_page()
+        try:
+            loc = page.locator(selector).first
+            box = await loc.bounding_box()
+            await loc.press_sequentially(text)
+        except Exception as exc:
+            raise StaleElementError(f"type failed for '{selector}': {exc}") from exc
+        if box is not None:
+            self._last_center = (
+                round(box["x"] + box["width"] / 2),
+                round(box["y"] + box["height"] / 2),
+            )
+        else:
+            self._last_center = None
+        return await self._snapshot(page)
+
+    def center(self, selector: str) -> tuple[int, int] | None:
+        """Center of the last clicked/filled/typed element, or None if unknown."""
+        return self._last_center
+
+    async def scroll(self, selector: str, dx: int = 0, dy: int = 0) -> PageSnapshot:
+        page = await self._ensure_page()
+        try:
+            await page.evaluate(
+                "(args) => { const el = document.querySelector(args.s);"
+                " if (el) { el.scrollLeft += args.dx; el.scrollTop += args.dy; } }",
+                {"s": selector, "dx": dx, "dy": dy},
+            )
+        except Exception as exc:
+            raise StaleElementError(f"scroll failed for '{selector}': {exc}") from exc
+        return await self._snapshot(page)
+
+    async def key(self, key: str, selector: str = "") -> PageSnapshot:
+        page = await self._ensure_page()
+        try:
+            if selector:
+                await page.focus(selector)
+            await page.keyboard.press(key)
+        except Exception as exc:
+            raise StaleElementError(f"key failed for '{key}': {exc}") from exc
         return await self._snapshot(page)
 
     async def snapshot(self) -> PageSnapshot:
@@ -230,16 +360,22 @@ class BrowserTool(BaseModel):
                 status=ToolStatus.ERROR,
                 error=f"navigation to {url} failed: {exc}",
             )
-        return self._page_result("browser_navigate", page, note=f"navigated to {url}")
+        return self._page_result(
+            "browser_navigate",
+            page,
+            note=f"navigated to {url}",
+            action="goto",
+            metadata={"action": "goto", "url": url},
+        )
 
     async def act(self, action: str, selector: str, *, value: str = "") -> ToolResult:
-        """Click/fill with the full retry -> relocate -> vision chain."""
-        if action not in {"click", "fill"}:
+        """Click/fill/type with the full retry -> relocate -> vision chain."""
+        if action not in {"click", "fill", "type"}:
             return ToolResult(
                 tool_call_id="",
                 tool_name=f"browser_{action}",
                 status=ToolStatus.ERROR,
-                error=f"unsupported browser action '{action}' (supported: click, fill)",
+                error=f"unsupported browser action '{action}' (supported: click, fill, type)",
             )
         last_error = "unknown error"
         for attempt in range(1, self.policy.max_attempts + 1):
@@ -248,10 +384,26 @@ class BrowserTool(BaseModel):
                 self.history.append(
                     {"action": action, "selector": selector, "attempt": attempt, "strategy": "css"}
                 )
+                meta: dict[str, Any] = {
+                    "action": action,
+                    "selector": selector,
+                    "attempt": attempt,
+                    "strategy": "css",
+                }
+                # Backend may expose the last interaction's center coords.
+                center = getattr(self.backend, "center", None)
+                if callable(center) and action in {"click", "fill", "type"}:
+                    pt = center(selector)
+                    if pt is not None:
+                        cx, cy = pt
+                        meta["x"] = int(cx)
+                        meta["y"] = int(cy)
                 return self._page_result(
                     f"browser_{action}",
                     page,
                     note=f"{action} '{selector}' ok on attempt {attempt}",
+                    action=action,
+                    metadata=meta,
                 )
             except StaleElementError as exc:
                 last_error = str(exc)
@@ -272,10 +424,25 @@ class BrowserTool(BaseModel):
                             "original": selector,
                         }
                     )
+                    meta = {
+                        "action": action,
+                        "selector": relocated,
+                        "strategy": "text",
+                        "original": selector,
+                    }
+                    center = getattr(self.backend, "center", None)
+                    if callable(center) and action in {"click", "fill", "type"}:
+                        pt = center(relocated)
+                        if pt is not None:
+                            cx, cy = pt
+                            meta["x"] = int(cx)
+                            meta["y"] = int(cy)
                     return self._page_result(
                         f"browser_{action}",
                         page,
                         note=f"relocated '{selector}' -> '{relocated}' by accessible text",
+                        action=action,
+                        metadata=meta,
                     )
                 except StaleElementError as exc:
                     last_error = str(exc)
@@ -290,14 +457,29 @@ class BrowserTool(BaseModel):
             self.history.append(
                 {"action": action, "selector": selector, "strategy": "vision", "coords": coords}
             )
+            # Parse "x=412,y=318" if the vision function returns that format.
+            x_val: int | None = None
+            y_val: int | None = None
+            try:
+                for part in coords.replace(" ", "").split(","):
+                    k, v = part.split("=")
+                    if k == "x":
+                        x_val = int(float(v))
+                    elif k == "y":
+                        y_val = int(float(v))
+            except Exception:
+                x_val = y_val = None
             return ToolResult(
                 tool_call_id="",
                 tool_name=f"browser_{action}",
                 status=ToolStatus.SUCCESS,
                 output=f"vision fallback produced target '{coords}' for '{selector}'",
                 metadata={
+                    "action": action,
                     "strategy": "vision",
                     "coords": coords,
+                    "x": x_val,
+                    "y": y_val,
                     "css_error": last_error,
                     "url": snap.url,
                 },
@@ -309,7 +491,84 @@ class BrowserTool(BaseModel):
             status=ToolStatus.ERROR,
             error=f"selector '{selector}' failed after {self.policy.max_attempts} attempts "
             f"and both fallbacks: {last_error}",
-            metadata={"attempts": self.policy.max_attempts, "fallbacks_exhausted": True},
+            metadata={
+                "action": action,
+                "selector": selector,
+                "attempts": self.policy.max_attempts,
+                "fallbacks_exhausted": True,
+            },
+        )
+
+    async def scroll(self, selector: str, dx: int = 0, dy: int = 0) -> ToolResult:
+        try:
+            page = await self.backend.scroll(selector, dx=dx, dy=dy)
+        except Exception as exc:
+            return ToolResult(
+                tool_call_id="",
+                tool_name="browser_scroll",
+                status=ToolStatus.ERROR,
+                error=f"scroll failed on '{selector}': {exc}",
+                metadata={"action": "scroll", "selector": selector},
+            )
+        return self._page_result(
+            "browser_scroll",
+            page,
+            note=f"scrolled {selector} by dx={dx}, dy={dy}",
+            action="scroll",
+            metadata={"action": "scroll", "selector": selector, "dx": dx, "dy": dy},
+        )
+
+    async def key(self, key: str, selector: str = "") -> ToolResult:
+        try:
+            page = await self.backend.key(key, selector=selector)
+        except Exception as exc:
+            return ToolResult(
+                tool_call_id="",
+                tool_name="browser_key",
+                status=ToolStatus.ERROR,
+                error=f"key '{key}' failed: {exc}",
+                metadata={"action": "key", "key": key, "selector": selector},
+            )
+        return self._page_result(
+            "browser_key",
+            page,
+            note=f"pressed key '{key}'" + (f" on {selector}" if selector else ""),
+            action="key",
+            metadata={"action": "key", "key": key, "selector": selector},
+        )
+
+    async def browser_action(self, action: str, **kwargs: Any) -> ToolResult:
+        """Dispatch a canonical action name to the matching method.
+
+        Supported canonical actions: ``goto``, ``click``, ``fill``, ``type``,
+        ``scroll``, ``key``.  Tool names (e.g. ``browser_navigate``) are also
+        accepted for convenience.
+        """
+        canonical = _BROWSER_ACTION_MAP.get(action, action)
+        if canonical == "goto":
+            url = kwargs.get("url", "")
+            ssrf = kwargs.get("ssrf_check")
+            return await self.navigate(url, ssrf_check=ssrf)
+        if canonical == "click":
+            return await self.act("click", kwargs.get("selector", ""))
+        if canonical == "fill":
+            return await self.act("fill", kwargs.get("selector", ""), value=kwargs.get("value", ""))
+        if canonical == "type":
+            return await self.act("type", kwargs.get("selector", ""), value=kwargs.get("text", ""))
+        if canonical == "scroll":
+            return await self.scroll(
+                kwargs.get("selector", ""),
+                dx=int(kwargs.get("dx", 0)),
+                dy=int(kwargs.get("dy", 0)),
+            )
+        if canonical == "key":
+            return await self.key(kwargs.get("key", ""), selector=kwargs.get("selector", ""))
+        return ToolResult(
+            tool_call_id="",
+            tool_name=f"browser_{canonical}",
+            status=ToolStatus.ERROR,
+            error=f"unknown browser action '{action}'",
+            metadata={"action": action},
         )
 
     async def close(self) -> None:
@@ -321,6 +580,8 @@ class BrowserTool(BaseModel):
             return await self.backend.click(selector)
         if action == "fill":
             return await self.backend.fill(selector, value)
+        if action == "type":
+            return await self.backend.type(selector, value)
         raise ValueError(f"unsupported browser action '{action}'")
 
     def _relocate_by_text(self, selector: str) -> str | None:
@@ -335,7 +596,15 @@ class BrowserTool(BaseModel):
             return None
         return f"text={cleaned}"
 
-    def _page_result(self, tool_name: str, page: PageSnapshot, *, note: str = "") -> ToolResult:
+    def _page_result(
+        self,
+        tool_name: str,
+        page: PageSnapshot,
+        *,
+        note: str = "",
+        action: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> ToolResult:
         artifacts: list[Artifact] = []
         if page.screenshot_b64:
             artifacts.append(
@@ -355,6 +624,15 @@ class BrowserTool(BaseModel):
             )
             or "(no interactive elements)"
         )
+        meta: dict[str, Any] = {
+            "url": page.url,
+            "title": page.title,
+            "element_count": len(page.elements),
+        }
+        if action is not None:
+            meta["action"] = action
+        if metadata:
+            meta.update(metadata)
         return ToolResult(
             tool_call_id="",
             tool_name=tool_name,
@@ -362,7 +640,7 @@ class BrowserTool(BaseModel):
             output=f"{note}\nURL: {page.url}\nTitle: {page.title}\n"
             f"Interactive elements ({len(page.elements)}):\n{summary}",
             artifacts=artifacts,
-            metadata={"url": page.url, "title": page.title, "element_count": len(page.elements)},
+            metadata=meta,
         )
 
 
@@ -381,9 +659,25 @@ def browser_tools(tool: BrowserTool, *, ssrf_check: Callable[[str], Any] | None 
     async def _fill(selector: str, value: str) -> ToolResult:
         return await tool.act("fill", selector, value=value)
 
+    async def _type(selector: str, text: str) -> ToolResult:
+        return await tool.act("type", selector, value=text)
+
+    async def _scroll(selector: str, dx: int = 0, dy: int = 0) -> ToolResult:
+        return await tool.scroll(selector, dx=dx, dy=dy)
+
+    async def _key(key: str, selector: str = "") -> ToolResult:
+        return await tool.key(key, selector=selector)
+
     async def _snapshot() -> ToolResult:
         page = await tool.backend.snapshot()
-        return tool._page_result("browser_snapshot", page, note="snapshot of current page")
+        return tool._page_result(
+            "browser_snapshot", page, note="snapshot of current page", action="snapshot"
+        )
+
+    async def _action(action: str, **kwargs: Any) -> ToolResult:
+        if ssrf_check is not None and action in {"goto", "browser_navigate", "browser_goto"}:
+            kwargs["ssrf_check"] = ssrf_check
+        return await tool.browser_action(action, **kwargs)
 
     return [
         Tool(
@@ -412,7 +706,7 @@ def browser_tools(tool: BrowserTool, *, ssrf_check: Callable[[str], Any] | None 
         ),
         Tool(
             name="browser_fill",
-            description="Type a value into an input element.",
+            description="Type a value into an input element (replaces existing content).",
             parameters={
                 "type": "object",
                 "properties": {
@@ -425,10 +719,75 @@ def browser_tools(tool: BrowserTool, *, ssrf_check: Callable[[str], Any] | None 
             fn=_fill,
         ),
         Tool(
+            name="browser_type",
+            description="Append text into a focused element character-by-character.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "selector": {"type": "string"},
+                    "text": {"type": "string"},
+                },
+                "required": ["selector", "text"],
+            },
+            risk=RiskLevel.WRITE,
+            fn=_type,
+        ),
+        Tool(
+            name="browser_scroll",
+            description="Scroll an element by dx, dy pixels.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "selector": {"type": "string"},
+                    "dx": {"type": "integer", "default": 0},
+                    "dy": {"type": "integer", "default": 0},
+                },
+                "required": ["selector"],
+            },
+            risk=RiskLevel.READ_ONLY,
+            fn=_scroll,
+        ),
+        Tool(
+            name="browser_key",
+            description="Press a keyboard key, optionally scoped to a selector.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string"},
+                    "selector": {"type": "string"},
+                },
+                "required": ["key"],
+            },
+            risk=RiskLevel.WRITE,
+            fn=_key,
+        ),
+        Tool(
             name="browser_snapshot",
             description="Return the current page structure and a screenshot artifact.",
             parameters={"type": "object", "properties": {}},
             risk=RiskLevel.READ_ONLY,
             fn=_snapshot,
+        ),
+        Tool(
+            name="browser_action",
+            description=(
+                "Unified browser action dispatcher: goto | click | fill | type | scroll | key."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string"},
+                    "url": {"type": "string"},
+                    "selector": {"type": "string"},
+                    "value": {"type": "string"},
+                    "text": {"type": "string"},
+                    "key": {"type": "string"},
+                    "dx": {"type": "integer"},
+                    "dy": {"type": "integer"},
+                },
+                "required": ["action"],
+            },
+            risk=RiskLevel.WRITE,
+            fn=_action,
         ),
     ]

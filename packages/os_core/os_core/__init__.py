@@ -1,4 +1,4 @@
-"""os_core — shared types, model routing, guardrails, events, state."""
+"""os_core — shared types, model routing, guardrails, events, state, run ledger."""
 
 from __future__ import annotations
 
@@ -11,6 +11,14 @@ from os_core.hitl import (
     DenyApprover,
     PolicyApprover,
     QueueApprover,
+)
+from os_core.ledger import (
+    LedgerEntry,
+    LedgerError,
+    RunLedger,
+    RunOutcome,
+    outcome_for,
+    resolve_ledger,
 )
 from os_core.models import ChatModel, OpenAICompatModel, ScriptedModel
 from os_core.router import (
@@ -51,6 +59,8 @@ __all__ = [
     "EventBus",
     "EventType",
     "Guardrails",
+    "LedgerEntry",
+    "LedgerError",
     "Message",
     "ModelChoice",
     "ModelRegistry",
@@ -65,6 +75,8 @@ __all__ = [
     "ReviewVerdict",
     "RiskLevel",
     "RouterConfig",
+    "RunLedger",
+    "RunOutcome",
     "RunState",
     "RunStatus",
     "ScanReport",
@@ -78,5 +90,7 @@ __all__ = [
     "Usage",
     "__version__",
     "default_registry",
+    "outcome_for",
     "replay_and_stream",
+    "resolve_ledger",
 ]

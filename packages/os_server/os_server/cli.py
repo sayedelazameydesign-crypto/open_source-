@@ -7,6 +7,7 @@ python -m os_server.cli serve --demo --port 8080
 python -m os_server.cli reach list            # native + CLI channels, no fetching
 python -m os_server.cli reach enable gh_search --yes   # opt-in, writes reach.toml
 python -m os_server.cli reach doctor          # health of every channel
+python -m os_server.cli ledger --limit 20     # how did our runs end?
 """
 
 from __future__ import annotations
@@ -14,11 +15,17 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 import uuid
+from typing import Any
 
 from os_core.events import EventType
 from os_orchestration.platform import Platform
+
+LEDGER_HELP: str = (
+    "run-outcome ledger path; 'off' disables it (default: $CELA_LEDGER_PATH or .cela/ledger.jsonl)"
+)
 
 
 def _print_event(event) -> None:
@@ -53,6 +60,39 @@ def _print_event(event) -> None:
         print(f"  · {label}")
 
 
+def _print_ledger(report: dict[str, Any]) -> None:
+    """Human-readable rendering of :meth:`ApiRuntime.ledger_report`."""
+    ledger = report["ledger"]
+    if not ledger.get("enabled"):
+        print("ledger: disabled (set CELA_LEDGER_PATH, or pass --ledger <path>)")
+        return
+    print(f"ledger: {ledger['path']}  ({ledger['entries']} entries)")
+    for entry in report["entries"]:
+        duration = entry.get("duration_ms")
+        when = (entry.get("recorded_at") or "")[11:19]
+        line = (
+            f"  #{entry['seq']:<4} {when} {entry['run_id']:<16} {entry['mode']:<5} "
+            f"{entry['outcome']:<8} steps={entry['steps_used']:<3} "
+            f"tokens={entry['tokens_used']:<7} {f'{duration:.0f}ms' if duration else '-'}"
+        )
+        if entry.get("error"):
+            line += f"  {entry['error'][:60]}"
+        print(line)
+    summary = report.get("summary") or {}
+    outcomes = summary.get("outcomes") or {}
+    print(
+        f"  summary: total={summary.get('total', 0)} "
+        f"success={outcomes.get('success', 0)} failed={outcomes.get('failed', 0)} "
+        f"budget={outcomes.get('budget', 0)} aborted={outcomes.get('aborted', 0)} "
+        f"success_rate={summary.get('success_rate', 0.0):.2f}"
+    )
+    duration = summary.get("duration_ms") or {}
+    print(
+        f"  duration_ms: p50={duration.get('p50')} p95={duration.get('p95')} "
+        f"max={duration.get('max')}  corrupt_lines={summary.get('corrupt_lines', 0)}"
+    )
+
+
 async def _run(platform: Platform, task: str) -> int:
     from os_core.state import RunState
 
@@ -71,6 +111,10 @@ async def _run(platform: Platform, task: str) -> int:
         print(f"── artifacts: {', '.join(a.filename for a in result.artifacts)}")
     if result.final_answer:
         print(f"── answer:\n{result.final_answer}\n")
+    if platform.ledger is not None:
+        entry = platform.ledger.entry_for(result.run_id)
+        where = f"#{entry.seq} " if entry is not None else ""
+        print(f"── ledger: {where}{platform.ledger.path}")
     return 0 if result.status.value == "completed" else 1
 
 
@@ -246,6 +290,8 @@ def _reach_run(channel: str, query: str, *, assume_yes: bool) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from os_core.ledger import resolve_ledger
+
     parser = argparse.ArgumentParser(prog="os-platform", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -254,16 +300,23 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("task")
         p.add_argument("--demo", action="store_true", help="offline scripted model")
         p.add_argument("--max-steps", type=int, default=8)
+        p.add_argument("--ledger", default=None, help=LEDGER_HELP)
 
     s = sub.add_parser("serve", help="start the HTTP + WebSocket API")
     s.add_argument("--demo", action="store_true")
     s.add_argument("--host", default="0.0.0.0")
     s.add_argument("--port", type=int, default=8080)
+    s.add_argument("--ledger", default=None, help=LEDGER_HELP)
     s.add_argument(
         "--store-url",
         default=None,
         help="run store: sqlite:///<path> (default: memory; or CELA_RUN_STORE_URL)",
     )
+
+    g = sub.add_parser("ledger", help="print the run-outcome ledger")
+    g.add_argument("--ledger", default=None, help=LEDGER_HELP)
+    g.add_argument("--limit", type=int, default=20, help="how many recent runs to show")
+    g.add_argument("--json", action="store_true", dest="as_json", help="print raw JSON")
 
     reach = sub.add_parser("reach", help="content channels: list, doctor, enable, run (ADR-0013)")
     reach_sub = reach.add_subparsers(dest="reach_command", required=True)
@@ -285,6 +338,19 @@ def main(argv: list[str] | None = None) -> int:
     reach_run.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
 
     args = parser.parse_args(argv)
+
+    if args.command == "ledger":
+        ledger = resolve_ledger(args.ledger)
+        if ledger is None:
+            print("ledger: disabled (set CELA_LEDGER_PATH, or pass --ledger <path>)")
+            return 0
+        report = {"ledger": ledger.describe(), "entries": [], "summary": ledger.summary()}
+        report["entries"] = [e.model_dump() for e in ledger.entries(limit=args.limit)]
+        if args.as_json:
+            print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+        else:
+            _print_ledger(report)
+        return 0
 
     if args.command == "reach":
         if args.reach_command == "list":
@@ -309,6 +375,10 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 2
         private_token = resolve_private_token()
+        if args.ledger is not None:
+            # The server resolves its ledger from the environment, so an
+            # explicit --ledger (including 'off') is honoured by exporting it.
+            os.environ["CELA_LEDGER_PATH"] = args.ledger
         platform = build_demo_platform(mode="flow", interactive=True)
         print(f"serving on http://{args.host}:{args.port}")
         serve(
@@ -334,6 +404,7 @@ def main(argv: list[str] | None = None) -> int:
     mode = "flow" if args.command == "flow" else "react"
     platform = build_demo_platform(mode=mode)
     platform.config.max_steps = args.max_steps
+    platform.ledger = resolve_ledger(args.ledger)
     return asyncio.run(_run(platform, args.task))
 
 

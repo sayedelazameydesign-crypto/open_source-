@@ -140,3 +140,167 @@ async def test_snapshot_tool_shape() -> None:
     await tool.navigate("https://example.org/")
     page = await tool.backend.snapshot()
     assert page.title == "Home"
+
+
+def test_fake_browser_center_is_deterministic_int_pair(fake_browser: FakeBrowser) -> None:
+    x1, y1 = fake_browser.center("#go")
+    x2, y2 = fake_browser.center("#go")
+    assert isinstance(x1, int) and isinstance(y1, int)
+    assert (x1, y1) == (x2, y2)
+    assert 0 <= x1 <= fake_browser.viewport[0]
+    assert 0 <= y1 <= fake_browser.viewport[1]
+
+
+def test_fake_browser_different_selectors_get_different_centers(
+    fake_browser: FakeBrowser,
+) -> None:
+    assert fake_browser.center("#submit") != fake_browser.center("#cancel")
+
+
+async def test_click_returns_non_null_integer_coordinates(
+    browser_tool: BrowserTool,
+) -> None:
+    await browser_tool.navigate("https://example.org/search")
+    result = await browser_tool.act("click", "#go")
+    assert result.ok
+    assert isinstance(result.metadata.get("x"), int)
+    assert isinstance(result.metadata.get("y"), int)
+    assert 0 <= result.metadata["x"] <= 1280
+    assert 0 <= result.metadata["y"] <= 800
+
+
+async def test_fill_returns_non_null_integer_coordinates(
+    browser_tool: BrowserTool,
+) -> None:
+    await browser_tool.navigate("https://example.org/search")
+    result = await browser_tool.act("fill", "#q", value="hello")
+    assert result.ok
+    assert isinstance(result.metadata.get("x"), int)
+    assert isinstance(result.metadata.get("y"), int)
+
+
+@pytest.mark.parametrize(
+    "name,kwargs",
+    [
+        ("goto", {"url": "https://example.org/search"}),
+        ("browser_navigate", {"url": "https://example.org/search"}),
+        ("click", {"selector": "#go"}),
+        ("browser_click", {"selector": "#go"}),
+        ("fill", {"selector": "#q", "value": "v"}),
+        ("type", {"selector": "#q", "text": "v"}),
+        ("scroll", {"selector": "body", "dx": 0, "dy": 100}),
+        ("key", {"key": "Enter"}),
+    ],
+)
+async def test_browser_action_routes_every_action(
+    browser_tool: BrowserTool, name: str, kwargs: dict
+) -> None:
+    if name not in {"goto", "browser_navigate"}:
+        await browser_tool.navigate("https://example.org/search")
+    result = await browser_tool.browser_action(name, **kwargs)
+    assert result.ok
+    assert result.metadata["action"] in {"goto", "click", "fill", "type", "scroll", "key"}
+
+
+def test_browser_tools_registers_all_expected_action_names() -> None:
+    from os_tools.browser import browser_tools as make_tools
+
+    backend = FakeBrowser(pages={"https://example.org/": PageSnapshot(url="https://example.org/")})
+    tool = BrowserTool(backend=backend, policy=RetryPolicy(max_attempts=1, backoff=0.0))
+    names = {t.name for t in make_tools(tool)}
+    for expected in (
+        "browser_navigate",
+        "browser_click",
+        "browser_fill",
+        "browser_type",
+        "browser_scroll",
+        "browser_key",
+        "browser_snapshot",
+        "browser_action",
+    ):
+        assert expected in names
+
+
+class _MockLocator:
+    def __init__(self, box):
+        self._box = dict(box) if box is not None else None
+        self.first = self
+        self._clicked = False
+        self._filled_with = None
+        self._typed = None
+
+    async def bounding_box(self):
+        return dict(self._box) if self._box is not None else None
+
+    async def click(self):
+        self._clicked = True
+
+    async def fill(self, value):
+        self._filled_with = value
+
+    async def press_sequentially(self, text):
+        self._typed = text
+
+
+class _MockPage:
+    def __init__(self, url: str = "https://example.org"):
+        self.url = url
+        self._locators: dict[str, _MockLocator] = {}
+
+    def add_locator(self, selector: str, box) -> None:
+        self._locators[selector] = _MockLocator(box)
+
+    def locator(self, selector: str):
+        if selector not in self._locators:
+            self._locators[selector] = _MockLocator(
+                {"x": 10.0, "y": 20.0, "width": 80.0, "height": 30.0}
+            )
+        return self._locators[selector]
+
+    async def goto(self, url, wait_until=None):
+        self.url = url
+
+    async def click(self, selector):
+        await self.locator(selector).click()
+
+    async def fill(self, selector, value):
+        await self.locator(selector).fill(value)
+
+    async def content(self):
+        return "<html></html>"
+
+    async def title(self):
+        return "mock"
+
+    async def evaluate(self, *_a, **_k):
+        return []
+
+    async def screenshot(self):
+        return b"\x89PNG"
+
+
+async def test_playwright_browser_click_records_bounding_box_center() -> None:
+    """Mocked locator verifies click() reads bounding_box and rounds to ints."""
+    from os_tools.browser import PlaywrightBrowser
+
+    pb = PlaywrightBrowser()
+    page = _MockPage()
+    page.add_locator("#btn", {"x": 100.0, "y": 200.0, "width": 60.0, "height": 30.0})
+    # center -> (130, 215)
+    pb._page = page  # bypasses _ensure_page which would launch real chromium
+    snap = await pb.click("#btn")
+    assert pb.center("#btn") == (130, 215)
+    assert isinstance(snap, PageSnapshot)
+
+
+async def test_playwright_browser_fill_records_bounding_box_center() -> None:
+    from os_tools.browser import PlaywrightBrowser
+
+    pb = PlaywrightBrowser()
+    page = _MockPage()
+    page.add_locator("#q", {"x": 0.0, "y": 0.0, "width": 201.0, "height": 41.0})
+    pb._page = page
+    await pb.fill("#q", "hi")
+    cx, cy = pb.center("#q")  # type: ignore[misc]
+    assert isinstance(cx, int) and isinstance(cy, int)
+    assert 0 <= cx <= 201 and 0 <= cy <= 41
