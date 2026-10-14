@@ -12,6 +12,19 @@ upstream project's 16-platform coverage behind the same contract and the same
 policy — see ``docs/REACH_PLAN.md`` and ADR-0013.
 """
 
+from os_reach.adapters.cli import (
+    CLI_CHANNEL_DISABLED,
+    CLI_CHANNEL_SANDBOXED,
+    CLI_CHANNEL_SPECS,
+    KNOWN_UPSTREAM_CHANNELS,
+    AgentReachBridge,
+    CLIChannelAdapter,
+    CLILayer,
+    CLIProcessResult,
+    ReachResult,
+    build_reach_layer,
+)
+from os_reach.audit import ReachAuditEntry, ReachAuditLog, query_fingerprint
 from os_reach.contract import (
     ChannelHealth,
     ReachChannel,
@@ -38,28 +51,42 @@ from os_reach.security import (
     scrub_credentials,
     truncate,
 )
-from os_reach.tools import reach_tools, register_reach_tools
+from os_reach.tools import cli_reach_tools, reach_tools, register_reach_tools
 
 __all__ = [
+    "CLI_CHANNEL_DISABLED",
+    "CLI_CHANNEL_SANDBOXED",
+    "CLI_CHANNEL_SPECS",
+    "KNOWN_UPSTREAM_CHANNELS",
+    "AgentReachBridge",
+    "CLIChannelAdapter",
+    "CLILayer",
+    "CLIProcessResult",
     "ChannelHealth",
     "FeedEntry",
     "FetchResult",
     "GitHubChannel",
+    "ReachAuditEntry",
+    "ReachAuditLog",
     "ReachChannel",
     "ReachFetcher",
     "ReachRegistry",
     "ReachReport",
+    "ReachResult",
     "ReachState",
     "ReachTier",
     "RssChannel",
     "WebChannel",
     "build_native_registry",
+    "build_reach_layer",
+    "cli_reach_tools",
     "default_reach_policy",
     "hosts_from_env",
     "html_to_text",
     "native_channels",
     "parse_doctor_json",
     "parse_feed",
+    "query_fingerprint",
     "reach_tools",
     "register_reach_tools",
     "scrub_credentials",

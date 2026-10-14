@@ -13,6 +13,7 @@ is called by the operator (or by ``build_registry`` behind ``CELA_REACH_ENABLE=1
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from os_core.types import RiskLevel
 from os_tools.registry import Tool, ToolRegistry
@@ -193,12 +194,94 @@ def reach_tools(registry: ReachRegistry) -> list[Tool]:
     return tools
 
 
+def cli_reach_tools(cli: Any) -> list[Tool]:
+    """Tools for the *enabled* CLI channels, plus the upstream doctor.
+
+    Only enabled channels become tools. A model that can see a tool will call
+    it, and the honest exposure is "what this deployment switched on" rather
+    than "everything that could exist". Every run is ``DANGEROUS`` on purpose:
+    it executes a host-side program outside the sandbox, so the platform's
+    approval flow sees it — an enabled channel is a capability, not a way past
+    human oversight.
+    """
+
+    async def reach_cli_doctor() -> str:
+        """Report reach channel health, including the upstream doctor when allowed."""
+        lines = [cli.report().render()]
+        bridge = getattr(cli, "bridge", None)
+        if bridge is not None:
+            health = bridge.probe()
+            lines.append(f"{health.channel}: {health.status.value} — {health.message}")
+        return "\n".join(lines)
+
+    # The doctor tool calls probe() only: it never starts a process, so it can be
+    # exposed safely even when no CLI channel is switched on.
+
+    tools: list[Tool] = [
+        Tool(
+            name="reach_cli_doctor",
+            description=(
+                "Health of the reach channels, including whether host-side CLI channels "
+                "are enabled and installed. Nothing is fetched."
+            ),
+            parameters={"type": "object", "properties": {}},
+            risk=RiskLevel.NETWORK,  # may exec the upstream doctor when allowed
+            timeout=150.0,
+            fn=reach_cli_doctor,
+        )
+    ]
+    for name, adapter in sorted(cli.adapters.items()):
+        if not adapter.enabled:
+            continue
+
+        async def run_channel(query: str, _channel: str = name) -> str:
+            result = await cli.run(_channel, query, tool=f"reach_cli_{_channel}")
+            if not result.ok:
+                raise RuntimeError(f"{result.code or 'error'}: {result.error}".strip(": "))
+            return result.text
+
+        tools.append(
+            Tool(
+                name=f"reach_cli_{name}",
+                description=(
+                    f"{adapter.spec.description}. Runs a host-side CLI outside EgressPolicy "
+                    "and outside the sandbox; the call is audited and needs approval."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": (
+                                "Search text"
+                                if adapter.spec.query_kind == "text"
+                                else "Absolute http(s) URL"
+                            ),
+                        }
+                    },
+                    "required": ["query"],
+                },
+                risk=RiskLevel.DANGEROUS,
+                timeout=adapter.timeout + 5.0,
+                fn=run_channel,
+            )
+        )
+    return tools
+
+
 def register_reach_tools(
     registry: ToolRegistry,
     *,
     reach: ReachRegistry | None = None,
+    cli: Any | None = None,
 ) -> ToolRegistry:
-    """Add the reach tools to a platform :class:`ToolRegistry`."""
+    """Add the reach tools to a platform :class:`ToolRegistry`.
+
+    Native tools always; CLI tools only when the layer says a channel is enabled.
+    """
     channels = reach if reach is not None else build_native_registry()
     registry.extend(reach_tools(channels))
+    layer = cli if cli is not None else getattr(channels, "cli", None)
+    if layer is not None:
+        registry.extend(cli_reach_tools(layer))
     return registry

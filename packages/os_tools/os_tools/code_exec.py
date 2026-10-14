@@ -16,6 +16,9 @@ portable:
   filesystem isolation: untrusted code can still read host files by
   absolute path, so production deployments need a microVM/container
   backend (E2B/Firecracker) as the real boundary.
+* ``CELA_SANDBOXED=1`` in the child environment, so host-side capabilities
+  that refuse to run inside a sandbox (the reach CLI adapters, ADR-0013) can
+  actually enforce that refusal instead of trusting a convention.
 * Output truncation so a chatty program cannot OOM the orchestrator.
 * ``unshare_net()`` drops the network namespace when available (Linux +
   CAP_SYS_ADMIN); otherwise ``network="unverified (netns unavailable on
@@ -134,6 +137,11 @@ def _sandbox_env(code: str) -> dict[str, str]:
     env["__SRC_B64__"] = base64.b64encode(code.encode()).decode()
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PYTHONNOUSERSITE"] = "1"  # never load user site-packages from the host
+    # Marker, not isolation: sandboxed code cannot borrow a host-side CLI
+    # capability, because the reach adapter refuses to run when it sees this
+    # (ADR-0013). Anything executing untrusted code outside this backend must
+    # set the same marker to keep that promise.
+    env["CELA_SANDBOXED"] = "1"
     return env
 
 
@@ -151,6 +159,22 @@ _NETNS_FLAGS = ("--net", "--map-root-user", "--fork", "--kill-child")
 
 
 @functools.lru_cache(maxsize=1)
+def _release_transport(proc: Any) -> None:
+    """Close a finished subprocess transport instead of leaving it to the GC.
+
+    An unclosed transport is finalized at an arbitrary later moment; if its
+    event loop has already closed, ``__del__`` raises "Event loop is closed" as
+    an unraisable exception, which surfaces as a warning inside whatever
+    unrelated code happens to trigger the collection. asyncio exposes no public
+    close, so the transport is closed directly and errors are ignored: this runs
+    on a path that has already produced its result.
+    """
+    transport = getattr(proc, "_transport", None)
+    if transport is not None:
+        with contextlib.suppress(Exception):
+            transport.close()
+
+
 def netns_unshare_available() -> bool:
     """Can this host *actually* create a network namespace?
 
@@ -248,6 +272,13 @@ class LocalSubprocessBackend(BaseModel):
                     status=ToolStatus.TIMEOUT,
                     error=f"execution exceeded {deadline}s and was killed",
                 )
+            finally:
+                # Every way out of this block — success, timeout, and the case
+                # that used to leak: the caller's task being cancelled mid-run,
+                # which left the child running and its transport unclosed.
+                if proc.returncode is None:
+                    proc.kill()
+                _release_transport(proc)
             elapsed = asyncio.get_running_loop().time() - started
 
             raw_out = stdout.decode(errors="replace")

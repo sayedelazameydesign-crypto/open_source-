@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 
-> **466 اختبارًا ناجحًا · 0 فشل · دون مفاتيح API ودون شبكة.**
+> **644 اختبارًا ناجحًا · 0 فشل · دون مفاتيح API ودون شبكة.**
 
 ---
 
@@ -23,7 +23,10 @@ python -m os_server.cli run --demo "Sum the integers from 0 to 100"
 # 2) وضع PlanningFlow — DAG بتفرعات متوازية + إعادة تخطيط
 python -m os_server.cli flow --demo "Plan and execute a 3-step research task"
 
-# 3) واجهة HTTP + WebSocket + الـ API الخاص (/cela/v1)
+# 3) سجل نتائج التشغيل — سطر دائم واحد لكل تنفيذ + ملخّص
+python -m os_server.cli ledger --limit 20
+
+# 4) واجهة HTTP + WebSocket + الـ API الخاص (/cela/v1)
 export CELA_API_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
 export CELA_PRIVATE_API_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
 python -m os_server.cli serve --demo --host 0.0.0.0 --port 8080
@@ -50,6 +53,7 @@ python -m os_server.cli serve --demo --host 0.0.0.0 --port 8080
 | **الأمان** | حارس SSRF + سياسة خروج صريحة (`EgressPolicy`) + حواجز حقن عربية/إنجليزية + HITL يفشل مغلقًا |
 | **الذكاء المحلي** | `LocalAIEngine` على CPU (NLP عربي/إنجليزي، بحث دلالي هجين، تعلّم آلة، فحص صور، OCR مستندات، تحليل صوت WAV) |
 | **النقل** | FastAPI: REST + WebSocket (مع تذاكر أحادية الاستخدام) + SSE + `/api/*` + `/cela/v1` + `CelaBrowser` |
+| **سجل النتائج** | `RunLedger`: سطر JSONL دائم **لكل** تنفيذ (نجاح/فشل/ميزانية/انقطاع) + ملخّص إجمالي (معدّل النجاح، p50/p95)، عبر `/ledger` و`/cela/v1/ledger` |
 
 البنية الكاملة: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · الـ API الخاص: [`docs/CELA_API.md`](docs/CELA_API.md) ·
 القرارات: [`adr/`](adr) · ما تبقّى: [`docs/ROADMAP.md`](docs/ROADMAP.md)
@@ -79,11 +83,34 @@ curl -X POST -H "Authorization: Bearer $CELA_PRIVATE_API_TOKEN" \
 كما يمكن استدعاء المنطق نفسه مباشرةً من Python دون HTTP عبر `CelaBrowser` — راجع
 [`docs/CELA_API.md`](docs/CELA_API.md).
 
+## سجل نتائج التشغيل (Run-Outcome Ledger)
+
+كل تنفيذ — نجح أو فشل أو استنفد ميزانيته أو قُطع — يُسجَّل كسطر JSON واحد في ملف
+ثابت عند `CELA_LEDGER_PATH` (الافتراضي `.cela/ledger.jsonl` بجوار العملية، و`off`
+لتعطيله). الكتابة تحدث في `finally` داخل `Platform.run`، فلا يفلت تنفيذ من السجل،
+وفشل الكتابة نفسه لا يُفقد التشغيل (يُبلَّغ كحدث على ناقل الأحداث).
+
+```bash
+python -m os_server.cli run --demo "Sum 0..100"   # يكتب سطرًا في السجل
+python -m os_server.cli ledger --limit 20          # آخر 20 نتيجة + الملخّص
+curl -H "Authorization: Bearer $CELA_API_TOKEN" http://127.0.0.1:8080/ledger
+curl -H "Authorization: Bearer $CELA_PRIVATE_API_TOKEN" http://127.0.0.1:8080/cela/v1/ledger
+```
+
+| الحكم `outcome` | متى يُسجَّل |
+|---|---|
+| `success` | أُنتج جواب نهائي (`status=completed`) |
+| `failed` | خطأ، أو رفض الحواجز، أو فشل المخطِّط |
+| `budget` | أوقفته الميزانية/المراجع دون جواب (`max_steps`) |
+| `aborted` | أُلغي، أو قُطع قبل بلوغ حالة نهائية |
+
+القرار وسببه: [`adr/0014-run-outcome-ledger.md`](adr/0014-run-outcome-ledger.md).
+
 ## البنية (Monorepo)
 
 ```
 packages/
-├── os_core/          الأنواع، التوجيه، الحواجز، HITL، الأحداث، الحالة
+├── os_core/          الأنواع، التوجيه، الحواجز، HITL، الأحداث، الحالة، سجل النتائج
 ├── os_agents/        ReAct، PlanningFlow، DAG، الميزانية، المراجع
 ├── os_tools/         Sandbox، المتصفح، SSRF، سياسة الخروج (egress)، سجل الأدوات، MCP
 ├── os_orchestration/ واجهة Platform واختيار الوضع
@@ -97,7 +124,7 @@ packages/
 ## الاختبار
 
 ```bash
-pytest -q          # 466 passed (1 اختبار مُعلَّق اختياريًا: psycopg)
+pytest -q          # 644 passed (1 اختبار مُعلَّق اختياريًا: psycopg)
 ruff check .       # All checks passed
 ruff format .      # تنسيق موحّد
 ```
@@ -155,8 +182,24 @@ python -c "from os_server.demo import build_registry; print(build_registry()[0].
 
 تسجَّل الأدوات `web_read`, `rss_read`, `github_repo`, `github_search` (بخطر `network`)
 و`reach_doctor` (فحص محلي بلا جلب). القنوات الأصلية تعمل بـ`httpx` وحدها بلا أي تثبيت
-خارجي؛ ومع `pip install -e ".[dev,server,reach]"` يُضاف محوّل Agent-Reach لقنواته
-الستة عشر (مرحلة 2، قيد التنفيذ). التفاصيل: [`docs/REACH_PLAN.md`](docs/REACH_PLAN.md).
+خارجي، وكل نداء — وكل قفزة إعادة توجيه — يمرّ على `EgressPolicy` فوق أرضية `SSRFGuard`.
+
+```bash
+cela reach list                    # الطبقتان: ما هو متاح ولماذا
+cela reach doctor                  # الصحة الكاملة (بلا جلب)
+cela reach enable github_search    # تفعيل قناة CLI — بعد تأكيد، ويكتب reach.toml (0600)
+cela reach run github_search "agents" --yes
+```
+
+**قنوات CLI (opt-in صريح):** مع `pip install -e ".[dev,server,reach]"` (Agent-Reach
+مثبَّت بـSHA من GitHub) تُضاف أوامر تعمل على المضيف — `gh`, `yt-dlp`, `bili`,
+`mcporter`, `twitter`, `rdt`. **هذه القنوات لا يمكن تقييدها بـ`EgressPolicy`**: البرنامج
+يفتح اتصالاته بنفسه. لذلك هي مغلقة افتراضيًا، تُفعَّل قناةً قناة، ترفض العمل داخل
+الصندوق المعزول (`CELA_SANDBOXED=1`)، وكل نداء يُسجَّل في تدقيق
+(`timestamp/user/channel/decision/exit_code/bytes_out/correlation_id` — والاستعلام
+كـ`sha256` وطول فقط، لا نصًّا). الأسطح: `GET /api/reach/channels`،
+`POST /api/reach/read|rss|github|cli/{channel}`، ونظيرها في `/cela/v1/reach/*` —
+برمز المصادقة نفسه لكل فضاء. التفاصيل: [`docs/REACH_PLAN.md`](docs/REACH_PLAN.md).
 
 ## حدود صادقة
 
@@ -164,10 +207,16 @@ python -c "from os_server.demo import build_registry; print(build_registry()[0].
   `network="unverified"` بدل ادعاء العزل. الإنتاج يحتاج E2B/Firecracker.
 * `packages/web` هيكل موثّق فقط — الواجهة لم تُبنَ.
 * حالة التشغيل الحية داخل العملية افتراضيًا؛ مع `CELA_RUN_STORE_URL=sqlite:///<path>` (أو `--store-url`) تُحفظ الحالات والأحداث والـArtifacts والتذاكر (مجزّأة) بشكل دائم وتنجو التشغيلات المنتهية من إعادة التشغيل — لكن تعدد النسخ المتزامن ما زال يحتاج Postgres+Redis (ADR-0004).
+* سجل النتائج ملف محلي واحد بلا تدوير (rotation) ولا تنسيق بين المضيفين؛ قراءته
+  تعيد قراءة الملف كاملًا — كافٍ لنموذج أولي، وغير كافٍ لأسطول.
 * مقاعد GAIA / SWE-bench / OSWorld غير مبنية؛ الطبقات جاهزة لكن لا أرقام بعد.
-* قنوات المحتوى تقرأ الإنترنت العام: `web_read`/`rss_read`/`github_*` تصل إلى أي مضيف
-  عام، وتُقيَّد بـ`CELA_REACH_ALLOW_HOSTS`؛ أما محوّل CLI (مرحلة 2) فلا يمكن تقييد
-  شبكته بالسياسة إطلاقًا — لذلك تفعيله لكل قناة وله أحداث تدقيق.
+* قنوات المحتوى الأصلية تقرأ الإنترنت العام، وتُقيَّد بـ`CELA_REACH_ALLOW_HOSTS`
+  وتُستثنى بـ`CELA_REACH_DENY_HOSTS`، ويمكن تضييقها لنشرٍ ما بـ`create_app(..., reach_policy=...)`.
+* **قنوات CLI تفلت من `EgressPolicy` بحكم طبيعتها** (عملية على المضيف تفتح شبكتها
+  بنفسها): الضوابط البديلة هي التفعيل الصريح لكل قناة، وإقرار منفصل للقنوات التي
+  تستعير جلستك (`CELA_REACH_CLI_ALLOW_AUTH`)، والرفض داخل الصندوق، والتدقيق الكامل
+  لكل نداء — لا حماية مزعومة لا تُنفَّذ. ومع ذلك، لا أرقام عن أدائها: القياس عبر
+  `os_evals` فقط (مرحلة 4).
 * لا استخراج كوكيز من متصفح المستخدم ولا قراءة إعدادات Agent-Reach، ولا عمليات كتابة
   (نشر/تعليق) — القراءة فقط.
 

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -249,6 +249,23 @@ class CelaBrowser:
             raise KeyError(f"{run_id}/{filename}")
         return meta
 
+    # --- Run-outcome ledger -------------------------------------------------
+
+    def outcome_ledger(self, limit: int = 20) -> dict[str, Any]:
+        """Recent outcomes plus the aggregate summary of every recorded run.
+
+        ``{"ledger": {"enabled": False}, ...}`` when the ledger is disabled
+        (``CELA_LEDGER_PATH=off``) — reading history is never an error.
+        """
+        return self.runtime.ledger_report(limit=limit)
+
+    def outcome_for_run(self, run_id: str) -> dict[str, Any]:
+        """The ledger line for one run. Raises ``KeyError`` if it has none."""
+        entry = self.runtime.ledger_entry_for(run_id)
+        if entry is None:
+            raise KeyError(run_id)
+        return entry
+
     # --- Synchronous LocalAIEngine methods ----------------------------------
 
     def ai_capabilities(self) -> dict[str, Any]:
@@ -422,12 +439,14 @@ def create_local_ai_router(
     return router
 
 
-def create_private_router(
-    browser: CelaBrowser,
-    *,
+def private_auth_dependency(
     private_api_token: str | None = None,
-) -> APIRouter:
-    """Build the ``/cela/v1`` router guarded by its own bearer token."""
+) -> Callable[..., Awaitable[None]]:
+    """The ``/cela/v1`` bearer guard, as a dependency other routers can reuse.
+
+    Extracted so every router in the private namespace (browse, runs, reach)
+    is guarded by one implementation rather than near-copies of one.
+    """
     configured_private_token = resolve_private_token(private_api_token)
     bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -449,10 +468,19 @@ def create_private_router(
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
+    return require_private_auth
+
+
+def create_private_router(
+    browser: CelaBrowser,
+    *,
+    private_api_token: str | None = None,
+) -> APIRouter:
+    """Build the ``/cela/v1`` router guarded by its own bearer token."""
     router = APIRouter(
         prefix=PRIVATE_API_PREFIX,
         tags=[PRODUCT_NAME],
-        dependencies=[Depends(require_private_auth)],
+        dependencies=[Depends(private_auth_dependency(private_api_token))],
     )
 
     @router.get("/whoami")
@@ -539,6 +567,21 @@ def create_private_router(
         except KeyError as exc:
             raise HTTPException(404, "no such artifact") from exc
         return Response(content=json.dumps(meta), media_type="application/json")
+
+    @router.get("/ledger")
+    async def run_outcome_ledger(
+        limit: int = Query(default=20, ge=1, le=500),
+    ) -> dict[str, Any]:
+        """The persisted outcome record: recent entries + aggregate summary."""
+        return browser.outcome_ledger(limit=limit)
+
+    @router.get("/runs/{run_id}/outcome")
+    async def run_outcome(run_id: str) -> dict[str, Any]:
+        """The single ledger line recorded for one run."""
+        try:
+            return browser.outcome_for_run(run_id)
+        except KeyError as exc:
+            raise HTTPException(404, "no recorded outcome for this run") from exc
 
     _register_ai_endpoints(router, browser.runtime.ai, capabilities_path="/ai/capabilities")
     return router
