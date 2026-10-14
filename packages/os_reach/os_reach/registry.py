@@ -21,10 +21,26 @@ from os_reach.native import native_channels
 
 
 class ReachRegistry(BaseModel):
-    """Ordered channel map. Registration order *is* routing priority."""
+    """Ordered channel map. Registration order *is* routing priority.
+
+    ``cli`` and ``bridge`` are the host-side half of the layer
+    (:class:`~os_reach.adapters.cli.CLILayer`, ``AgentReachBridge``). They are
+    typed ``Any`` on purpose: the registry must stay importable without the
+    adapters, and the native tier must never depend on them.
+    """
 
     channels: dict[str, Any] = Field(default_factory=dict)
+    cli: Any = None
+    bridge: Any = None
     model_config = {"arbitrary_types_allowed": True}
+
+    def cli_layer(self) -> Any:
+        return self.cli
+
+    def cli_report(self) -> ReachReport:
+        """Health of the CLI channels (empty report when the layer is absent)."""
+        layer = self.cli
+        return layer.report() if layer is not None else ReachReport(source="cli")
 
     def register(self, channel: ReachChannel) -> None:
         self.channels[channel.name] = channel
