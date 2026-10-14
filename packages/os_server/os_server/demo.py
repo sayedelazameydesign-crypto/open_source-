@@ -94,9 +94,13 @@ def build_registry(
         # carry their own public-internet policy (narrowable with
         # CELA_REACH_ALLOW_HOSTS / CELA_REACH_DENY_HOSTS) on top of the SSRF
         # floor, so this does not widen the browser's egress policy.
+        from os_reach.adapters.cli import build_reach_layer
         from os_reach.tools import register_reach_tools
 
-        register_reach_tools(registry)
+        # build_reach_layer also reads the *CLI* switches (CELA_REACH_CLI_ENABLE,
+        # CELA_REACH_CLI_ALLOW_AUTH). With neither set the layer is inert and this
+        # is exactly the native-only wiring as before.
+        register_reach_tools(registry, reach=build_reach_layer(policy=policy))
     return registry, guard, browser
 
 

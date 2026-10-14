@@ -16,6 +16,9 @@ portable:
   filesystem isolation: untrusted code can still read host files by
   absolute path, so production deployments need a microVM/container
   backend (E2B/Firecracker) as the real boundary.
+* ``CELA_SANDBOXED=1`` in the child environment, so host-side capabilities
+  that refuse to run inside a sandbox (the reach CLI adapters, ADR-0013) can
+  actually enforce that refusal instead of trusting a convention.
 * Output truncation so a chatty program cannot OOM the orchestrator.
 * ``unshare_net()`` drops the network namespace when available (Linux +
   CAP_SYS_ADMIN); otherwise ``network="unverified (netns unavailable on
@@ -134,6 +137,11 @@ def _sandbox_env(code: str) -> dict[str, str]:
     env["__SRC_B64__"] = base64.b64encode(code.encode()).decode()
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PYTHONNOUSERSITE"] = "1"  # never load user site-packages from the host
+    # Marker, not isolation: sandboxed code cannot borrow a host-side CLI
+    # capability, because the reach adapter refuses to run when it sees this
+    # (ADR-0013). Anything executing untrusted code outside this backend must
+    # set the same marker to keep that promise.
+    env["CELA_SANDBOXED"] = "1"
     return env
 
 
