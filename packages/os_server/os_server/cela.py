@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -422,12 +422,14 @@ def create_local_ai_router(
     return router
 
 
-def create_private_router(
-    browser: CelaBrowser,
-    *,
+def private_auth_dependency(
     private_api_token: str | None = None,
-) -> APIRouter:
-    """Build the ``/cela/v1`` router guarded by its own bearer token."""
+) -> Callable[..., Awaitable[None]]:
+    """The ``/cela/v1`` bearer guard, as a dependency other routers can reuse.
+
+    Extracted so every router in the private namespace (browse, runs, reach)
+    is guarded by one implementation rather than near-copies of one.
+    """
     configured_private_token = resolve_private_token(private_api_token)
     bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -449,10 +451,19 @@ def create_private_router(
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
+    return require_private_auth
+
+
+def create_private_router(
+    browser: CelaBrowser,
+    *,
+    private_api_token: str | None = None,
+) -> APIRouter:
+    """Build the ``/cela/v1`` router guarded by its own bearer token."""
     router = APIRouter(
         prefix=PRIVATE_API_PREFIX,
         tags=[PRODUCT_NAME],
-        dependencies=[Depends(require_private_auth)],
+        dependencies=[Depends(private_auth_dependency(private_api_token))],
     )
 
     @router.get("/whoami")

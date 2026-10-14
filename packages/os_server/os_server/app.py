@@ -13,6 +13,13 @@ the last sequence number it received (see ADR-0002).
 ``GET  /artifacts/{id}/{name}`` fetch an artifact for the right-hand pane
 ``GET  /health``                minimal public liveness check
 
+Reach namespace (ADR-0013, behind the token of its parent API, opt-in via
+``CELA_REACH_ENABLE=1``):
+``GET  /api/reach/channels``            native + CLI channel health and coverage
+``POST /api/reach/read|/rss|/github``   native channels, bound by EgressPolicy
+``POST /api/reach/cli/{channel}``       CLI channels, enabled-only and audited
+``GET|POST /cela/v1/reach/...``         the same surface in the private namespace
+
 Private browser namespace (guarded by ``CELA_PRIVATE_API_TOKEN``):
 ``GET  /cela/v1/whoami``
 ``POST /cela/v1/egress/check``
@@ -42,7 +49,19 @@ from os_orchestration.platform import Platform
 from os_tools.egress import EgressPolicy
 from pydantic import BaseModel
 
-from os_server.cela import CelaBrowser, create_local_ai_router, create_private_router
+from os_server.cela import (
+    CelaBrowser,
+    create_local_ai_router,
+    create_private_router,
+    private_auth_dependency,
+)
+from os_server.reach_api import (
+    REACH_API_PREFIX,
+    REACH_PRIVATE_PREFIX,
+    ReachService,
+    create_reach_router,
+    reach_enabled_from_env,
+)
 from os_server.runtime import (
     DEFAULT_WS_TICKET_TTL,
     PRODUCT_VERSION,
@@ -78,6 +97,9 @@ def create_app(
     ws_ticket_ttl: float = DEFAULT_WS_TICKET_TTL,
     runtime: ApiRuntime | None = None,
     store_url: str | None = None,
+    reach_enabled: bool | None = None,
+    reach_service: ReachService | None = None,
+    reach_policy: EgressPolicy | None = None,
 ) -> FastAPI:
     """Build the FastAPI application hosting both the platform and ``/cela/v1``."""
     configured_token = resolve_token(api_token)
@@ -230,8 +252,31 @@ def create_app(
             raise HTTPException(404, "no such artifact")
         return Response(content=json.dumps(meta), media_type="application/json")
 
+    reach = (
+        reach_service
+        if reach_service is not None
+        else ReachService(
+            enabled=reach_enabled_from_env() if reach_enabled is None else reach_enabled,
+            # None -> the reach policy (public internet minus the SSRF floor),
+            # the same one the reach tools carry. Pass reach_policy= to bind the
+            # surface to a stricter list.
+            policy=reach_policy,
+        )
+    )
+    app.state.reach = reach
+
     app.include_router(create_local_ai_router(cela_browser, api_token=api_token))
     app.include_router(create_private_router(cela_browser, private_api_token=private_api_token))
+    app.include_router(
+        create_reach_router(service=reach, require_auth=require_api_auth, prefix=REACH_API_PREFIX)
+    )
+    app.include_router(
+        create_reach_router(
+            service=reach,
+            require_auth=private_auth_dependency(private_api_token),
+            prefix=REACH_PRIVATE_PREFIX,
+        )
+    )
     return app
 
 
