@@ -96,7 +96,8 @@ class PlanningFlow(BaseModel):
 
         await self.bus.publish(
             Event(
-                type=EventType.RUN_STARTED, run_id=self.bus.run_id, data={"task": task, "mode": "flow"}
+                type=EventType.RUN_STARTED,
+                run_id=self.bus.run_id, data={"task": task, "mode": "flow"}
             )
         )
 
