@@ -22,7 +22,7 @@
 | محرك الذكاء المحلي (`LocalAIEngine` + `/api/*` + `/cela/v1/*`) | ✅ | `test_local_ai.py` (15) |
 | سجل نتائج دائم لكل تشغيل (JSONL + ملخّص + `/ledger`) | ✅ | `test_ledger.py` |
 
-**المجموع: 644 اختبارًا، 0 فشل، دون مفاتيح API ودون شبكة.**
+**المجموع: 713 اختبارًا ناجحًا، 1 متخطّى اختياريًا (`psycopg`)، 0 فشل، دون مفاتيح API ودون شبكة.**
 
 CI أخضر على Python 3.11 / 3.12 / 3.13 (Lint + Test + Smoke-test):
 <https://github.com/sayedelazameydesign-crypto/open_source-/actions>

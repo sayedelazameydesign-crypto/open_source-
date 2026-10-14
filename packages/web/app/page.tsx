@@ -73,6 +73,12 @@ export default function Home() {
   const [notice, setNotice] = useState("");
   const seqRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
+  const snapRef = useRef(snap);
+  const snapshotInFlight = useRef(false);
+
+  useEffect(() => {
+    snapRef.current = snap;
+  }, [snap]);
 
   // Fetch fresh snapshot from backend (polling)
   const refreshSnapshot = useCallback(async (id: string) => {
@@ -161,13 +167,6 @@ export default function Home() {
     setNotice(res.ok ? `Decision sent: ${decision}` : `Failed (${res.status})`);
     void refreshSnapshot(runId);
   }
-
-  // Poll snapshot while run is active (fallback when SSE not connected)
-  useEffect(() => {
-    if (!runId || (snap && TERMINAL.has(snap.status))) return;
-    const t = setInterval(() => void refreshSnapshot(runId), 1500);
-    return () => clearInterval(t);
-  }, [runId, snap, refreshSnapshot]);
 
   const pending = snap?.pending_approvals ?? [];
 
@@ -307,10 +306,31 @@ export default function Home() {
 
   // Snapshot is the source of truth (ADR-0002): poll it while a run is active.
   useEffect(() => {
-    if (!runId || (snap && TERMINAL.has(snap.status))) return;
-    const t = setInterval(() => void refreshSnapshot(runId), 1500);
+    if (!runId) return;
+
+    const tick = async () => {
+      const currentSnapshot = snapRef.current;
+      if (
+        currentSnapshot?.run_id === runId &&
+        TERMINAL.has(currentSnapshot.status)
+      ) {
+        return;
+      }
+      if (snapshotInFlight.current) return;
+
+      snapshotInFlight.current = true;
+      try {
+        await refreshSnapshot(runId);
+      } catch {
+        // A later tick retries if the backend is temporarily unavailable.
+      } finally {
+        snapshotInFlight.current = false;
+      }
+    };
+
+    const t = setInterval(() => void tick(), 1500);
     return () => clearInterval(t);
-  }, [runId, snap, refreshSnapshot]);
+  }, [runId, refreshSnapshot]);
 
   const handleApprove = (toolCallId: string, decision: "approved" | "denied") => {
     approve(toolCallId, decision);
