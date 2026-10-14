@@ -21,6 +21,13 @@ Reach namespace (ADR-0013, behind the token of its parent API, opt-in via
 ``POST /api/reach/cli/{channel}``       CLI channels, enabled-only and audited
 ``GET|POST /cela/v1/reach/...``         the same surface in the private namespace
 
+Launcher namespace (ADR-0015, behind the token of its parent API, opt-in via
+``CELA_LAUNCHER_ENABLE=1``; read-only — never downloads or installs):
+``GET  /api/launcher/catalog``              the Craft App Suite catalog
+``GET  /api/launcher/apps/{id}/release``    latest release of one Craft app
+``POST /api/launcher/check``                update check over installed versions
+``GET|POST /cela/v1/launcher/...``          the same surface in the private namespace
+
 Private browser namespace (guarded by ``CELA_PRIVATE_API_TOKEN``):
 ``GET  /cela/v1/whoami``
 ``POST /cela/v1/egress/check``
@@ -58,6 +65,13 @@ from os_server.cela import (
     create_local_ai_router,
     create_private_router,
     private_auth_dependency,
+)
+from os_server.launcher_api import (
+    LAUNCHER_API_PREFIX,
+    LAUNCHER_PRIVATE_PREFIX,
+    LauncherService,
+    create_launcher_router,
+    launcher_enabled_from_env,
 )
 from os_server.reach_api import (
     REACH_API_PREFIX,
@@ -104,6 +118,9 @@ def create_app(
     reach_enabled: bool | None = None,
     reach_service: ReachService | None = None,
     reach_policy: EgressPolicy | None = None,
+    launcher_enabled: bool | None = None,
+    launcher_service: LauncherService | None = None,
+    launcher_policy: EgressPolicy | None = None,
     ledger: RunLedger | None = None,
 ) -> FastAPI:
     """Build the FastAPI application hosting both the platform and ``/cela/v1``."""
@@ -288,6 +305,30 @@ def create_app(
             service=reach,
             require_auth=private_auth_dependency(private_api_token),
             prefix=REACH_PRIVATE_PREFIX,
+        )
+    )
+
+    launcher = (
+        launcher_service
+        if launcher_service is not None
+        else LauncherService(
+            enabled=launcher_enabled_from_env() if launcher_enabled is None else launcher_enabled,
+            # None -> the launcher policy (four allow-listed hosts minus the SSRF
+            # floor). Pass launcher_policy= to bind the surface to a stricter list.
+            policy=launcher_policy,
+        )
+    )
+    app.state.launcher = launcher
+    app.include_router(
+        create_launcher_router(
+            service=launcher, require_auth=require_api_auth, prefix=LAUNCHER_API_PREFIX
+        )
+    )
+    app.include_router(
+        create_launcher_router(
+            service=launcher,
+            require_auth=private_auth_dependency(private_api_token),
+            prefix=LAUNCHER_PRIVATE_PREFIX,
         )
     )
     return app

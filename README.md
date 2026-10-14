@@ -58,6 +58,7 @@ python -m os_server.cli serve --demo --host 0.0.0.0 --port 8080
 البنية الكاملة: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · الـ API الخاص: [`docs/CELA_API.md`](docs/CELA_API.md) ·
 القرارات: [`adr/`](adr) · ما تبقّى: [`docs/ROADMAP.md`](docs/ROADMAP.md)
 ربط Agent Mode بـ GitHub: [`docs/arena-github-integration.md`](docs/arena-github-integration.md)
+دمج ArtCraft Launcher (مضيف + محوّل): [`docs/CRAFT_LAUNCHER_PLAN.md`](docs/CRAFT_LAUNCHER_PLAN.md)
 
 ## مصادقة API والـ API الخاص (`cela_use_browser`)
 
@@ -201,6 +202,18 @@ cela reach run github_search "agents" --yes
 كـ`sha256` وطول فقط، لا نصًّا). الأسطح: `GET /api/reach/channels`،
 `POST /api/reach/read|rss|github|cli/{channel}`، ونظيرها في `/cela/v1/reach/*` —
 برمز المصادقة نفسه لكل فضاء. التفاصيل: [`docs/REACH_PLAN.md`](docs/REACH_PLAN.md).
+
+## ArtCraft Launcher — استضافة + محوّل قراءة فقط
+
+شجرة Rust طبق الأصل من [`storytold/craft-launcher`](https://github.com/storytold/craft-launcher)
+تُستضاف في `packages/craft-launcher/` ([`VENDORED.md`](packages/craft-launcher/VENDORED.md))،
+وحزمة `os_launcher` تقرأ **كتالوج Craft App Suite وإصداراته** فقط (قراءة — لا تنزيل
+ولا تثبيت) عبر `EgressPolicy` بأربعة مضيفين مسموحين فوق أرضية SSRF. الأسطح
+(`GET /api/launcher/catalog`، `GET /api/launcher/apps/{id}/release`، `POST /api/launcher/check`
+ونظيرها في `/cela/v1/launcher/*`) مغلقة افتراضيًا وتُفعَّل بـ`CELA_LAUNCHER_ENABLE=1`،
+وأدوات `craft_list_apps`/`craft_latest_release`/`craft_check_updates` تُسجَّل يدويًا فقط.
+بناء شجرة Rust: `make launcher-test` (CI مستقل: `launcher-ci.yml`). التفاصيل والقرارات:
+[`docs/CRAFT_LAUNCHER_PLAN.md`](docs/CRAFT_LAUNCHER_PLAN.md) · [`adr/0015-craft-launcher-integration.md`](adr/0015-craft-launcher-integration.md).
 
 ## حدود صادقة
 

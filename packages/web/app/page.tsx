@@ -186,7 +186,7 @@ export default function Home() {
     switch (e.type) {
       case "run_started": {
         const task = (e.data.task || "").toString().slice(0, 60);
-        const mode = e.data.mode || "?";
+        const mode = (e.data.mode || "?").toString();
         return (
           <li key={`${seq}-${e.type}`}>
             <span className="seq">#{seq}</span>{" "}
@@ -275,8 +275,8 @@ export default function Home() {
       case "run_finished": {
         const status = (e.data.status || "?").toString();
         const reason = (e.data.reason || "").toString().slice(0, 80);
-        const steps = e.data.steps ?? 0;
-        const tokens = e.data.tokens ?? 0;
+        const steps = Number(e.data.steps ?? 0) || 0;
+        const tokens = Number(e.data.tokens ?? 0) || 0;
         return (
           <li key={`${seq}-${e.type}`}>
             <span className="seq">#{seq}</span>{" "}

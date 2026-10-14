@@ -1,0 +1,66 @@
+name: Launcher CI
+
+# Rust checks for the vendored ArtCraft Launcher workspace (packages/craft-launcher,
+# ADR-0015). Path-filtered so the Python CI stays fast: this workflow only runs
+# when the vendored workspace (or this file) changes. The workspace is a
+# snapshot of storytold/craft-launcher; failures here are upstream-shaped.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/craft-launcher/**"
+      - ".github/workflows/launcher-ci.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "packages/craft-launcher/**"
+      - ".github/workflows/launcher-ci.yml"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+concurrency:
+  group: launcher-ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: cargo test (core)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # egui/winit/wgpu headers — the same set the upstream CI installs.
+      - name: Install Linux system dependencies (egui/winit)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.90"
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/craft-launcher
+
+      # The pure, wasm-safe core is the contract the platform's os_launcher
+      # adapter mirrors (catalog/release/feed parsing) — always checked.
+      - name: Test the core crate
+        working-directory: packages/craft-launcher
+        run: cargo test -p artcraft-launcher-core --locked
+
+      - name: Clippy the core crate
+        working-directory: packages/craft-launcher
+        run: cargo clippy -p artcraft-launcher-core --locked -- -D warnings
+
+      # Full workspace (native + UI crates) — allowed to fail until the
+      # vendored snapshot's system-dependency needs are audited for this runner.
+      - name: Test the whole workspace
+        working-directory: packages/craft-launcher
+        continue-on-error: true
+        run: cargo test --workspace --locked
