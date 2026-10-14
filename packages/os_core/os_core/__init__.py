@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from os_core.events import Event, EventBus, EventType
+from os_core.events import Event, EventBus, EventType, replay_and_stream
 from os_core.guardrails import Guardrails, ScanReport, ScanVerdict
 from os_core.hitl import (
     ApprovalDecision,
@@ -78,4 +78,5 @@ __all__ = [
     "Usage",
     "__version__",
     "default_registry",
+    "replay_and_stream",
 ]

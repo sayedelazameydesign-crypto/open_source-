@@ -8,7 +8,7 @@
 | التوجيه المتكيّف + سقوف التكلفة | ✅ | `test_router.py` (14 اختبارًا) |
 | حواجز الحقن (عربي/إنجليزي) | ✅ | `test_guardrails.py` (20) |
 | HITL بأربعة مُقرِّرين | ✅ | `test_react.py`, `test_e2e.py` |
-| Event Bus + replay + snapshot | ✅ | `test_react.py`, `test_server.py` |
+| Event Bus + replay + تسليم بلا فجوة | ✅ | `test_events.py` (5), `test_react.py`, `test_server.py` |
 | حلقة ReAct كاملة | ✅ | `test_react.py` (13) |
 | PlanningFlow: DAG + توازٍ + إعادة تخطيط | ✅ | `test_flow.py` (22) |
 | كاسر الحلقات (سقوف + ركود + مراجع) | ✅ | `test_budget.py`, `test_reviewer.py` |
@@ -17,11 +17,11 @@
 | سياسة شبكة صريحة (allow-list + SSRF floor) | ✅ | `test_egress.py` (94) |
 | سلسلة fallback الثلاثية للمتصفح | ✅ | `test_browser.py` (13) |
 | سجل أدوات بنمط MCP | ✅ | `test_e2e.py` |
-| REST + SSE + WebSocket + تذاكر WS | ✅ | `test_server.py` (30) |
+| REST + SSE + WebSocket + تذاكر WS | ✅ | `test_server.py` (32) |
 | `cela_use_browser` (`/cela/v1` + `CelaBrowser`) | ✅ | `test_cela_api.py` (49) |
 | محرك الذكاء المحلي (`LocalAIEngine` + `/api/*` + `/cela/v1/*`) | ✅ | `test_local_ai.py` (15) |
 
-**المجموع: 345 اختبارًا، 0 فشل، دون مفاتيح API ودون شبكة.**
+**المجموع: 352 اختبارًا، 0 فشل، دون مفاتيح API ودون شبكة.**
 
 CI أخضر على Python 3.11 / 3.12 / 3.13 (Lint + Test + Smoke-test):
 <https://github.com/sayedelazameydesign-crypto/open_source-/actions>
@@ -55,6 +55,8 @@ CI أخضر على Python 3.11 / 3.12 / 3.13 (Lint + Test + Smoke-test):
 ## 🔲 المرحلة 4 — التوسع الأفقي
 
 - [ ] `EventBus` خلف Redis Streams أو NATS (الواجهة الحالية تسمح بذلك دون تغيير الوكلاء).
+- [ ] مؤشر استئناف تسلسلي (`Event.seq`) بدل `replay(after_ts)` المعتمد على `ts`:
+      حدثان في اللحظة نفسها غامضان عند إعادة اتصال عميل منقطع (ADR-0002).
 - [ ] مخزن تنفيذ دائم (Postgres) بدل القواميس في الذاكرة داخل `app.py`.
 - [ ] طابور مهام (Celery/Arq) لفصل API عن التنفيذ.
 - [ ] **قيد معروف:** `runs`/`states`/`artifacts` في `app.py` قواميس داخل العملية، فلا

@@ -14,9 +14,10 @@ import secrets
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable
+from contextlib import aclosing
 from typing import Any
 
-from os_core.events import EventBus, EventType
+from os_core.events import EventBus, EventType, replay_and_stream
 from os_core.hitl import ApprovalDecision, QueueApprover
 from os_core.state import RunState, RunStatus
 from os_orchestration.platform import Platform
@@ -192,13 +193,9 @@ class ApiRuntime:
 
     async def sse_events(self, run_id: str) -> AsyncIterator[str]:
         handle = self.runs[run_id]
-        finished = False
-        for event in handle.bus.replay():
-            yield f"data: {event.to_wire()}\n\n"
-            finished = finished or event.type is EventType.RUN_FINISHED
-        if finished:
-            return
-        with handle.bus.stream() as stream:
+        # Subscribe before the backlog is delivered: events published while the
+        # history is still streaming are queued, not lost (see replay_and_stream).
+        async with aclosing(replay_and_stream(handle.bus)) as stream:
             async for event in stream:
                 yield f"data: {event.to_wire()}\n\n"
                 if event.type is EventType.RUN_FINISHED:

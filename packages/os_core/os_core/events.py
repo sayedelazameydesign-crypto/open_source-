@@ -203,5 +203,31 @@ class _Subscription:
         self._queue.put_nowait(None)
 
 
+async def replay_and_stream(bus: EventBus, *, after_ts: float = 0.0) -> AsyncIterator[Event]:
+    """Hand a late subscriber the history, then the live feed — with no gap.
+
+    The subscription is opened **before** the replay buffer is snapshotted. That
+    ordering is the whole point: with the naive ``replay()`` → ``stream()``
+    sequence every ``await`` spent delivering the backlog lets the run publish
+    further events, and those land in neither the (already taken) snapshot nor
+    the (not yet opened) subscription — they simply vanish. Here they are queued
+    instead, and ids already delivered from the buffer are skipped, so each
+    event is yielded exactly once, in publish order.
+
+    Consume it through :func:`contextlib.aclosing` so an early ``break`` (the
+    transports stop at ``RUN_FINISHED``) unsubscribes deterministically rather
+    than at garbage-collection time.
+    """
+    with bus.stream() as live:
+        history = bus.replay(after_ts)
+        delivered = {event.id for event in history}
+        for event in history:
+            yield event
+        async for event in live:
+            if event.id in delivered:
+                continue
+            yield event
+
+
 def parse_wire(raw: str) -> Event:
     return Event.model_validate(json.loads(raw))

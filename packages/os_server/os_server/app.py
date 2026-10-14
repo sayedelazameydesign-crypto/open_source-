@@ -27,12 +27,13 @@ from __future__ import annotations
 
 import json
 import secrets
+from contextlib import aclosing
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from os_core.events import EventType
+from os_core.events import EventType, replay_and_stream
 from os_core.hitl import ApprovalDecision
 from os_orchestration.platform import Platform
 from os_tools.egress import EgressPolicy
@@ -170,13 +171,9 @@ def create_app(
             return
         await ws.accept()
         try:
-            finished = False
-            for event in handle.bus.replay():
-                await ws.send_text(event.to_wire())
-                finished = finished or event.type is EventType.RUN_FINISHED
-            if finished:
-                return
-            with handle.bus.stream() as stream:
+            # Subscribe before the backlog is delivered so a client that connects
+            # mid-run loses nothing between replay and live streaming.
+            async with aclosing(replay_and_stream(handle.bus)) as stream:
                 async for event in stream:
                     await ws.send_text(event.to_wire())
                     if event.type is EventType.RUN_FINISHED:

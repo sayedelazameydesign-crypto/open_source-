@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import time
+
 import pytest
 
 fastapi_testclient = pytest.importorskip("fastapi.testclient")
@@ -82,6 +85,64 @@ def test_websocket_streams_events(client: TestClient) -> None:
                 break
     assert any("tool_result" in m for m in seen)
     assert any("run_finished" in m for m in seen)
+
+
+def _wait_for_terminal_snapshot(client: TestClient, run_id: str) -> dict:
+    for _ in range(200):
+        body = client.get(f"/runs/{run_id}").json()
+        if body.get("status") in {"completed", "failed"}:
+            return body
+        time.sleep(0.05)
+    raise AssertionError(f"run never reached a terminal state: {body}")
+
+
+def _buffered_event_ids(client: TestClient, run_id: str) -> list[str]:
+    return [event.id for event in client.app.state.runtime.runs[run_id].bus.buffer]
+
+
+def test_websocket_hands_a_late_client_the_full_history_exactly_once(client: TestClient) -> None:
+    """A client that connects after the run finished still gets every event.
+
+    The replay buffer is the only copy of the transient events (thoughts, tool
+    calls), so the WebSocket stream must equal it — one delivery each, in order.
+    """
+    run_id = client.post("/runs", json={"task": "Sum 0..100", "mode": "react"}).json()["run_id"]
+    _wait_for_terminal_snapshot(client, run_id)
+    expected = _buffered_event_ids(client, run_id)
+
+    seen: list[str] = []
+    with client.websocket_connect(
+        f"/ws/{run_id}", headers={"Authorization": "Bearer test-token"}
+    ) as ws:
+        while True:
+            message = json.loads(ws.receive_text())
+            seen.append(message["id"])
+            if message["type"] == "run_finished":
+                break
+
+    assert seen == expected
+    assert len(seen) == len(set(seen))
+
+
+def test_sse_hands_a_late_client_the_full_history_exactly_once(client: TestClient) -> None:
+    """SSE shares the WebSocket's replay-then-follow semantics, gap included."""
+    run_id = client.post("/runs", json={"task": "Sum 0..100", "mode": "react"}).json()["run_id"]
+    _wait_for_terminal_snapshot(client, run_id)
+    expected = _buffered_event_ids(client, run_id)
+
+    seen: list[str] = []
+    with client.stream("GET", f"/runs/{run_id}/events") as resp:
+        assert resp.status_code == 200
+        for line in resp.iter_lines():
+            if not line.startswith("data: "):
+                continue
+            message = json.loads(line.removeprefix("data: "))
+            seen.append(message["id"])
+            if message["type"] == "run_finished":
+                break
+
+    assert seen == expected
+    assert len(seen) == len(set(seen))
 
 
 def test_websocket_rejects_unknown_run(client: TestClient) -> None:
