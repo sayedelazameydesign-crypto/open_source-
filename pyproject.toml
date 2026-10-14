@@ -44,6 +44,13 @@ browser = [
 sandbox = [
     "e2b-code-interpreter>=1.5",
 ]
+# Agent-Reach is not on PyPI (the maintainers explicitly warn about the
+# unrelated package of that name there), so the adapter pins the GitHub repo at
+# a known commit. Install only when the CLI-shaped channels are wanted:
+#   pip install -e ".[dev,server,reach]"
+reach = [
+    "agent-reach @ git+https://github.com/Panniantong/agent-reach@94f06c1969dfc1834001269d79d3ad0972d9dee6",
+]
 distributed = [
     "psycopg[binary]>=3.2",
     "redis>=5.0",
@@ -63,6 +70,13 @@ Homepage = "https://github.com/sayedelazameydesign-crypto/open_source-"
 Repository = "https://github.com/sayedelazameydesign-crypto/open_source-"
 Issues = "https://github.com/sayedelazameydesign-crypto/open_source-/issues"
 
+# The optional `reach` extra pins Agent-Reach from GitHub by full commit SHA
+# (it is not published on PyPI on purpose). Hatchling refuses direct references
+# unless this is set, and without it `pip install -e ".[dev,server]"` fails at
+# metadata generation — so the flag is load-bearing for every install path.
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [tool.hatch.build.targets.wheel]
 packages = [
     "packages/os_core/os_core",
@@ -72,6 +86,7 @@ packages = [
     "packages/os_server/os_server",
     "packages/os_evals/os_evals",
     "packages/os_skills/os_skills",
+    "packages/os_reach/os_reach",
 ]
 
 # --- Monorepo path setup: every package is importable without installation ---
@@ -89,6 +104,7 @@ pythonpath = [
     "packages/os_server",
     "packages/os_evals",
     "packages/os_skills",
+    "packages/os_reach",
     "packages/legacy/src",
 ]
 markers = [
@@ -99,7 +115,7 @@ filterwarnings = ["error::RuntimeWarning"]
 
 [tool.coverage.run]
 branch = true
-source = ["os_core", "os_agents", "os_tools", "os_orchestration", "os_server", "os_evals", "os_skills"]
+source = ["os_core", "os_agents", "os_tools", "os_orchestration", "os_server", "os_evals", "os_skills", "os_reach"]
 
 [tool.ruff]
 line-length = 100

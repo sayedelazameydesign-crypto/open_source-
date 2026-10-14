@@ -31,7 +31,18 @@ jobs:
         run: ruff check .
 
       - name: Test
-        run: pytest -q
+        run: |
+          set -o pipefail
+          pytest -q -rf 2>&1 | tee /tmp/pytest.log || {
+            # Surface the failure as check annotations, not only inside a log
+            # file: raw step logs need a GitHub login and a log download, while
+            # annotations are readable from the API and the PR itself. The
+            # FAILED lines carry the test id and its assertion summary.
+            failed="$(grep -E '^(FAILED|ERROR)' /tmp/pytest.log | head -5 | tr '\n' ';')"
+            echo "::error title=pytest failures::${failed:-no FAILED lines: collection error?}"
+            echo "::error title=pytest tail::$(tail -8 /tmp/pytest.log | tr '\n' ';')"
+            exit 1
+          }
 
       - name: Smoke-test the ReAct demo end to end
         run: |

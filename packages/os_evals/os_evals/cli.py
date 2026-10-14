@@ -3,6 +3,18 @@
 Real-model example (vLLM on :8000):
 ``CELA_EVAL_MODEL_ID=deepseek-ai/DeepSeek-R1 python -m os_evals run
 --dataset gaia.jsonl --model-url http://localhost:8000/v1 --out report.json``
+
+Exit codes — the report is written *before* any of these is returned, so a
+non-zero run still leaves evidence on disk:
+
+* ``0`` — single run: every case passed. A/B run: the skilled arm did not
+  regress (``skilled.pass_rate >= baseline.pass_rate``).
+* ``1`` — single run: at least one case failed, including the case where every
+  case crashed (with a stderr diagnostic naming ``--api-key-env``). A/B run:
+  the skilled arm regressed.
+* ``2`` — nothing was measured at all: bad arguments/dataset, or every case in
+  **both** A/B arms errored (wrong URL, key not injected). A zero delta there
+  would be an artefact, not a result.
 """
 
 from __future__ import annotations
@@ -81,7 +93,9 @@ def main(argv: list[str] | None = None) -> int:
         "--ab-skills",
         action="store_true",
         help="A/B: run the builtin/demo suite without skills, then with a shared "
-        "learning SkillManager, and report pass-rate/steps/tokens/time deltas",
+        "learning SkillManager, and report pass-rate/steps/tokens/time deltas. "
+        "Exit 0 here means 'no regression from skills', not 'all cases passed' "
+        "— read the pass rates in the report for that",
     )
     args = parser.parse_args(argv)
 
@@ -118,6 +132,18 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     else:
         factory = _demo_factory
+
+    if args.model_url and not args.dataset and args.suite == "builtin":
+        # The builtin suite is a 2-case plumbing smoke test, so a green run
+        # here proves the endpoint answers — not that the model is good. Said
+        # out loud on stderr (stdout stays pure JSON for piping) so the
+        # artifact is not read as a quality benchmark (ADR-0012).
+        print(
+            "note: --suite builtin against a live model is a plumbing smoke test "
+            "(2 cases), not a model-quality benchmark; pass --dataset <jsonl> "
+            "with GAIA/SWE-bench rows for real numbers",
+            file=sys.stderr,
+        )
 
     if args.ab_skills:
         # A/B over whichever factory was selected above — offline demo or a
@@ -166,6 +192,17 @@ def main(argv: list[str] | None = None) -> int:
     print(payload)
     if args.out:
         Path(args.out).write_text(payload, encoding="utf-8")
+    if _all_errored(report):
+        # Same false-signal class the A/B path refuses to call a pass: every
+        # case crashed (unreachable URL, key not injected), so "0 passed" here
+        # measures nothing. The exit code already says "not a pass"; this line
+        # says which knob to check. The report stays on disk for inspection.
+        print(
+            "error: every case errored — check --model-url and that the key is "
+            f"injected into ${args.api_key_env}; the report was still written but "
+            "contains no measurement",
+            file=sys.stderr,
+        )
     return 0 if report.passed == report.total else 1
 
 

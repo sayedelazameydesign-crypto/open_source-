@@ -196,23 +196,46 @@ def _is_latin_char(ch: str) -> bool:
     return ("a" <= ch <= "z") or ("A" <= ch <= "Z")
 
 
+def _is_han_char(ch: str) -> bool:
+    """CJK ideographs — the script that decides whether a page is Chinese.
+
+    Han characters are neither Arabic nor Latin, so before this existed a
+    Chinese sentence counted zero in both buckets and fell through the
+    "total == 0" branch as ``'en'``. The reach layer reads Chinese-language
+    platforms (ADR-0013), which is what made that misclassification matter.
+    """
+    code = ord(ch)
+    return (
+        0x4E00 <= code <= 0x9FFF  # CJK Unified Ideographs
+        or 0x3400 <= code <= 0x4DBF  # Extension A
+        or 0xF900 <= code <= 0xFAFF  # Compatibility Ideographs
+    ) and ch.isalpha()
+
+
 def detect_language(text: str) -> str:
-    """Detect whether *text* is ``'ar'``, ``'en'``, or ``'mixed'``.
+    """Detect whether *text* is ``'ar'``, ``'en'``, ``'zh'``, or ``'mixed'``.
 
     URLs and email addresses are stripped before counting script characters so
-    an Arabic sentence containing a URL or email is not misclassified.
+    an Arabic sentence containing a URL or email is not misclassified. Han
+    characters make a page Chinese-calibrated rather than English: the reach
+    layer reads CJK platforms, and a Chinese page labelled ``'en'`` would route
+    to the English analysers with no warning (ADR-0013).
     """
     cleaned = _URL_RE.sub(" ", text or "")
     cleaned = _EMAIL_RE.sub(" ", cleaned)
     ar_count = sum(1 for ch in cleaned if _is_arabic_char(ch))
     en_count = sum(1 for ch in cleaned if _is_latin_char(ch))
-    total = ar_count + en_count
+    zh_count = sum(1 for ch in cleaned if _is_han_char(ch))
+    total = ar_count + en_count + zh_count
     if total == 0:
         return "en"
+    zh_ratio = zh_count / total
     ar_ratio = ar_count / total
+    if zh_ratio >= 0.5:
+        return "zh"
     if ar_ratio >= 0.8:
         return "ar"
-    if ar_ratio <= 0.2:
+    if ar_ratio <= 0.2 and zh_ratio < 0.5:
         return "en"
     return "mixed"
 

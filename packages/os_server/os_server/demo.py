@@ -88,6 +88,15 @@ def build_registry(
     registry.add(python_execute_tool(code_exec_backend_from_env(), timeout=20.0))
     registry.extend(browser_tools(browser, ssrf_check=policy.for_tool("browser")))
     registry.extend(local_ai_tools(engine))
+    if os.environ.get("CELA_REACH_ENABLE") == "1":
+        # Reach tools (ADR-0013) are opt-in: they fetch the public internet, so
+        # enabling them is a deployment decision rather than a default. They
+        # carry their own public-internet policy (narrowable with
+        # CELA_REACH_ALLOW_HOSTS / CELA_REACH_DENY_HOSTS) on top of the SSRF
+        # floor, so this does not widen the browser's egress policy.
+        from os_reach.tools import register_reach_tools
+
+        register_reach_tools(registry)
     return registry, guard, browser
 
 

@@ -14,7 +14,12 @@ from pydantic import BaseModel, Field
 
 from os_core.types import DANGEROUS_ACTIONS, RiskLevel, ToolCall
 
-# Classic injection phrases, in English and Arabic, plus role-forgery attempts.
+# Classic injection phrases in English, Arabic and Chinese, plus role-forgery
+# attempts. Chinese went in with the reach layer (ADR-0013): six of the
+# platforms we can read are Chinese-language, so a fetched page could carry
+# an injection this set used to wave through (the probe string in
+# tests/test_reach.py used to scan clean). Patterns stay narrow — a verb
+# plus the object it wants, not the mere mention of instructions.
 _INJECTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "ignore_instructions",
@@ -32,7 +37,20 @@ _INJECTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("ar_ignore_prev", re.compile(r"(تجاهل|اهمل)\s+(التعليمات|التوجيهات)", re.I)),
     ("ar_leak_prompt", re.compile(r"(اكشف|اعرض|اطبع)\s+(لي\s+)?(موجه|تعليمات)\s+النظام", re.I)),
     ("delim_break", re.compile(r"<\s*/?\s*(system|instructions)\s*>", re.I)),
+    ("zh_ignore_prev", re.compile(r"忽略(以上|之前|先前|前面)?(的)?(所有)?(指令|指示|要求)")),
+    (
+        "zh_leak_prompt",
+        re.compile(
+            r"(泄露|泄漏|输出|告诉我|展示|打印|显示)(一下)?(你的)?(系统)?(提示词|角色设定|设定)"
+        ),
+    ),
+    # "disregard/override the safety|approval|policy" — the zh twin of
+    # tool_escalation. Deliberately not "越狱" (jailbreak): that word is also
+    # plain iPhone vocabulary and would flag benign text.
+    ("zh_escalation", re.compile(r"(无视|绕过|跳过)(安全|审批|政策|限制|审查)")),
+    ("zh_role_forgery", re.compile(r"^\s*(系统|助手|开发者)\s*[:：]", re.M)),
 )
+
 
 _DANGEROUS_ARG_RE = re.compile(
     r"(rm\s+-rf\s+/|:\(\)\s*\{\s*:\|:&\s*\}|mkfs|dd\s+if=|/etc/shadow|shutdown|reboot)", re.I

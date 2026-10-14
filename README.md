@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 
-> **403 اختبارًا ناجحًا · 0 فشل · دون مفاتيح API ودون شبكة.**
+> **466 اختبارًا ناجحًا · 0 فشل · دون مفاتيح API ودون شبكة.**
 
 ---
 
@@ -97,7 +97,7 @@ packages/
 ## الاختبار
 
 ```bash
-pytest -q          # 403 passed
+pytest -q          # 466 passed (1 اختبار مُعلَّق اختياريًا: psycopg)
 ruff check .       # All checks passed
 ruff format .      # تنسيق موحّد
 ```
@@ -119,6 +119,45 @@ model = OpenAICompatModel(
 
 نفس المسار البرمجي؛ لا تغيير في الوكلاء أو الأدوات.
 
+## التقييم المعياري (`os_evals`)
+
+أمر واحد يشغّل المجموعة المدمجة مقابل نموذج حقيقي، بعقد A/B للمهارات
+([ADR-0012](adr/0012-real-model-eval-verification.md)):
+
+```bash
+pip install -e ".[dev,server]"
+CELA_EVAL_API_KEY="<token>" python -m os_evals run --suite builtin \
+  --model-url https://gateway.example.com/v1 --model-id <model> \
+  --auth-header Authorization --api-key-env CELA_EVAL_API_KEY \
+  --out eval-report.json --ab-skills
+```
+
+* **المفتاح لا يُمرَّر كوسيط**: يُقرأ عند الطلب من المتغيّر المسمّى بـ
+  `--api-key-env` (هنا `CELA_EVAL_API_KEY`، يُحقن من سر CI)، ولا يُخزَّن ولا يُطبع.
+* `--auth-header` يقبل `Authorization` (بصيغة `Bearer`) أو `x-api-key`.
+* `--suite builtin` **فحص توصيل من حالتين وليس مقياس جودة** (يُطبع تنبيه بذلك)؛
+  الأرقام الحقيقية تحتاج `--dataset gaia.jsonl` بصيغة GAIA أو SWE-bench.
+* رموز الخروج: `0` نجاح كل الحالات (أو «لا تراجع» في `--ab-skills`)، `1` فشل
+  حالة/تراجع، `2` لا قياس (تشغيل A/B انهارت فيه كل الحالات في الذراعين).
+  التقرير يُكتب قبل رمز الخروج في كل الحالات.
+
+## قنوات المحتوى (`os_reach` — ADR-0013)
+
+طبقة قراءة للإنترنت العام: كل قناة تعلن ما تستطيع قراءته ومدى صحتها، والمنصة تحتفظ
+بسياساتها — فحص الوجهة **قبل** كل نداء و**قبل كل قفزة إعادة توجيه** فوق أرضية
+`SSRFGuard`، وسقف جسم صلب، وتنقية لكل نص مرئي.
+
+```bash
+export CELA_REACH_ENABLE=1                                  # تفعيل أدوات الوصول (مغلقة افتراضيًا)
+export CELA_REACH_ALLOW_HOSTS="example.org,*.example.org"   # تضييق السياسة (اختياري)
+python -c "from os_server.demo import build_registry; print(build_registry()[0].names())"
+```
+
+تسجَّل الأدوات `web_read`, `rss_read`, `github_repo`, `github_search` (بخطر `network`)
+و`reach_doctor` (فحص محلي بلا جلب). القنوات الأصلية تعمل بـ`httpx` وحدها بلا أي تثبيت
+خارجي؛ ومع `pip install -e ".[dev,server,reach]"` يُضاف محوّل Agent-Reach لقنواته
+الستة عشر (مرحلة 2، قيد التنفيذ). التفاصيل: [`docs/REACH_PLAN.md`](docs/REACH_PLAN.md).
+
 ## حدود صادقة
 
 * `unshare` يحتاج Linux + صلاحيات؛ عند غيابه **لا يوجد عزل شبكة فعلي** ويُبلَّغ
@@ -126,6 +165,11 @@ model = OpenAICompatModel(
 * `packages/web` هيكل موثّق فقط — الواجهة لم تُبنَ.
 * حالة التشغيل الحية داخل العملية افتراضيًا؛ مع `CELA_RUN_STORE_URL=sqlite:///<path>` (أو `--store-url`) تُحفظ الحالات والأحداث والـArtifacts والتذاكر (مجزّأة) بشكل دائم وتنجو التشغيلات المنتهية من إعادة التشغيل — لكن تعدد النسخ المتزامن ما زال يحتاج Postgres+Redis (ADR-0004).
 * مقاعد GAIA / SWE-bench / OSWorld غير مبنية؛ الطبقات جاهزة لكن لا أرقام بعد.
+* قنوات المحتوى تقرأ الإنترنت العام: `web_read`/`rss_read`/`github_*` تصل إلى أي مضيف
+  عام، وتُقيَّد بـ`CELA_REACH_ALLOW_HOSTS`؛ أما محوّل CLI (مرحلة 2) فلا يمكن تقييد
+  شبكته بالسياسة إطلاقًا — لذلك تفعيله لكل قناة وله أحداث تدقيق.
+* لا استخراج كوكيز من متصفح المستخدم ولا قراءة إعدادات Agent-Reach، ولا عمليات كتابة
+  (نشر/تعليق) — القراءة فقط.
 
 ## الترخيص
 

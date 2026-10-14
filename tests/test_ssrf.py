@@ -115,6 +115,57 @@ def test_dns_failure_is_reported_not_raised() -> None:
     assert "DNS resolution failed" in verdict.reason
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://2130706433/",  # decimal form of 127.0.0.1
+        "http://127.1/",  # short form of 127.0.0.1
+        "http://0x7f.0.0.1/",  # hex form of 127.0.0.1
+    ],
+)
+def test_ambiguous_numeric_hosts_are_refused(guard: SSRFGuard, url: str) -> None:
+    """``ipaddress`` reads these as hostnames, so the IP verdict never fired.
+
+    Hardening ported from Agent-Reach's ``normalize_public_http_url``
+    (ADR-0013): a numeric spelling that is not a canonical literal is refused
+    outright instead of being resolved or skipped.
+    """
+    verdict = guard.check(url)
+    assert not verdict.allowed
+    assert "ambiguous spelling" in verdict.reason
+
+
+def test_v4_mapped_loopback_literal_is_refused_by_the_ip_rules(guard: SSRFGuard) -> None:
+    """A canonical literal needs no spelling rule — the IP verdict must catch it.
+
+    Asserted semantically: ``ipaddress`` renders a v4-mapped address as
+    ``::ffff:7f00:1`` on some CPython builds and ``::ffff:127.0.0.1`` on
+    others (CI disagreed with the local interpreter), and the string form is
+    not what this test is about. What must hold everywhere: the verdict is a
+    refusal and the connect IP is loopback.
+    """
+    import ipaddress
+
+    verdict = guard.check("http://[::ffff:127.0.0.1]/")
+    assert not verdict.allowed
+    assert verdict.connect_ip is not None
+    address = ipaddress.ip_address(verdict.connect_ip)
+    mapped = getattr(address, "ipv4_mapped", None) or address
+    assert mapped.is_loopback
+
+
+def test_single_label_hosts_are_refused_unless_opted_in(guard: SSRFGuard) -> None:
+    """``http://intranet/`` is not resolved with ``resolve_dns=False`` at all."""
+    verdict = guard.check("http://intranet/")
+    assert not verdict.allowed
+    assert "single label" in verdict.reason
+
+    opted_in = SSRFGuard(resolve_dns=False, allow_single_label_hosts=True)
+    assert opted_in.check("http://intranet/").allowed
+    # Opting in does not re-open the metadata hole.
+    assert not opted_in.check("http://169.254.169.254/latest/meta-data/").allowed
+
+
 def test_allow_private_mode_still_blocks_metadata() -> None:
     """Dev convenience must never re-open the cloud-metadata hole."""
     guard = SSRFGuard(resolve_dns=False, allow_private=True)

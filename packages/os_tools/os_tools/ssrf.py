@@ -2,9 +2,22 @@
 
 Section 5.2 of the architecture doc: the sandbox must never reach loopback,
 link-local, cloud metadata or RFC1918 space. This module is *the* allow/deny
-decision point for every outbound URL, used by the browser tool and any HTTP
-tool. Note that DNS is resolved before the verdict, which closes the
-rebinding hole only if the caller pins the resolved IP (``connect_ip``).
+decision point for every outbound URL, used by the browser tool, the egress
+policy and the reach layer. Note that DNS is resolved before the verdict,
+which closes the rebinding hole only if the caller pins the resolved IP
+(``connect_ip``).
+
+Two host-shaped bypasses are refused outright, because both slip past an IP
+check that only ever sees *canonical* literals (hardening ported from
+Agent-Reach's ``normalize_public_http_url``, ADR-0013):
+
+* **Ambiguous numeric spellings** — ``http://2130706433/``, ``http://127.1/``
+  and ``http://0x7f.0.0.1/`` all mean loopback while ``ipaddress`` reads them
+  as hostnames, so the DNS/IP verdict never fires.
+* **Single-label hosts** — ``http://intranet/`` resolves inside the network the
+  guard is trying to protect, and with ``resolve_dns=False`` it is not even
+  resolved. Internal service names are opt-in via ``allow_single_label_hosts``
+  (the honest escape hatch beats a silent hole).
 """
 
 from __future__ import annotations
@@ -49,6 +62,31 @@ class BlockedURLError(RuntimeError):
     pass
 
 
+def _canonical_ip_literal(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """Return the address when *host* is a canonical IP literal, else None."""
+    try:
+        return ipaddress.ip_address(host)
+    except ValueError:
+        return None
+
+
+def _ambiguous_numeric_host(host: str) -> str | None:
+    """Return the address a legacy numeric spelling means, if this is one.
+
+    ``inet_aton`` accepts forms ``ipaddress`` rejects (``2130706433``,
+    ``127.1``, ``0x7f.0.0.1``). Every one of them is an address in disguise —
+    nothing legitimate reaches the internet through one — so the guard refuses
+    them instead of guessing.
+    """
+    if _canonical_ip_literal(host) is not None:
+        return None
+    try:
+        packed = socket.inet_aton(host)
+    except OSError:
+        return None
+    return str(ipaddress.IPv4Address(packed))
+
+
 class SSRFGuard(BaseModel):
     """Policy object: allow public internet, deny everything internal."""
 
@@ -58,6 +96,11 @@ class SSRFGuard(BaseModel):
     blocked_ips: set[str] = Field(default_factory=lambda: set(BLOCKED_IPS))
     extra_blocked_hosts: set[str] = Field(default_factory=set)
     allowed_hosts: set[str] | None = None  # if set, allowlist mode
+    # Internal service names ("http://intranet/") are single-label: refused
+    # unless an operator opts in, because with resolve_dns=False they are not
+    # resolved and with DNS they resolve inside the very network this guard
+    # exists to protect. Opting in is a written decision, not a silent default.
+    allow_single_label_hosts: bool = False
     resolve_dns: bool = True
     default_port: int = 443
 
@@ -77,13 +120,28 @@ class SSRFGuard(BaseModel):
         if self.allowed_hosts is not None and host not in self.allowed_hosts:
             return self._deny(url, host, f"host '{host}' is not on the allow list")
 
+        ambiguous = _ambiguous_numeric_host(host)
+        if ambiguous is not None:
+            return self._deny(
+                url,
+                host,
+                f"numeric host '{host}' is an ambiguous spelling of {ambiguous}; "
+                "only canonical IP literals are accepted",
+                connect_ip=ambiguous,
+            )
+
         # Literal IP in the URL?
-        try:
-            literal = ipaddress.ip_address(host)
-        except ValueError:
-            literal = None
+        literal = _canonical_ip_literal(host)
         if literal is not None:
             return self._verdict_for_ip(url, host, literal)
+
+        if not self.allow_single_label_hosts and "." not in host:
+            return self._deny(
+                url,
+                host,
+                f"host '{host}' is a single label (no domain part); internal service "
+                "names need allow_single_label_hosts=True",
+            )
 
         if not self.resolve_dns:
             return URLVerdict(

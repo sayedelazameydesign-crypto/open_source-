@@ -4,10 +4,30 @@ from __future__ import annotations
 
 import json
 
+from os_core.types import ModelResponse, Usage
 from os_evals.cli import main as eval_main
 from os_server.demo import build_demo_platform_for
 
 from os_evals import Checker, EvalRunner, builtin_cases, load_jsonl
+
+
+class _StubModel:
+    """Offline stand-in for ``OpenAICompatModel`` on the real-model CLI path.
+
+    Answers the way a competent model would — with its own words, not the demo
+    script's sentence, which is exactly the case the checkers must accept.
+    """
+
+    def __init__(self, **kwargs) -> None:
+        self.kwargs = kwargs
+        self.name = "stub-model"
+
+    async def complete(self, messages, **kwargs) -> ModelResponse:
+        return ModelResponse(
+            content="The sum of the integers from 0 to 100 is 5050.",
+            model=self.name,
+            usage=Usage(prompt_tokens=120, completion_tokens=18),
+        )
 
 
 def test_checker_kinds() -> None:
@@ -126,7 +146,86 @@ def test_cli_ab_unreachable_model_fails_instead_of_reporting_a_zero_delta(
     assert "never-sent-anywhere" not in json.dumps(bundle)
 
 
-def test_cli_missing_key_names_the_env_var(tmp_path, monkeypatch) -> None:
+def test_builtin_checkers_hold_for_a_real_models_wording() -> None:
+    """A correct answer must pass whether it is the demo's sentence or a model's.
+
+    Regression test (ADR-0012): ``builtin-answer-shape`` used to pin the demo
+    script's exact phrase, so pointing the suite at a real endpoint scored a
+    correct, sandbox-verified answer as a failure and failed the workflow.
+    """
+    cases = {c.id: c for c in builtin_cases()}
+    demo_answer = "The sandbox returned: 5050. The sum of 0..100 is 5050."
+    model_answer = "The sum of the integers from 0 to 100 is 5050.\n5050"
+    for case in cases.values():
+        assert case.checker.check(demo_answer), f"{case.id} broke the offline demo"
+        assert case.checker.check(model_answer), f"{case.id} rejects a real model's wording"
+    # Still a check, not a rubber stamp: a wrong result or a missing answer fails.
+    assert not cases["builtin-sum-0-100"].checker.check("The sum of 0 to 100 is 4950.")
+    assert not cases["builtin-answer-shape"].checker.check("The sum of 0 to 100 is 4950.")
+    assert not cases["builtin-answer-shape"].checker.check("I could not compute that sum.")
+
+
+def test_cli_real_model_path_scores_a_correct_answer(tmp_path, monkeypatch, capsys) -> None:
+    """The runbook command, exercised end to end without a network."""
+    monkeypatch.setenv("CELA_STUB_KEY", "not-a-real-secret")
+    monkeypatch.setattr("os_core.models.OpenAICompatModel", _StubModel)
+    out = tmp_path / "report.json"
+    code = eval_main(
+        [
+            "run",
+            "--suite",
+            "builtin",
+            "--model-url",
+            "https://gateway.example.com/v1",
+            "--model-id",
+            "stub-model",
+            "--auth-header",
+            "Authorization",
+            "--api-key-env",
+            "CELA_STUB_KEY",
+            "--out",
+            str(out),
+        ]
+    )
+    assert code == 0
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["passed"] == payload["total"] == 2, payload
+    assert all(r["tokens_used"] == 138 for r in payload["results"])  # usage is recorded
+    assert all(r["status"] == "completed" for r in payload["results"])
+    err = capsys.readouterr().err
+    assert "plumbing smoke test" in err  # builtin is not sold as a benchmark
+    assert "not-a-real-secret" not in err and "not-a-real-secret" not in out.read_text(
+        encoding="utf-8"
+    )  # secret hygiene holds on this path too
+
+
+def test_cli_single_run_all_errored_says_which_knob_to_check(tmp_path, monkeypatch, capsys) -> None:
+    """Every case crashing must not look like an ordinary 'some cases failed'."""
+    monkeypatch.setenv("CELA_EVAL_API_KEY", "never-sent-anywhere")
+    out = tmp_path / "report.json"
+    code = eval_main(
+        [
+            "run",
+            "--suite",
+            "builtin",
+            "--model-url",
+            f"http://127.0.0.1:{_dead_port()}/v1",
+            "--model-id",
+            "nothing-listens-here",
+            "--api-key-env",
+            "CELA_EVAL_API_KEY",
+            "--out",
+            str(out),
+        ]
+    )
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "every case errored" in err and "CELA_EVAL_API_KEY" in err
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["passed"] == 0 and all(r["status"] == "error" for r in payload["results"])
+
+
+def test_cli_missing_key_names_the_env_var(tmp_path, monkeypatch, capsys) -> None:
     """The empty-secret case must say which variable is empty, not just fail."""
     monkeypatch.delenv("CELA_MISSING_KEY_XYZ", raising=False)
     out = tmp_path / "report.json"
@@ -149,3 +248,5 @@ def test_cli_missing_key_names_the_env_var(tmp_path, monkeypatch) -> None:
     payload = json.loads(out.read_text(encoding="utf-8"))
     assert payload["passed"] == 0
     assert "CELA_MISSING_KEY_XYZ is not set" in payload["results"][0]["error"]
+    # ...and the operator is told on stderr, not left to diff the report.
+    assert "CELA_MISSING_KEY_XYZ" in capsys.readouterr().err
