@@ -93,3 +93,17 @@ async def test_platform_learns_then_reuses_skill() -> None:
     # Reuse was scored and learning merged — still exactly one library card.
     assert len(manager.list_skills()) == 1
     assert manager.list_skills()[0].success_count >= 2
+
+
+def test_demo_skill_manager_is_process_wide_and_opt_in(monkeypatch, tmp_path) -> None:
+    import os_server.demo as demo
+
+    demo._SKILL_MANAGER = None
+    monkeypatch.delenv("CELA_SKILL_STORE_URL", raising=False)
+    assert demo.demo_skill_manager() is None  # off unless explicitly enabled
+
+    monkeypatch.setenv("CELA_SKILL_STORE_URL", f"sqlite:///{tmp_path / 'skills.db'}")
+    first = demo.demo_skill_manager()
+    second = demo.demo_skill_manager()
+    assert first is second and first is not None  # shared: the library accumulates
+    demo._SKILL_MANAGER = None
