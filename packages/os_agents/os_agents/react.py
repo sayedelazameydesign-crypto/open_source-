@@ -201,6 +201,7 @@ class ReActAgent(BaseModel):
                     "steps": budget.steps,
                     "tokens": run.tokens_used,
                     "budget": budget.status(),
+                    "answer": run.final_answer or "",
                 },
             )
         )
@@ -304,3 +305,40 @@ class ReActAgent(BaseModel):
     def attach_artifact(run: RunState, artifact: Artifact) -> None:
         if artifact not in run.artifacts:
             run.artifacts.append(artifact)
+
+
+# Tool-name -> canonical browser action. Shared with the flow agent so both
+# engines report the same action vocabulary to the UI/test harness.
+BROWSER_ACTIONS: dict[str, str] = {
+    "browser_navigate": "goto",
+    "browser_goto": "goto",
+    "goto": "goto",
+    "browser_click": "click",
+    "click": "click",
+    "browser_fill": "fill",
+    "fill": "fill",
+    "browser_type": "type",
+    "type": "type",
+    "browser_scroll": "scroll",
+    "scroll": "scroll",
+    "browser_key": "key",
+    "browser_press": "key",
+    "key": "key",
+}
+
+
+async def browser_action(tool: Any, action: str, **kwargs: Any) -> ToolResult:
+    """Dispatch a browser action through a BrowserTool and surface x, y coords.
+
+    Accepts either a canonical action name (``goto``, ``click``, ``fill``,
+    ``type``, ``scroll``, ``key``) or a tool name (``browser_navigate`` etc.)
+    and returns a :class:`ToolResult` whose ``metadata`` carries the action
+    name. For ``click`` and ``fill`` the FakeBrowser backend additionally
+    reports deterministic integer ``x``/``y`` center coordinates.
+    """
+    canonical = BROWSER_ACTIONS.get(action, action)
+    result = await tool.browser_action(canonical, **kwargs)
+    meta = dict(result.metadata)
+    meta.setdefault("action", canonical)
+    result.metadata = meta
+    return result

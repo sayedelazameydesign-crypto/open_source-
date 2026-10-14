@@ -140,3 +140,82 @@ async def test_snapshot_tool_shape() -> None:
     await tool.navigate("https://example.org/")
     page = await tool.backend.snapshot()
     assert page.title == "Home"
+
+
+def test_fake_browser_center_is_deterministic_int_pair(fake_browser: FakeBrowser) -> None:
+    x1, y1 = fake_browser.center("#go")
+    x2, y2 = fake_browser.center("#go")
+    assert isinstance(x1, int) and isinstance(y1, int)
+    assert (x1, y1) == (x2, y2)
+    assert 0 <= x1 <= fake_browser.viewport[0]
+    assert 0 <= y1 <= fake_browser.viewport[1]
+
+
+def test_fake_browser_different_selectors_get_different_centers(
+    fake_browser: FakeBrowser,
+) -> None:
+    assert fake_browser.center("#submit") != fake_browser.center("#cancel")
+
+
+async def test_click_returns_non_null_integer_coordinates(
+    browser_tool: BrowserTool,
+) -> None:
+    await browser_tool.navigate("https://example.org/search")
+    result = await browser_tool.act("click", "#go")
+    assert result.ok
+    assert isinstance(result.metadata.get("x"), int)
+    assert isinstance(result.metadata.get("y"), int)
+    assert 0 <= result.metadata["x"] <= 1280
+    assert 0 <= result.metadata["y"] <= 800
+
+
+async def test_fill_returns_non_null_integer_coordinates(
+    browser_tool: BrowserTool,
+) -> None:
+    await browser_tool.navigate("https://example.org/search")
+    result = await browser_tool.act("fill", "#q", value="hello")
+    assert result.ok
+    assert isinstance(result.metadata.get("x"), int)
+    assert isinstance(result.metadata.get("y"), int)
+
+
+@pytest.mark.parametrize(
+    "name,kwargs",
+    [
+        ("goto", {"url": "https://example.org/search"}),
+        ("browser_navigate", {"url": "https://example.org/search"}),
+        ("click", {"selector": "#go"}),
+        ("browser_click", {"selector": "#go"}),
+        ("fill", {"selector": "#q", "value": "v"}),
+        ("type", {"selector": "#q", "text": "v"}),
+        ("scroll", {"selector": "body", "dx": 0, "dy": 100}),
+        ("key", {"key": "Enter"}),
+    ],
+)
+async def test_browser_action_routes_every_action(
+    browser_tool: BrowserTool, name: str, kwargs: dict
+) -> None:
+    if name not in {"goto", "browser_navigate"}:
+        await browser_tool.navigate("https://example.org/search")
+    result = await browser_tool.browser_action(name, **kwargs)
+    assert result.ok
+    assert result.metadata["action"] in {"goto", "click", "fill", "type", "scroll", "key"}
+
+
+def test_browser_tools_registers_all_expected_action_names() -> None:
+    from os_tools.browser import browser_tools as make_tools
+
+    backend = FakeBrowser(pages={"https://example.org/": PageSnapshot(url="https://example.org/")})
+    tool = BrowserTool(backend=backend, policy=RetryPolicy(max_attempts=1, backoff=0.0))
+    names = {t.name for t in make_tools(tool)}
+    for expected in (
+        "browser_navigate",
+        "browser_click",
+        "browser_fill",
+        "browser_type",
+        "browser_scroll",
+        "browser_key",
+        "browser_snapshot",
+        "browser_action",
+    ):
+        assert expected in names

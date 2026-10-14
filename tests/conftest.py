@@ -96,6 +96,17 @@ def browser_tool(fake_browser: FakeBrowser) -> BrowserTool:
     return BrowserTool(backend=fake_browser, policy=RetryPolicy(max_attempts=2, backoff=0.0))
 
 
+@pytest.fixture
+def browser_registry(registry: ToolRegistry, browser_tool: BrowserTool) -> ToolRegistry:
+    """Registry pre-loaded with ``browser_tools`` for agent-level tests."""
+    from os_tools.browser import browser_tools
+    from os_tools.ssrf import SSRFGuard
+
+    for t in browser_tools(browser_tool, ssrf_check=SSRFGuard(resolve_dns=False).check):
+        registry.add(t)
+    return registry
+
+
 def _make_tool_response(*calls: ToolCall, content: str = "") -> ModelResponse:
     return ModelResponse(
         content=content, tool_calls=list(calls), usage=Usage(prompt_tokens=50, completion_tokens=20)
