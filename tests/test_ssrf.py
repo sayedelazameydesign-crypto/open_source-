@@ -136,10 +136,22 @@ def test_ambiguous_numeric_hosts_are_refused(guard: SSRFGuard, url: str) -> None
 
 
 def test_v4_mapped_loopback_literal_is_refused_by_the_ip_rules(guard: SSRFGuard) -> None:
-    """A canonical literal needs no spelling rule — the IP verdict must catch it."""
+    """A canonical literal needs no spelling rule — the IP verdict must catch it.
+
+    Asserted semantically: ``ipaddress`` renders a v4-mapped address as
+    ``::ffff:7f00:1`` on some CPython builds and ``::ffff:127.0.0.1`` on
+    others (CI disagreed with the local interpreter), and the string form is
+    not what this test is about. What must hold everywhere: the verdict is a
+    refusal and the connect IP is loopback.
+    """
+    import ipaddress
+
     verdict = guard.check("http://[::ffff:127.0.0.1]/")
     assert not verdict.allowed
-    assert verdict.connect_ip == "::ffff:7f00:1"
+    assert verdict.connect_ip is not None
+    address = ipaddress.ip_address(verdict.connect_ip)
+    mapped = getattr(address, "ipv4_mapped", None) or address
+    assert mapped.is_loopback
 
 
 def test_single_label_hosts_are_refused_unless_opted_in(guard: SSRFGuard) -> None:
