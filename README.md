@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 
-> **665 اختبارًا ناجحًا · 0 فشل · دون مفاتيح API ودون شبكة.**
+> **713 اختبارًا ناجحًا · 1 متخطّى اختياريًا (`psycopg`) · 0 فشل · دون مفاتيح API ودون شبكة.**
 
 ---
 
@@ -119,7 +119,7 @@ packages/
 ├── os_tools/         Sandbox، المتصفح، SSRF، سياسة الخروج (egress)، سجل الأدوات، MCP
 ├── os_orchestration/ واجهة Platform واختيار الوضع
 ├── os_server/        REST/WS/SSE + /cela/v1 + CelaBrowser + CLI + حزمة العرض
-└── web/              هيكل فقط (المرحلة 3 — لم يُبنَ)
+└── web/              واجهة Next.js 15 مبنية (ADR-0005) — البناء ناجح
 ```
 
 `os_tools` و `os_agents` لا يعرف أحدهما الآخر؛ يلتقيان فقط عبر `ToolRegistry` و
@@ -128,7 +128,7 @@ packages/
 ## الاختبار
 
 ```bash
-pytest -q          # 665 passed (2 اختبارات مُعلَّقة اختياريًا: playwright, psycopg)
+pytest -q          # 713 passed, 1 skipped (اختياري: psycopg)
 ruff check .       # All checks passed
 ruff format .      # تنسيق موحّد
 ```
@@ -221,7 +221,7 @@ cela reach run github_search "agents" --yes
 
 * `unshare` يحتاج Linux + صلاحيات؛ عند غيابه **لا يوجد عزل شبكة فعلي** ويُبلَّغ
   `network="unverified"` بدل ادعاء العزل. الإنتاج يحتاج E2B/Firecracker.
-* `packages/web` هيكل موثّق فقط — الواجهة لم تُبنَ.
+* `packages/web` واجهة Next.js 15 مبنيّة ويجتاز بناؤها `npm run build`؛ معاينة الـArtifacts المضمنة وشجرة التنفيذ الحية ما زالتا ضمن المتبقي.
 * حالة التشغيل الحية داخل العملية افتراضيًا؛ مع `CELA_RUN_STORE_URL=sqlite:///<path>` (أو `--store-url`) تُحفظ الحالات والأحداث والـArtifacts والتذاكر (مجزّأة) بشكل دائم وتنجو التشغيلات المنتهية من إعادة التشغيل — لكن تعدد النسخ المتزامن ما زال يحتاج Postgres+Redis (ADR-0004).
 * سجل النتائج ملف محلي واحد بلا تدوير (rotation) ولا تنسيق بين المضيفين؛ قراءته
   تعيد قراءة الملف كاملًا — كافٍ لنموذج أولي، وغير كافٍ لأسطول.
