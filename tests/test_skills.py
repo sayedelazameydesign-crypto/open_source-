@@ -107,3 +107,44 @@ def test_demo_skill_manager_is_process_wide_and_opt_in(monkeypatch, tmp_path) ->
     second = demo.demo_skill_manager()
     assert first is second and first is not None  # shared: the library accumulates
     demo._SKILL_MANAGER = None
+
+
+def test_parameterization_extracts_and_fills_task_values() -> None:
+    from os_skills import fill_steps, parameterize_steps
+
+    steps = [
+        {
+            "title": "Filter",
+            "tool": "python_execute",
+            "args": {"code": "print([x for x in data if x > 50])", "threshold": 50},
+        }
+    ]
+    templated, inputs = parameterize_steps("Filter values above 50 from the dataset", steps)
+    assert inputs and inputs[0].original_value == "50"
+    assert "{{" in str(templated[0]["args"]["code"])
+    filled, mapping = fill_steps(templated, inputs, "Filter values above 80 from the dataset")
+    assert mapping[inputs[0].name] == "80"
+    assert "80" in str(filled[0]["args"]["code"])
+
+
+def test_versioning_and_rollback() -> None:
+    manager = _manager()
+    skill = manager.learn_from_run(_completed_run())
+    assert skill is not None
+    skill.description = "changed description"
+    skill.version += 1
+    manager.store.save_skill(skill)
+    assert [v.version for v in manager.list_versions(skill.skill_id)] == [1]
+    restored = manager.rollback(skill.skill_id)
+    assert restored is not None and restored.version == 1
+    assert manager.store.get_skill(skill.skill_id).description != "changed description"
+
+
+def test_quarantined_skill_is_not_retrieved() -> None:
+    manager = _manager()
+    skill = manager.learn_from_run(_completed_run())
+    assert skill is not None
+    for _ in range(3):
+        manager.record_outcome(skill.skill_id, success=False)
+    assert manager.store.get_skill(skill.skill_id).status == "quarantined"
+    assert manager.find_relevant("Sum the integers from 0 to 100") is None

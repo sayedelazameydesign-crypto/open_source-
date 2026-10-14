@@ -6,7 +6,9 @@ import hashlib
 from typing import Any
 
 from os_core.state import RunState, RunStatus
+from os_core.types import DANGEROUS_ACTIONS
 
+from os_skills.parameterize import parameterize_steps
 from os_skills.types import Skill
 
 
@@ -53,12 +55,19 @@ class SkillExtractor:
         if not steps:
             return None  # a chat-only success contains no reusable procedure
         digest = hashlib.sha256(run_state.task.encode()).hexdigest()[:10]
+        steps, inputs = parameterize_steps(run_state.task, steps)
+        tools_sorted = sorted(set(tools))
         return Skill(
             skill_id=f"skill_{digest}",
             name=f"Skill: {run_state.task[:60]}",
             description=run_state.task,
             triggers=self.keywords(run_state.task),
             steps_template=steps,
-            tools=sorted(set(tools)),
+            tools=tools_sorted,
             source_run_id=run_state.run_id,
+            inputs=inputs,
+            preconditions=["A previous run with this pattern completed successfully."],
+            expected_outcome=(run_state.final_answer or "")[:200],
+            allowed_tools=tools_sorted,
+            requires_approval=bool(set(tools_sorted) & set(DANGEROUS_ACTIONS)),
         )

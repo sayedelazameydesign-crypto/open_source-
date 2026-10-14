@@ -10,6 +10,15 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
+class SkillInput(BaseModel):
+    """One variable slot extracted from a run and filled on reuse."""
+
+    name: str
+    placeholder: str  # e.g. "{{limit}}"
+    original_value: str
+    kind: str = "string"  # number | string
+
+
 class Skill(BaseModel):
     skill_id: str
     name: str
@@ -23,6 +32,18 @@ class Skill(BaseModel):
     source_run_id: str | None = None
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
+    # --- generalisation & governance (ADR-0008) ---------------------------
+    inputs: list[SkillInput] = Field(default_factory=list)
+    preconditions: list[str] = Field(default_factory=list)
+    expected_outcome: str = ""
+    status: str = "candidate"  # candidate -> active (>=2 successes) -> quarantined
+    confidence: float = 0.5
+    last_outcome_at: float | None = None
+    allowed_tools: list[str] = Field(default_factory=list)
+    requires_approval: bool = False
+    uses: int = 0
+    total_tokens: int = 0
+    total_seconds: float = 0.0
 
     @property
     def signature(self) -> str:
@@ -41,6 +62,28 @@ class Skill(BaseModel):
     def reliability(self) -> float:
         total = self.success_count + self.failure_count
         return self.success_count / total if total else 0.0
+
+    def refresh_status(self, *, now: float | None = None) -> None:
+        """Decay confidence with age and quarantine persistent failures."""
+        import time as _time
+
+        moment = now if now is not None else _time.time()
+        self.confidence = round(0.7 * self.reliability + 0.3 * self._recency(moment), 4)
+        trials = self.success_count + self.failure_count
+        if trials >= 3 and self.failure_count > self.success_count:
+            self.status = "quarantined"
+        elif self.success_count >= 2:
+            self.status = "active"
+        else:
+            self.status = "candidate"
+
+    def _recency(self, now: float) -> float:
+        import math
+
+        if self.last_outcome_at is None:
+            return 0.5
+        age_days = max(0.0, (now - self.last_outcome_at) / 86400.0)
+        return math.exp(-age_days / 30.0)  # 30-day decay horizon
 
     def search_text(self) -> str:
         return " ".join([self.name, self.description, *self.triggers, *self.tools])

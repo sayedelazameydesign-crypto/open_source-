@@ -148,7 +148,9 @@ class Platform(BaseModel):
             return state
         success = state.status.value == "completed"
         if used_skill_id is not None:
-            self.skill_manager.record_outcome(used_skill_id, success=success)
+            self.skill_manager.record_outcome(
+                used_skill_id, success=success, tokens_used=state.tokens_used
+            )
         elif self.skill_auto_learn and success:
             learned = self.skill_manager.learn_from_run(state)
             if learned is not None:

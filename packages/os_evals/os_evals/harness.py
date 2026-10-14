@@ -84,6 +84,21 @@ class EvalReport(BaseModel):
         )
 
 
+def compare_reports(baseline: EvalReport, skilled: EvalReport) -> dict[str, Any]:
+    """A/B delta: positive numbers mean the skilled arm did better."""
+
+    def avg(report: EvalReport, field: str) -> float:
+        vals = [getattr(r, field) for r in report.results]
+        return round(sum(vals) / len(vals), 3) if vals else 0.0
+
+    return {
+        "pass_rate_delta": round(skilled.pass_rate - baseline.pass_rate, 4),
+        "avg_steps_delta": round(avg(skilled, "steps_used") - avg(baseline, "steps_used"), 3),
+        "avg_tokens_delta": round(avg(skilled, "tokens_used") - avg(baseline, "tokens_used"), 3),
+        "avg_seconds_delta": round(avg(skilled, "seconds") - avg(baseline, "seconds"), 3),
+    }
+
+
 def _answer_text(state: RunState) -> str:
     parts = [state.final_answer]
     parts.extend(r.output for r in state.results if r.output)

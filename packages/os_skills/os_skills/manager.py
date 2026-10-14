@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from os_core.state import RunState
@@ -37,8 +38,11 @@ class SkillManager:
         existing = self.store.find_by_signature(candidate.signature)
         if existing is not None:
             existing.success_count += 1
+            existing.last_outcome_at = time.time()
+            existing.refresh_status()
             if len(candidate.steps_template) > len(existing.steps_template):
                 existing.steps_template = candidate.steps_template
+                existing.version += 1  # prior card is snapshotted by the store
             self.store.save_skill(existing)
             return existing
         self.store.save_skill(candidate)
@@ -57,7 +61,9 @@ class SkillManager:
         return skill, score, self.injector.inject(task, skill, score)
 
     # -- feedback / housekeeping ---------------------------------------------
-    def record_outcome(self, skill_id: str, *, success: bool) -> Skill | None:
+    def record_outcome(
+        self, skill_id: str, *, success: bool, tokens_used: int = 0, seconds: float = 0.0
+    ) -> Skill | None:
         skill = self.store.get_skill(skill_id)
         if skill is None:
             return None
@@ -65,8 +71,19 @@ class SkillManager:
             skill.success_count += 1
         else:
             skill.failure_count += 1
+        skill.uses += 1
+        skill.total_tokens += tokens_used
+        skill.total_seconds += seconds
+        skill.last_outcome_at = time.time()
+        skill.refresh_status()  # decayed confidence + candidate/active/quarantined
         self.store.save_skill(skill)
         return skill
+
+    def rollback(self, skill_id: str) -> Skill | None:
+        return self.store.rollback(skill_id)
+
+    def list_versions(self, skill_id: str) -> list[Skill]:
+        return self.store.list_versions(skill_id)
 
     def prune(self, *, min_trials: int = 3) -> list[str]:
         """Delete skills that fail more than they succeed after enough trials."""

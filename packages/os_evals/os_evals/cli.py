@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import sys
 from pathlib import Path
@@ -45,6 +46,12 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--model-url", default=os.environ.get("CELA_EVAL_MODEL_URL"))
     run.add_argument("--model-id", default=os.environ.get("CELA_EVAL_MODEL_ID", ""))
     run.add_argument("--out", default=None, help="write the JSON report here")
+    run.add_argument(
+        "--ab-skills",
+        action="store_true",
+        help="A/B: run the builtin/demo suite without skills, then with a shared "
+        "learning SkillManager, and report pass-rate/steps/tokens/time deltas",
+    )
     args = parser.parse_args(argv)
 
     if args.dataset:
@@ -75,6 +82,36 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     else:
         factory = _demo_factory
+
+    if args.ab_skills:
+        if args.model_url or args.dataset:
+            print("error: --ab-skills currently covers the offline demo suite", file=sys.stderr)
+            return 2
+        from os_tools.local_ai import LocalAIEngine
+
+        from os_skills import InMemorySkillStore, SkillManager
+
+        def skilled_factory(mode: str, max_steps: int):
+            platform = _demo_factory(mode, max_steps)
+            platform.skill_manager = shared_manager
+            return platform
+
+        shared_manager = SkillManager(InMemorySkillStore(), LocalAIEngine())
+        baseline = asyncio.run(EvalRunner(_demo_factory).run_suite(cases))
+        skilled = asyncio.run(EvalRunner(skilled_factory).run_suite(cases))
+        from os_evals.harness import compare_reports
+
+        bundle = {
+            "baseline": baseline.model_dump(),
+            "skilled": skilled.model_dump(),
+            "delta": compare_reports(baseline, skilled),
+            "skills_learned": [s.model_dump() for s in shared_manager.list_skills()],
+        }
+        payload = json.dumps(bundle, indent=2, ensure_ascii=False)
+        print(payload)
+        if args.out:
+            Path(args.out).write_text(payload, encoding="utf-8")
+        return 0 if skilled.pass_rate >= baseline.pass_rate else 1
 
     report = asyncio.run(EvalRunner(factory).run_suite(cases))
     payload = report.model_dump_json(indent=2)

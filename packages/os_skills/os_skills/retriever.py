@@ -15,7 +15,7 @@ class SkillRetriever:
         self.min_score = min_score
 
     def find(self, task: str, *, top_k: int = 1) -> list[tuple[Skill, float]]:
-        skills = self.store.list_skills()
+        skills = [s for s in self.store.list_skills() if s.status != "quarantined"]
         if not skills:
             return []
         docs = [
@@ -29,8 +29,9 @@ class SkillRetriever:
             skill = by_id.get(hit["id"])
             if skill is None:
                 continue
-            # Reliability discount: a skill that mostly fails must earn its reuse.
-            score = float(hit["score"]) * (0.5 + 0.5 * skill.reliability)
+            # Confidence discount (reliability + recency decay).
+            skill.refresh_status()
+            score = float(hit["score"]) * (0.5 + 0.5 * skill.confidence)
             if score >= self.min_score:
                 ranked.append((skill, round(score, 4)))
         return sorted(ranked, key=lambda pair: pair[1], reverse=True)[:top_k]

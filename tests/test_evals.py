@@ -65,3 +65,17 @@ def test_cli_dataset_without_model_is_refused(tmp_path) -> None:
     dataset = tmp_path / "d.jsonl"
     dataset.write_text(json.dumps({"id": "1", "task": "t", "expected": "x"}), encoding="utf-8")
     assert eval_main(["run", "--dataset", str(dataset)]) == 2
+
+
+def test_cli_ab_skills_reports_delta(tmp_path) -> None:
+    out = tmp_path / "ab.json"
+    code = eval_main(["run", "--suite", "builtin", "--ab-skills", "--out", str(out)])
+    assert code == 0
+    bundle = json.loads(out.read_text(encoding="utf-8"))
+    assert set(bundle["delta"]) == {
+        "pass_rate_delta",
+        "avg_steps_delta",
+        "avg_tokens_delta",
+        "avg_seconds_delta",
+    }
+    assert bundle["skills_learned"], "the skilled arm must learn from its cases"
