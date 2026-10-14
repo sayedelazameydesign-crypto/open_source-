@@ -97,7 +97,8 @@ class PlanningFlow(BaseModel):
         await self.bus.publish(
             Event(
                 type=EventType.RUN_STARTED,
-                run_id=self.bus.run_id, data={"task": task, "mode": "flow"}
+                run_id=self.bus.run_id,
+                data={"task": task, "mode": "flow"},
             )
         )
 
@@ -142,7 +143,6 @@ class PlanningFlow(BaseModel):
                 run_id=self.bus.run_id,
                 data={
                     "status": run.status.value,
-                    "answer": answer,
                     "steps": len(graph.steps),
                     "replans": run.replans,
                     "budget": budget.status(),
