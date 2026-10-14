@@ -197,6 +197,7 @@ class ReActAgent(BaseModel):
                 run_id=run.run_id,
                 data={
                     "status": run.status.value,
+                    "answer": run.final_answer,
                     "reason": stopped_reason,
                     "steps": budget.steps,
                     "tokens": run.tokens_used,

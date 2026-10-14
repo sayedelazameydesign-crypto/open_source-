@@ -141,6 +141,7 @@ class PlanningFlow(BaseModel):
                 run_id=run.run_id,
                 data={
                     "status": run.status.value,
+                    "answer": answer,
                     "steps": len(graph.steps),
                     "replans": run.replans,
                     "budget": budget.status(),
