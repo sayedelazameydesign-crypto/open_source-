@@ -76,7 +76,7 @@ GET /cela/v1/whoami  + الرمز الخاص (CELA_PRIVATE_API_TOKEN) → 200 {"
 | `GET /cela/v1/runs` | قائمة التشغيلات الحالية والمنتهية | `200 {"runs": [...]}` |
 | `GET /cela/v1/runs/{run_id}` | لقطة حالة التشغيل (`snapshot`) | `200` أو `404` |
 | `POST /cela/v1/runs/{run_id}/wait` | انتظار اكتمال التشغيل (محمي بـ `asyncio.shield`) | `200` أو `404` أو `504` |
-| `GET /cela/v1/runs/{run_id}/events` | بث SSE لأحداث التشغيل | `200 text/event-stream` أو `404` |
+| `GET /cela/v1/runs/{run_id}/events` | بث SSE لأحداث التشغيل؛ يقبل `?after_seq=N` لاستئناف عميل منقطع من آخر حدث استلمه | `200 text/event-stream` أو `404` أو `422` (مؤشر غير صالح) |
 | `POST /cela/v1/runs/{run_id}/approve` | إجابة طلب موافقة بشرية (HITL) | `200 {"delivered": bool}` أو `404` / `409` / `422` |
 | `GET /cela/v1/runs/{run_id}/artifacts` | قائمة المخرجات (بما فيها لقطات الشاشة) | `200 {"run_id": ..., "artifacts": [...]}` |
 | `GET /cela/v1/runs/{run_id}/artifacts/{filename}` | جلب مخرج معيّن بصيغة JSON | `200` أو `404` |

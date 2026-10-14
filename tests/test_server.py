@@ -145,6 +145,102 @@ def test_sse_hands_a_late_client_the_full_history_exactly_once(client: TestClien
     assert len(seen) == len(set(seen))
 
 
+def _sse_ids_and_seqs(client: TestClient, run_id: str, query: str = "") -> tuple[list, list]:
+    ids: list[str] = []
+    seqs: list[int] = []
+    with client.stream("GET", f"/runs/{run_id}/events{query}") as resp:
+        assert resp.status_code == 200
+        for line in resp.iter_lines():
+            if not line.startswith("data: "):
+                continue
+            message = json.loads(line.removeprefix("data: "))
+            ids.append(message["id"])
+            seqs.append(message["seq"])
+            if message["type"] == "run_finished":
+                break
+    return ids, seqs
+
+
+def test_sse_resumes_from_a_sequence_cursor(client: TestClient) -> None:
+    """A reconnecting client sends the last seq it saw and gets only what it missed."""
+    run_id = client.post("/runs", json={"task": "Sum 0..100", "mode": "react"}).json()["run_id"]
+    _wait_for_terminal_snapshot(client, run_id)
+    buffered = client.app.state.runtime.runs[run_id].bus.buffer
+    cursor = buffered[1].seq
+
+    ids, seqs = _sse_ids_and_seqs(client, run_id, f"?after_seq={cursor}")
+
+    assert ids == [event.id for event in buffered[2:]]
+    assert seqs == [event.seq for event in buffered[2:]]
+
+
+def test_websocket_resumes_from_a_sequence_cursor(client: TestClient) -> None:
+    run_id = client.post("/runs", json={"task": "Sum 0..100", "mode": "react"}).json()["run_id"]
+    _wait_for_terminal_snapshot(client, run_id)
+    buffered = client.app.state.runtime.runs[run_id].bus.buffer
+    cursor = buffered[1].seq
+
+    seen: list[str] = []
+    with client.websocket_connect(
+        f"/ws/{run_id}?after_seq={cursor}", headers={"Authorization": "Bearer test-token"}
+    ) as ws:
+        while True:
+            message = json.loads(ws.receive_text())
+            seen.append(message["id"])
+            if message["type"] == "run_finished":
+                break
+
+    assert seen == [event.id for event in buffered[2:]]
+
+
+def test_a_cursor_at_the_end_returns_nothing_instead_of_hanging(client: TestClient) -> None:
+    """The run is over and the client has everything: close, do not subscribe forever."""
+    from starlette.websockets import WebSocketDisconnect
+
+    run_id = client.post("/runs", json={"task": "Sum 0..100", "mode": "react"}).json()["run_id"]
+    _wait_for_terminal_snapshot(client, run_id)
+    runtime = client.app.state.runtime
+    last = runtime.runs[run_id].bus.last_seq
+
+    assert runtime.stream_exhausted(run_id, last) is True
+    assert runtime.stream_exhausted(run_id, 0) is False  # a fresh client still gets history
+
+    with client.stream("GET", f"/runs/{run_id}/events?after_seq={last}") as resp:
+        assert resp.status_code == 200
+        assert list(resp.iter_lines()) == []
+
+    with (
+        client.websocket_connect(
+            f"/ws/{run_id}?after_seq={last}", headers={"Authorization": "Bearer test-token"}
+        ) as ws,
+        pytest.raises(WebSocketDisconnect),
+    ):
+        ws.receive_text()
+
+
+def test_sse_rejects_a_malformed_or_negative_cursor(client: TestClient) -> None:
+    run_id = client.post("/runs", json={"task": "Sum 0..100", "mode": "react"}).json()["run_id"]
+
+    assert client.get(f"/runs/{run_id}/events?after_seq=abc").status_code == 422
+    assert client.get(f"/runs/{run_id}/events?after_seq=-1").status_code == 422
+
+
+def test_websocket_closes_with_4422_on_a_malformed_cursor(client: TestClient) -> None:
+    from starlette.websockets import WebSocketDisconnect
+
+    run_id = client.post("/runs", json={"task": "Sum 0..100", "mode": "react"}).json()["run_id"]
+
+    with (
+        pytest.raises(WebSocketDisconnect) as excinfo,
+        client.websocket_connect(
+            f"/ws/{run_id}?after_seq=abc", headers={"Authorization": "Bearer test-token"}
+        ),
+    ):
+        pass
+
+    assert excinfo.value.code == 4422
+
+
 def test_websocket_rejects_unknown_run(client: TestClient) -> None:
     from starlette.websockets import WebSocketDisconnect
 

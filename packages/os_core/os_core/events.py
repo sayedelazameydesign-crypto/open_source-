@@ -47,6 +47,9 @@ class Event(BaseModel):
     step_id: str | None = None
     ts: float = Field(default_factory=time.time)
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
+    # Stamped by EventBus.publish — the reconnect cursor a client sends back as
+    # `after_seq`. 0 means "not published yet".
+    seq: int = 0
 
     def to_wire(self) -> str:
         return self.model_dump_json()
@@ -62,12 +65,23 @@ class EventBus(BaseModel):
     max_buffer: int = 500
     _buffer: list[Event] = PrivateAttr(default_factory=list)
     _listeners: list[Listener] = PrivateAttr(default_factory=list)
+    _next_seq: int = PrivateAttr(default=1)
 
     model_config = {"arbitrary_types_allowed": True}
 
     @property
     def buffer(self) -> list[Event]:
         return list(self._buffer)
+
+    @property
+    def last_seq(self) -> int:
+        """Highest sequence number this bus assigned (0 before the first publish).
+
+        A relayed event keeps the number it arrived with, so this is a cursor for
+        *locally* published events — which is what a reconnecting client of this
+        bus needs, and what ``stream_exhausted`` compares against.
+        """
+        return self._next_seq - 1
 
     def subscribe(self, listener: Listener) -> None:
         self._listeners.append(listener)
@@ -79,6 +93,11 @@ class EventBus(BaseModel):
     async def publish(self, event: Event) -> None:
         if not event.run_id:
             event.run_id = self.run_id
+        if not event.seq:
+            # An event relayed from another bus keeps its original number, so a
+            # cursor stays meaningful across hops; local events get the next one.
+            event.seq = self._next_seq
+            self._next_seq += 1
         self._buffer.append(event)
         if len(self._buffer) > self.max_buffer:
             del self._buffer[: len(self._buffer) - self.max_buffer]
@@ -168,8 +187,20 @@ class EventBus(BaseModel):
         """Context manager yielding an async iterator of live events."""
         return _Subscription(self)
 
-    def replay(self, after_ts: float = 0.0) -> list[Event]:
-        return [e for e in self._buffer if e.ts > after_ts]
+    def replay(self, *, after_seq: int = 0, after_ts: float = 0.0) -> list[Event]:
+        """Buffered events past a resume cursor.
+
+        ``after_seq`` is the authoritative cursor: sequence numbers are unique
+        and strictly increasing per bus, so the boundary is unambiguous.
+        ``after_ts`` remains for callers that only hold a wall-clock mark — two
+        events can share a timestamp, so resuming on ``ts`` alone can skip or
+        repeat whatever sits on the boundary (ADR-0002).
+
+        Keyword-only on purpose: this parameter used to be a positional
+        timestamp, and a silently reinterpreted ``replay(12)`` would be worse
+        than a ``TypeError``.
+        """
+        return [e for e in self._buffer if e.seq > after_seq and e.ts > after_ts]
 
 
 class _Subscription:
@@ -203,7 +234,9 @@ class _Subscription:
         self._queue.put_nowait(None)
 
 
-async def replay_and_stream(bus: EventBus, *, after_ts: float = 0.0) -> AsyncIterator[Event]:
+async def replay_and_stream(
+    bus: EventBus, *, after_seq: int = 0, after_ts: float = 0.0
+) -> AsyncIterator[Event]:
     """Hand a late subscriber the history, then the live feed — with no gap.
 
     The subscription is opened **before** the replay buffer is snapshotted. That
@@ -214,12 +247,16 @@ async def replay_and_stream(bus: EventBus, *, after_ts: float = 0.0) -> AsyncIte
     instead, and ids already delivered from the buffer are skipped, so each
     event is yielded exactly once, in publish order.
 
+    ``after_seq`` resumes a disconnected client from the last event it actually
+    received; see :meth:`EventBus.replay` for why the sequence number, not the
+    timestamp, is the cursor of record.
+
     Consume it through :func:`contextlib.aclosing` so an early ``break`` (the
     transports stop at ``RUN_FINISHED``) unsubscribes deterministically rather
     than at garbage-collection time.
     """
     with bus.stream() as live:
-        history = bus.replay(after_ts)
+        history = bus.replay(after_seq=after_seq, after_ts=after_ts)
         delivered = {event.id for event in history}
         for event in history:
             yield event

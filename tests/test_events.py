@@ -95,8 +95,9 @@ async def test_an_event_in_both_history_and_live_feed_is_delivered_once() -> Non
 
         claimed: Event
 
-        def replay(self, after_ts: float = 0.0) -> list[Event]:
-            return [*super().replay(after_ts), self.claimed]
+        def replay(self, *, after_seq: int = 0, after_ts: float = 0.0) -> list[Event]:
+            history = super().replay(after_seq=after_seq, after_ts=after_ts)
+            return [*history, self.claimed]
 
     claimed = Event(type=EventType.LOG, run_id="run_dupe", data={"text": "once"})
     bus = RacyBus(run_id="run_dupe", claimed=claimed)
@@ -120,11 +121,60 @@ async def test_an_event_in_both_history_and_live_feed_is_delivered_once() -> Non
     assert [event.id for event in received].count(claimed.id) == 1
 
 
-async def test_after_ts_resumes_from_a_client_supplied_cursor() -> None:
+async def test_publish_stamps_unique_strictly_increasing_sequence_numbers() -> None:
+    bus = EventBus(run_id="run_seq")
+
+    events = [await _publish(bus, EventType.LOG, i=i) for i in range(5)]
+
+    assert [event.seq for event in events] == [1, 2, 3, 4, 5]
+    assert bus.last_seq == 5
+
+
+async def test_a_seq_cursor_resumes_where_a_timestamp_cursor_cannot() -> None:
+    """Two events in the same instant — ``ts`` is ambiguous, ``seq`` is not."""
+    bus = EventBus(run_id="run_resume")
+    first = await _publish(bus, EventType.STEP_STARTED, i=0)
+    second = await _publish(bus, EventType.STEP_FINISHED, i=1)
+    second.ts = first.ts  # the same wall-clock instant
+
+    assert bus.replay(after_ts=first.ts) == []  # the boundary event is simply skipped
+    assert [event.id for event in bus.replay(after_seq=first.seq)] == [second.id]
+    assert [event.id for event in bus.replay()] == [first.id, second.id]
+
+
+async def test_a_relayed_event_keeps_the_sequence_number_it_arrived_with() -> None:
+    """A cursor stays meaningful when the bus is later backed by an external broker."""
+    bus = EventBus(run_id="run_relay")
+    local = await _publish(bus, EventType.LOG, i=0)
+    relayed = Event(type=EventType.LOG, run_id="run_relay", seq=99, data={"i": 1})
+
+    await bus.publish(relayed)
+
+    assert (local.seq, relayed.seq) == (1, 99)
+    assert bus.last_seq == 1  # the relay did not consume a local number
+
+
+async def test_replay_and_stream_resumes_from_a_seq_cursor() -> None:
+    bus = EventBus(run_id="run_cursor_seq")
+    first = await _publish(bus, EventType.LOG, i=0)
+    second = await _publish(bus, EventType.LOG, i=1)
+    finished = await _publish(bus, EventType.RUN_FINISHED)
+
+    received: list[Event] = []
+    async with aclosing(replay_and_stream(bus, after_seq=first.seq)) as stream:
+        async for event in stream:
+            received.append(event)
+            if event.type is EventType.RUN_FINISHED:
+                break
+
+    assert [event.id for event in received] == [second.id, finished.id]
+
+
+async def test_replay_and_stream_still_accepts_a_timestamp_cursor() -> None:
     bus = EventBus(run_id="run_cursor")
     first = await _publish(bus, EventType.LOG, i=0)
     second = await _publish(bus, EventType.LOG, i=1)
-    second.ts = first.ts + 1.0  # make the cursor unambiguous
+    second.ts = first.ts + 1.0  # make the legacy cursor unambiguous
 
     received: list[Event] = []
 

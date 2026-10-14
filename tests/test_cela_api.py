@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
 import tomllib
 from pathlib import Path
 
@@ -431,6 +432,40 @@ def test_http_browse_async_then_wait_and_sse_events(client: TestClient) -> None:
     joined = "".join(chunks)
     assert "run_started" in joined
     assert "run_finished" in joined
+
+
+def test_private_sse_resumes_from_a_sequence_cursor(client: TestClient) -> None:
+    """`/cela/v1` forwards the same resume cursor as the platform surface."""
+    private_auth = {"Authorization": f"Bearer {PRIVATE_TOKEN}"}
+    start = client.post(
+        "/cela/v1/browse",
+        json={"url": "https://example.org/search", "goal": "Sum 0..100", "mode": "react"},
+        headers=private_auth,
+    )
+    assert start.status_code == 202
+    run_id = start.json()["run_id"]
+    waited = client.post(
+        f"/cela/v1/runs/{run_id}/wait", json={"timeout": 10.0}, headers=private_auth
+    )
+    assert waited.status_code == 200
+
+    buffered = client.app.state.runtime.runs[run_id].bus.buffer
+    cursor = buffered[1].seq
+
+    seen: list[str] = []
+    with client.stream(
+        "GET", f"/cela/v1/runs/{run_id}/events?after_seq={cursor}", headers=private_auth
+    ) as sse:
+        assert sse.status_code == 200
+        for line in sse.iter_lines():
+            if not line.startswith("data: "):
+                continue
+            message = json.loads(line.removeprefix("data: "))
+            seen.append(message["id"])
+            if message["type"] == "run_finished":
+                break
+
+    assert seen == [event.id for event in buffered[2:]]
 
 
 async def test_wait_timeout_is_shielded_and_does_not_cancel_run() -> None:

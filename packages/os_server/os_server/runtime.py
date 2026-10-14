@@ -191,11 +191,24 @@ class ApiRuntime:
                 result.append(snap)
         return result
 
-    async def sse_events(self, run_id: str) -> AsyncIterator[str]:
+    def stream_exhausted(self, run_id: str, after_seq: int = 0) -> bool:
+        """True when a resume cursor already sits at the end of a finished run.
+
+        Without this check both transports would subscribe to a bus that will
+        never publish again and hold the connection open forever.
+        """
+        handle = self.runs.get(run_id)
+        if handle is None:
+            return False
+        return handle.task.done() and after_seq >= handle.bus.last_seq
+
+    async def sse_events(self, run_id: str, *, after_seq: int = 0) -> AsyncIterator[str]:
         handle = self.runs[run_id]
+        if self.stream_exhausted(run_id, after_seq):
+            return
         # Subscribe before the backlog is delivered: events published while the
         # history is still streaming are queued, not lost (see replay_and_stream).
-        async with aclosing(replay_and_stream(handle.bus)) as stream:
+        async with aclosing(replay_and_stream(handle.bus, after_seq=after_seq)) as stream:
             async for event in stream:
                 yield f"data: {event.to_wire()}\n\n"
                 if event.type is EventType.RUN_FINISHED:
