@@ -1,0 +1,23 @@
+:root { color-scheme: dark; --bg:#0b0e14; --pane:#131824; --line:#232a3d; --txt:#e6e9f2; --mut:#8b93a7; --acc:#5eead4; --warn:#fbbf24; }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--txt); font-family: system-ui, "Segoe UI", Tahoma, sans-serif; }
+.shell { max-width: 1400px; margin: 0 auto; padding: 20px; }
+header h1 { margin: 0 0 4px; font-size: 22px; } header h1 span { color: var(--acc); font-size: 15px; }
+.conn { color: var(--mut); margin: 0 0 16px; } .conn-live { color: var(--acc); } .conn-resuming { color: var(--warn); }
+.composer { display:flex; gap:8px; margin-bottom:12px; }
+.composer input { flex:1; } input, select, button { background:var(--pane); color:var(--txt); border:1px solid var(--line); border-radius:8px; padding:9px 12px; }
+button { cursor:pointer; } button:hover { border-color: var(--acc); } button.deny { border-color:#7f1d1d; } button.ghost { opacity:.75; }
+.notice { background:#2a1414; border:1px solid #7f1d1d; padding:8px 12px; border-radius:8px; }
+.approvals { border:1px solid var(--warn); border-radius:10px; padding:12px; margin-bottom:12px; }
+.approval { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:8px; }
+.split { display:grid; grid-template-columns: 1.2fr .8fr; gap:14px; }
+@media (max-width: 900px) { .split { grid-template-columns: 1fr; } }
+.pane { background:var(--pane); border:1px solid var(--line); border-radius:12px; padding:14px; min-height:300px; }
+.pane h2 { font-size:15px; margin: 6px 0 10px; color: var(--acc); }
+.events { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:6px; max-height:55vh; overflow:auto; }
+.events li { display:flex; gap:8px; align-items:baseline; border-bottom:1px dashed var(--line); padding-bottom:5px; font-size:13px; }
+.events code, .steps, .artifacts { color: var(--mut); overflow-wrap:anywhere; }
+.seq { color: var(--acc); font-variant-numeric: tabular-nums; }
+.steps, .artifacts { list-style:none; padding:0; display:flex; flex-direction:column; gap:7px; font-size:13px; }
+.artifacts li { display:flex; gap:10px; align-items:baseline; flex-wrap:wrap; }
+.artifacts a { color: var(--acc); } .answer { white-space:pre-wrap; line-height:1.7; } .empty { color: var(--mut); }

@@ -1,7 +1,10 @@
 # packages/web — Interactive Canvas / Artifacts UI
 
-> **الحالة: هيكل فقط — لم يُبنَ بعد.** هذه المرحلة 3 في `docs/ROADMAP.md`.
-> الـ backend (`os_server`) مُكتمل ومُختبَر ويمكن بناؤه عليه مباشرة.
+> **الحالة: مبني ويعمل (2026-10-14، ADR-0005).** Next.js 15 (App Router) بعرض مقسوم داكن.
+>
+> التشغيل: شغّل الـ backend أولًا، ثم من هذا المجلد:
+> `CELA_BACKEND_URL=http://127.0.0.1:8080 CELA_API_TOKEN=... CELA_PRIVATE_API_TOKEN=... npm run dev`
+> الرموز تبقى في خادم Next فقط (وكيل `app/api/backend/*`) ولا تصل للمتصفح أبدًا.
 
 ## المخطط
 

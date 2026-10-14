@@ -22,7 +22,7 @@ from os_core.router import ModelRouter, RouterConfig
 from os_core.types import ToolCall
 from os_orchestration.platform import Platform, PlatformConfig
 from os_tools.browser import BrowserTool, FakeBrowser, PageSnapshot, RetryPolicy
-from os_tools.code_exec import LocalSubprocessBackend
+from os_tools.code_exec import code_exec_backend_from_env
 from os_tools.egress import EgressPolicy
 from os_tools.registry import ToolRegistry
 from os_tools.ssrf import SSRFGuard
@@ -84,7 +84,7 @@ def build_registry(
     guard = policy.guard
     browser = demo_browser()
     engine = ai_engine if ai_engine is not None else LocalAIEngine()
-    registry.add(python_execute_tool(LocalSubprocessBackend(), timeout=20.0))
+    registry.add(python_execute_tool(code_exec_backend_from_env(), timeout=20.0))
     registry.extend(browser_tools(browser, ssrf_check=policy.for_tool("browser")))
     registry.extend(local_ai_tools(engine))
     return registry, guard, browser

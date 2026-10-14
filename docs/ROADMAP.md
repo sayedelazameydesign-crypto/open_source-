@@ -21,7 +21,7 @@
 | `cela_use_browser` (`/cela/v1` + `CelaBrowser`) | ✅ | `test_cela_api.py` (50) |
 | محرك الذكاء المحلي (`LocalAIEngine` + `/api/*` + `/cela/v1/*`) | ✅ | `test_local_ai.py` (15) |
 
-**المجموع: 370 اختبارًا، 0 فشل، دون مفاتيح API ودون شبكة.**
+**المجموع: 375 اختبارًا، 0 فشل، دون مفاتيح API ودون شبكة.**
 
 CI أخضر على Python 3.11 / 3.12 / 3.13 (Lint + Test + Smoke-test):
 <https://github.com/sayedelazameydesign-crypto/open_source-/actions>
@@ -38,19 +38,19 @@ CI أخضر على Python 3.11 / 3.12 / 3.13 (Lint + Test + Smoke-test):
 
 ## 🔲 المرحلة 2 — عزل إنتاجي
 
-- [ ] تنفيذ `CodeExecBackend` فوق E2B أو Firecracker.
+- [x] تنفيذ `CodeExecBackend` فوق E2B وFirecracker (‏ADR-0005): عميلان Fail-Closed خلف `CELA_CODE_EXEC_MODE`، مُختبَران بعقود وهمية/MockTransport؛ التشغيل الحي يحتاج مفتاح E2B أو مدير MicroVM.
 - [x] سياسة شبكة صريحة (allow-list للمجالات) بدل المنع الافتراضي فقط (`os_tools/egress.py`).
 - [ ] Playwright حقيقي + بث VNC للواجهة (`PlaywrightBrowser` جاهز، البث غير مُنفَّذ).
 - [ ] تدقيق: هل يبقى `unshare` متاحًا في حاوية النشر؟ إن لا، فالعزل المحلي **صفر**.
 
 ## 🔲 المرحلة 3 — الواجهة (packages/web)
 
-- [ ] Next.js 15 + Tailwind + Shadcn/UI، عرض مقسوم.
-- [ ] استهلاك `/ws/{run_id}` مع إعادة الاتصال واستعادة الحالة من `/runs/{run_id}`.
+- [x] Next.js 15 (App Router) بعرض مقسوم داكن — بناء ناجح وبث حي مُتحقق منه؛ (التنسيق CSS مخصص بدل Tailwind/Shadcn حاليًا).
+- [x] استهلاك SSE عبر وكيل خادم Next (الرموز لا تصل للمتصفح) مع استئناف `after_seq` محفوظ لكل تشغيل + لقطة `/runs/{run_id}` مصدرًا للحقيقة؛ WS المباشر ما زال متاحًا للعملاء غير المتصفح.
 - [ ] لوحة Artifacts: HTML/React/markdown/صور + معاينة مباشرة.
 - [ ] شجرة تنفيذ حية من أحداث `step_started/step_finished`.
-- [ ] أزرار HITL تستدعي `/runs/{id}/approve`.
-- ⚠️ **موجود الآن:** هيكل فقط (`packages/web/README.md`) — لم يُبنَ.
+- [x] أزرار HITL تستدعي `/runs/{id}/approve` من لوحة الموافقات المعلّقة.
+- ✅ **مبني الآن:** `packages/web` تطبيق Next.js 15 يعمل (`npm run build` ناجح، بث حي مُتحقق منه ضد الخادم).
 
 ## 🔲 المرحلة 4 — التوسع الأفقي
 

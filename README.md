@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 
-> **370 اختبارًا ناجحًا · 0 فشل · دون مفاتيح API ودون شبكة.**
+> **375 اختبارًا ناجحًا · 0 فشل · دون مفاتيح API ودون شبكة.**
 
 ---
 
@@ -97,7 +97,7 @@ packages/
 ## الاختبار
 
 ```bash
-pytest -q          # 370 passed
+pytest -q          # 375 passed
 ruff check .       # All checks passed
 ruff format .      # تنسيق موحّد
 ```

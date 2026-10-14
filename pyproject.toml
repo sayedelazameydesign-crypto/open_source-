@@ -41,6 +41,9 @@ server = [
 browser = [
     "playwright>=1.47",
 ]
+sandbox = [
+    "e2b-code-interpreter>=1.5",
+]
 ai = [
     "scikit-learn>=1.5",
     "spacy>=3.7",
