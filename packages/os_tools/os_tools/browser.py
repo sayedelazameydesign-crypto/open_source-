@@ -180,6 +180,7 @@ class PlaywrightBrowser(BaseModel):
     _pw: Any = PrivateAttr(default=None)
     _browser: Any = PrivateAttr(default=None)
     _page: Any = PrivateAttr(default=None)
+    _last_center: tuple[int, int] | None = PrivateAttr(default=None)
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -210,26 +211,55 @@ class PlaywrightBrowser(BaseModel):
     async def click(self, selector: str) -> PageSnapshot:
         page = await self._ensure_page()
         try:
+            box = await page.locator(selector).first.bounding_box()
             await page.click(selector)
         except Exception as exc:
             raise StaleElementError(f"click failed for '{selector}': {exc}") from exc
+        if box is not None:
+            self._last_center = (
+                round(box["x"] + box["width"] / 2),
+                round(box["y"] + box["height"] / 2),
+            )
+        else:
+            self._last_center = None
         return await self._snapshot(page)
 
     async def fill(self, selector: str, value: str) -> PageSnapshot:
         page = await self._ensure_page()
         try:
+            box = await page.locator(selector).first.bounding_box()
             await page.fill(selector, value)
         except Exception as exc:
             raise StaleElementError(f"fill failed for '{selector}': {exc}") from exc
+        if box is not None:
+            self._last_center = (
+                round(box["x"] + box["width"] / 2),
+                round(box["y"] + box["height"] / 2),
+            )
+        else:
+            self._last_center = None
         return await self._snapshot(page)
 
     async def type(self, selector: str, text: str) -> PageSnapshot:
         page = await self._ensure_page()
         try:
-            await page.locator(selector).press_sequentially(text)
+            loc = page.locator(selector).first
+            box = await loc.bounding_box()
+            await loc.press_sequentially(text)
         except Exception as exc:
             raise StaleElementError(f"type failed for '{selector}': {exc}") from exc
+        if box is not None:
+            self._last_center = (
+                round(box["x"] + box["width"] / 2),
+                round(box["y"] + box["height"] / 2),
+            )
+        else:
+            self._last_center = None
         return await self._snapshot(page)
+
+    def center(self, selector: str) -> tuple[int, int] | None:
+        """Center of the last clicked/filled/typed element, or None if unknown."""
+        return self._last_center
 
     async def scroll(self, selector: str, dx: int = 0, dy: int = 0) -> PageSnapshot:
         page = await self._ensure_page()
@@ -360,12 +390,14 @@ class BrowserTool(BaseModel):
                     "attempt": attempt,
                     "strategy": "css",
                 }
-                # Fake backends expose a deterministic center; real ones fall back to None.
+                # Backend may expose the last interaction's center coords.
                 center = getattr(self.backend, "center", None)
-                if callable(center) and action in {"click", "fill"}:
-                    cx, cy = center(selector)
-                    meta["x"] = int(cx)
-                    meta["y"] = int(cy)
+                if callable(center) and action in {"click", "fill", "type"}:
+                    pt = center(selector)
+                    if pt is not None:
+                        cx, cy = pt
+                        meta["x"] = int(cx)
+                        meta["y"] = int(cy)
                 return self._page_result(
                     f"browser_{action}",
                     page,
@@ -399,10 +431,12 @@ class BrowserTool(BaseModel):
                         "original": selector,
                     }
                     center = getattr(self.backend, "center", None)
-                    if callable(center) and action in {"click", "fill"}:
-                        cx, cy = center(relocated)
-                        meta["x"] = int(cx)
-                        meta["y"] = int(cy)
+                    if callable(center) and action in {"click", "fill", "type"}:
+                        pt = center(relocated)
+                        if pt is not None:
+                            cx, cy = pt
+                            meta["x"] = int(cx)
+                            meta["y"] = int(cy)
                     return self._page_result(
                         f"browser_{action}",
                         page,

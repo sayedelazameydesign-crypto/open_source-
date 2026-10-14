@@ -219,3 +219,88 @@ def test_browser_tools_registers_all_expected_action_names() -> None:
         "browser_action",
     ):
         assert expected in names
+
+
+class _MockLocator:
+    def __init__(self, box):
+        self._box = dict(box) if box is not None else None
+        self.first = self
+        self._clicked = False
+        self._filled_with = None
+        self._typed = None
+
+    async def bounding_box(self):
+        return dict(self._box) if self._box is not None else None
+
+    async def click(self):
+        self._clicked = True
+
+    async def fill(self, value):
+        self._filled_with = value
+
+    async def press_sequentially(self, text):
+        self._typed = text
+
+
+class _MockPage:
+    def __init__(self, url: str = "https://example.org"):
+        self.url = url
+        self._locators: dict[str, _MockLocator] = {}
+
+    def add_locator(self, selector: str, box) -> None:
+        self._locators[selector] = _MockLocator(box)
+
+    def locator(self, selector: str):
+        if selector not in self._locators:
+            self._locators[selector] = _MockLocator(
+                {"x": 10.0, "y": 20.0, "width": 80.0, "height": 30.0}
+            )
+        return self._locators[selector]
+
+    async def goto(self, url, wait_until=None):
+        self.url = url
+
+    async def click(self, selector):
+        await self.locator(selector).click()
+
+    async def fill(self, selector, value):
+        await self.locator(selector).fill(value)
+
+    async def content(self):
+        return "<html></html>"
+
+    async def title(self):
+        return "mock"
+
+    async def evaluate(self, *_a, **_k):
+        return []
+
+    async def screenshot(self):
+        return b"\x89PNG"
+
+
+async def test_playwright_browser_click_records_bounding_box_center() -> None:
+    """Mocked locator verifies click() reads bounding_box and rounds to ints."""
+    from os_tools.browser import PlaywrightBrowser
+
+    pb = PlaywrightBrowser()
+    page = _MockPage()
+    page.add_locator("#btn", {"x": 100.0, "y": 200.0, "width": 60.0, "height": 30.0})
+    # center -> (130, 215)
+    pb._page = page  # bypasses _ensure_page which would launch real chromium
+    snap = await pb.click("#btn")
+    assert pb.center("#btn") == (130, 215)
+    assert isinstance(snap, PageSnapshot)
+
+
+async def test_playwright_browser_fill_records_bounding_box_center() -> None:
+    from os_tools.browser import PlaywrightBrowser
+
+    pb = PlaywrightBrowser()
+    page = _MockPage()
+    page.add_locator("#q", {"x": 0.0, "y": 0.0, "width": 201.0, "height": 41.0})
+    pb._page = page
+    await pb.fill("#q", "hi")
+    cx, cy = pb.center("#q")  # type: ignore[misc]
+    assert isinstance(cx, int) and isinstance(cy, int)
+    assert 0 <= cx <= 201 and 0 <= cy <= 41
