@@ -14,8 +14,19 @@ import os
 import sys
 from pathlib import Path
 
-from os_evals.harness import EvalRunner, load_jsonl
+from os_evals.harness import EvalReport, EvalRunner, load_jsonl
 from os_evals.suites import builtin_cases
+
+
+def _all_errored(report: EvalReport) -> bool:
+    """True when a report has cases and not one of them produced a measurement.
+
+    ``EvalRunner`` records a crashed case as ``status="error"`` instead of
+    aborting the suite, which is right for resilience but means a wrong URL or
+    a missing key can look like a finished run. Callers use this to refuse to
+    report such a run as a pass.
+    """
+    return bool(report.results) and all(r.status == "error" for r in report.results)
 
 
 def _demo_factory(mode: str, max_steps: int):
@@ -137,6 +148,17 @@ def main(argv: list[str] | None = None) -> int:
         print(payload)
         if args.out:
             Path(args.out).write_text(payload, encoding="utf-8")
+        if _all_errored(baseline) and _all_errored(skilled):
+            # Both arms failed to reach a model: a "pass_rate_delta == 0" here
+            # measures nothing. Fail the command (after writing the report, so
+            # the error text stays inspectable) instead of exiting green.
+            print(
+                "error: every case in both arms errored — check --model-url and that "
+                f"the key is injected into ${args.api_key_env}; the report was still "
+                "written but contains no measurement",
+                file=sys.stderr,
+            )
+            return 2
         return 0 if skilled.pass_rate >= baseline.pass_rate else 1
 
     report = asyncio.run(EvalRunner(factory).run_suite(cases))
