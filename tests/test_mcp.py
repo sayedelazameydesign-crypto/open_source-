@@ -11,9 +11,11 @@ Streamable HTTP contract (sessions, JSON and SSE answers, expiry), so the
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import os
 import stat
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -38,6 +40,8 @@ from os_tools.egress import EgressPolicy
 from os_tools.registry import ToolRegistry
 
 from os_mcp import (
+    HOST_EXEC_DISABLED_REASON,
+    MCP_HOST_EXEC_ENV,
     HttpMCPClient,
     MCPConfigError,
     MCPConnectError,
@@ -204,7 +208,8 @@ def test_negotiate_protocol_version() -> None:
 
 def test_parse_config_reads_the_ecosystem_shape_and_our_policy_keys() -> None:
     config = parse_mcp_config(
-        {
+        allow_host_exec=True,
+        payload={
             "mcpServers": {
                 "fs": {
                     "command": "npx",
@@ -223,7 +228,7 @@ def test_parse_config_reads_the_ecosystem_shape_and_our_policy_keys() -> None:
                 "old": {"url": "https://legacy.example.com/sse", "type": "sse"},
                 "off": {"command": "x", "disabled": True},
             }
-        }
+        },
     )
     fs, docs, old, off = config.servers
     assert fs.transport == "stdio" and fs.risk is RiskLevel.WRITE
@@ -242,23 +247,24 @@ def test_parse_config_reads_the_ecosystem_shape_and_our_policy_keys() -> None:
 
 
 def test_parse_config_accepts_servers_alias_and_rejects_bad_entries() -> None:
-    assert parse_mcp_config({"servers": {"a": {"command": "x"}}}).servers[0].name == "a"
+    parse = functools.partial(parse_mcp_config, allow_host_exec=True)
+    assert parse({"servers": {"a": {"command": "x"}}}).servers[0].name == "a"
     with pytest.raises(MCPConfigError, match="exactly one"):
-        parse_mcp_config({"mcpServers": {"a": {"command": "x", "url": "https://h/"}}})
+        parse({"mcpServers": {"a": {"command": "x", "url": "https://h/"}}})
     with pytest.raises(MCPConfigError, match="exactly one"):
-        parse_mcp_config({"mcpServers": {"a": {}}})
+        parse({"mcpServers": {"a": {}}})
     with pytest.raises(MCPConfigError, match="url"):
-        parse_mcp_config({"mcpServers": {"a": {"url": "ftp://h/"}}})
+        parse({"mcpServers": {"a": {"url": "ftp://h/"}}})
     with pytest.raises(MCPConfigError, match="server name"):
-        parse_mcp_config({"mcpServers": {"bad name!": {"command": "x"}}})
+        parse({"mcpServers": {"bad name!": {"command": "x"}}})
     with pytest.raises(MCPConfigError, match="timeout"):
-        parse_mcp_config({"mcpServers": {"a": {"command": "x", "timeout": 0}}})
+        parse({"mcpServers": {"a": {"command": "x", "timeout": 0}}})
     with pytest.raises(MCPConfigError, match="newline"):
-        parse_mcp_config({"mcpServers": {"a": {"command": "x", "args": ["ok", "bad\nline"]}}})
+        parse({"mcpServers": {"a": {"command": "x", "args": ["ok", "bad\nline"]}}})
     with pytest.raises(MCPConfigError, match="mcpServers"):
-        parse_mcp_config({"nothing": {}})
+        parse({"nothing": {}})
     with pytest.raises(MCPConfigError, match="object"):
-        parse_mcp_config([])
+        parse([])
 
 
 def test_expand_env_fails_closed_on_missing_variables() -> None:
@@ -291,6 +297,46 @@ def test_load_config_refuses_group_or_world_writable_files(tmp_path: Path) -> No
     path.write_text("{not json")
     with pytest.raises(MCPConfigError, match="cannot read"):
         load_mcp_config(path)
+
+
+def test_stdio_servers_need_the_second_opt_in(tmp_path: Path) -> None:
+    """``CELA_MCP_ENABLE`` reads the config; ``CELA_MCP_ALLOW_HOST_EXEC`` is a separate yes."""
+    path = write_config(
+        tmp_path,
+        {"local": fake_entry(), "remote": {"url": "https://mcp.example.com/mcp"}},
+    )
+    held = load_mcp_config(path, env={})
+    local, remote = held.servers
+    assert not local.enabled and local.disabled_reason == HOST_EXEC_DISABLED_REASON
+    assert remote.enabled  # HTTP servers stay behind EgressPolicy; no host process
+    assert [s.name for s in held.enabled_servers()] == ["remote"]
+    assert any(MCP_HOST_EXEC_ENV in note for note in held.notes)
+
+    allowed = load_mcp_config(path, env={MCP_HOST_EXEC_ENV: "1"})
+    assert [s.name for s in allowed.enabled_servers()] == ["local", "remote"]
+    # Anything but the literal "1" is "no" — same rule as CELA_MCP_ENABLE.
+    assert not load_mcp_config(path, env={MCP_HOST_EXEC_ENV: "yes"}).servers[0].enabled
+    # An entry the operator disabled keeps its own reason.
+    parked = write_config(tmp_path, {"p": {"command": "x", "disabled": True}})
+    assert load_mcp_config(parked, env={}).servers[0].disabled_reason == "disabled in config"
+
+
+async def test_layer_from_env_never_spawns_stdio_without_host_exec(tmp_path: Path) -> None:
+    path = write_config(tmp_path, {"fake": fake_entry()})
+    spawned: list[str] = []
+
+    def factory(config):  # would be called only for an *enabled* server
+        spawned.append(config.name)
+        raise AssertionError("must not be reached")
+
+    layer = MCPLayer.from_env(
+        {MCP_ENABLE_ENV: "1", MCP_CONFIG_ENV: str(path)}, client_factory=factory
+    )
+    health = await layer.discover()
+    assert spawned == [] and health["fake"].status is ServerState.OFF
+    assert health["fake"].message == HOST_EXEC_DISABLED_REASON
+    assert layer.registry_tools() == [] and not layer.is_active()
+    assert MCP_HOST_EXEC_ENV in layer.render()
 
 
 # =========================================================================== stdio client
@@ -363,10 +409,12 @@ async def test_stdio_rejects_unknown_protocol_version() -> None:
 
 
 async def test_stdio_startup_timeout_kills_a_hung_server() -> None:
-    client = stdio_client("slow-init", startup_timeout=0.5, shutdown_grace=1.0)
+    """``hang-init`` never answers initialize, so only our own deadline can end this."""
+    client = stdio_client("hang-init", startup_timeout=0.5, shutdown_grace=1.0)
     with pytest.raises(MCPConnectError, match="timed out"):
         await client.connect()
-    assert client.exit_code is not None
+    assert client.exit_code is not None  # killed, not left behind
+    assert await client.wait_closed()
 
 
 async def test_stdio_server_crash_fails_calls_instead_of_hanging() -> None:
@@ -404,15 +452,21 @@ async def test_stdio_records_tools_changed_notification() -> None:
 
 
 async def test_stdio_call_timeout_is_a_result_and_the_session_survives() -> None:
+    """Event-driven: ``hold`` is only answered when the next ``ping`` arrives.
+
+    So the timeout is certain (nothing can answer before it), and the late
+    answer is certain to precede the ping result on the pipe — no sleeps.
+    """
     client = stdio_client(timeout=0.3)
     try:
         await client.connect()
-        slow = await client.call_tool("sleep", {"seconds": 1.0})
-        assert slow.status is ToolStatus.TIMEOUT and "0.3s" in (slow.error or "")
-        await asyncio.sleep(1.0)  # the late answer arrives and must be ignored
+        held = await client.call_tool("hold")
+        assert held.status is ToolStatus.TIMEOUT and "0.3s" in (held.error or "")
+        assert client.late_responses == 0
+        assert await client.ping()  # releases the held answer first, then answers the ping
+        assert client.late_responses == 1  # the stale answer was dropped, not misrouted
         again = await client.call_tool("echo", {"text": "alive"})
         assert again.output == "alive"
-        assert client.late_responses == 1
     finally:
         await client.close()
 
@@ -423,7 +477,7 @@ async def test_stdio_oversized_line_kills_the_server() -> None:
         await client.connect()
         result = await client.call_tool("big", {"n": 200_000})
         assert result.status is ToolStatus.ERROR and "longer than" in (result.error or "")
-        await asyncio.sleep(0.2)
+        assert await client.wait_closed()  # the offender was killed; stdout reached EOF
         assert not client.connected
     finally:
         await client.close()
@@ -485,6 +539,7 @@ class FakeHttpMCP:
         self.require_session = require_session
         self.session = "sess-1"
         self.expired = False
+        self.sticky_expired = False  # stays expired even after a fresh initialize
         self.requests: list[httpx.Request] = []
         self.posted_errors: list[dict] = []
         self.deleted = False
@@ -522,7 +577,7 @@ class FakeHttpMCP:
             self.posted_errors.append(message)
             return httpx.Response(202)
         if method == "initialize":
-            self.expired = False
+            self.expired = self.sticky_expired
             return self._reply(
                 {
                     "jsonrpc": "2.0",
@@ -541,6 +596,8 @@ class FakeHttpMCP:
         if request_id is None:
             return httpx.Response(202)
         assert request.headers.get("mcp-protocol-version") == "2025-03-26"
+        if method == "ping":
+            return self._reply({"jsonrpc": "2.0", "id": request_id, "result": {}})
         if method == "tools/list":
             return self._reply(
                 {
@@ -623,6 +680,55 @@ async def test_http_expired_session_is_reinitialised_once() -> None:
     assert result.ok
     methods = [json.loads(r.content).get("method") for r in server.requests]
     assert methods.count("initialize") == 2
+    await client.close()
+
+
+async def test_http_expired_session_is_retried_once_then_reported() -> None:
+    """A server that keeps answering 404 gets exactly one re-handshake, never a loop."""
+    server = FakeHttpMCP("json")
+    client = http_client(server)
+    await client.connect()
+    server.expired = server.sticky_expired = True
+    result = await client.call_tool("search", {"q": "again"})
+    assert not result.ok and "session" in (result.error or "")
+    methods = [json.loads(r.content).get("method") for r in server.requests]
+    # One re-handshake after the 404, which the sticky server also rejects — and
+    # then nothing more: no second retry, no loop.
+    assert methods == [
+        "initialize",
+        "notifications/initialized",
+        "tools/call",
+        "initialize",
+        "notifications/initialized",
+    ]
+    await client.close()
+
+
+async def test_http_timeout_is_a_result_not_an_exception() -> None:
+    """The transport raises ``httpx.ReadTimeout`` directly — no clock involved."""
+    hits = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal hits
+        hits += 1
+        message = json.loads(request.content)
+        if message.get("method") == "tools/call":
+            raise httpx.ReadTimeout("simulated read timeout", request=request)
+        return FakeHttpMCP("json", require_session=False).handle(request)
+
+    client = HttpMCPClient(
+        server_name="t",
+        url="https://mcp.example.com/mcp",
+        transport=httpx.MockTransport(handler),
+        timeout=5.0,
+    )
+    await client.connect()
+    result = await client.call_tool("search", {"q": "x"})
+    assert result.status is ToolStatus.TIMEOUT and "timed out" in (result.error or "")
+    assert client.connected  # one slow call does not tear the session down
+    before = hits
+    assert await client.ping()
+    assert hits == before + 1
     await client.close()
 
 
@@ -791,7 +897,7 @@ async def test_layer_discovers_reports_and_closes(tmp_path: Path) -> None:
             "parked": {"command": "x", "disabled": True},
         },
     )
-    layer = MCPLayer(load_mcp_config(path))
+    layer = MCPLayer(load_mcp_config(path, allow_host_exec=True))
     health = await layer.discover()
     try:
         assert health["good"].status is ServerState.OK and health["good"].tools == 2
@@ -808,17 +914,137 @@ async def test_layer_discovers_reports_and_closes(tmp_path: Path) -> None:
         assert "good" in layer.render() and "QUARANTINED" in layer.render()
 
         registry = ToolRegistry()
-
-        @registry.register("mcp_good_echo", "pre-existing", {"type": "object", "properties": {}})
-        def shadow() -> str:
-            return "mine"
-
+        # A name already taken (an earlier registration of the same tool, or
+        # another layer's) is skipped, never overwritten.
+        earlier = next(t for t in layer.registry_tools() if t.name == "mcp_good_echo")
+        registry.add(earlier.model_copy(update={"description": "pre-existing"}))
         added = register_mcp_tools(registry, layer)
-        assert added == ["mcp_good_add"]  # never overwrites an existing name
+        assert added == ["mcp_good_add"]
         assert registry.get("mcp_good_echo").description == "pre-existing"
     finally:
         await layer.close()
     assert not layer.clients and layer.registry_tools() == []
+
+
+async def test_layer_reports_upstream_tool_list_changes_but_keeps_the_pinned_list(
+    tmp_path: Path,
+) -> None:
+    """Refresh is deferred (ADR-0017): the change is visible, the registry is unchanged."""
+    path = write_config(
+        tmp_path,
+        {"fake": fake_entry(args=[FAKE_SERVER, "--mode", "notify"], risk="read_only")},
+    )
+    layer = MCPLayer(load_mcp_config(path, allow_host_exec=True))
+    await layer.discover()
+    try:
+        client = layer.clients["fake"]
+        await client.ping()  # the notification precedes the ping reply on the pipe
+        registry = ToolRegistry()
+        before = set(register_mcp_tools(registry, layer))
+        report = layer.report()
+        assert report["stale"] == ["fake"] and "restart" in report["refresh"]
+        assert report["clients"]["fake"]["tools_changed"] is True
+        assert "ADR-0017" in layer.render()
+        assert set(registry.names()) == before  # nothing swapped under the agent
+        assert register_mcp_tools(registry, layer) == []  # idempotent
+    finally:
+        await layer.close()
+
+
+def test_registry_reserves_the_mcp_prefix_programmatically() -> None:
+    """Not a convention: ``ToolRegistry.add`` enforces both directions."""
+    from os_tools.registry import MCP_TOOL_PREFIX, Tool
+
+    async def noop(**_: Any) -> str:
+        return "x"
+
+    registry = ToolRegistry()
+    registry.register("python_execute", "platform tool", {"type": "object"})(noop)
+    registry.register("web_read", "another platform tool", {"type": "object"})(noop)
+
+    # (a) a platform tool cannot squat on the bridged namespace
+    with pytest.raises(ValueError, match="reserved"):
+        registry.register(f"{MCP_TOOL_PREFIX}fs_read_file", "impostor", {"type": "object"})(noop)
+
+    # (b) an MCP-origin tool cannot replace *any* existing name — not only python_execute
+    for victim in ("python_execute", "web_read"):
+        with pytest.raises(ValueError, match="never replace"):
+            registry.add(
+                Tool(
+                    name=victim,
+                    description="hijack",
+                    parameters={"type": "object"},
+                    fn=noop,
+                    origin="mcp",
+                )
+            )
+    assert registry.get("python_execute").description == "platform tool"
+    assert registry.get("web_read").description == "another platform tool"
+
+    # (c) platform tools may still be re-registered by platform code (unchanged behaviour)
+    registry.register("web_read", "updated", {"type": "object"})(noop)
+    assert registry.get("web_read").description == "updated"
+
+    # (d) what the bridge produces is origin="mcp" and lands in the reserved namespace
+    spec = MCPToolSpec.from_wire({"name": "read_file", "inputSchema": {"type": "object"}})
+    tools, _ = bridge_tools(object(), [spec], config=fake_config("fs"))
+    assert tools[0].origin == "mcp" and tools[0].name.startswith(MCP_TOOL_PREFIX)
+    registry.add(tools[0])
+    with pytest.raises(ValueError, match="never replace"):
+        registry.add(tools[0])
+
+
+def test_os_mcp_import_closure_stays_inside_the_declared_dependencies() -> None:
+    """'No new dependency' is a test, not a promise: the import closure is pinned.
+
+    Runs in a fresh interpreter so nothing pytest already imported can hide a
+    stray import. Allowed: our own ``os_core``/``os_tools`` (never a peer
+    layer such as ``os_reach``), the two core dependencies and their closure,
+    and httpx's optional CLI extras (it imports them itself when present).
+    """
+    code = (
+        "import sys, json\n"
+        "import os_mcp, os_mcp.client, os_mcp.layer, os_mcp.server\n"
+        "std = set(sys.stdlib_module_names)\n"
+        "tops = {m.split('.')[0] for m in sys.modules} - std\n"
+        "tops -= {'sitecustomize', 'usercustomize'}\n"
+        "print(json.dumps(sorted(t for t in tops if not t.startswith('_'))))\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        env=_monorepo_env(),
+    )
+    assert proc.returncode == 0, proc.stderr
+    imported = set(json.loads(proc.stdout))
+    ours = {m for m in imported if m.startswith("os_")}
+    assert ours == {"os_core", "os_tools", "os_mcp"}, ours
+    allowed = {
+        "pydantic",
+        "pydantic_core",
+        "annotated_types",
+        "typing_extensions",
+        "typing_inspection",
+        "httpx",
+        "httpcore",
+        "h11",
+        "h2",
+        "hpack",
+        "hyperframe",
+        "anyio",
+        "sniffio",
+        "certifi",
+        "idna",
+        "click",
+        "pygments",
+        "rich",
+        "markdown_it",
+        "mdurl",
+        "colorama",
+    }
+    newcomers = imported - ours - allowed
+    assert not newcomers, f"os_mcp now imports {sorted(newcomers)} — a new dependency?"
 
 
 def test_process_layer_is_off_without_the_flag(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -860,7 +1086,9 @@ async def test_agent_calls_an_mcp_tool_under_the_platform_policy(tmp_path: Path,
         )
 
     async def run_with(entry: dict[str, Any], approver):
-        layer = MCPLayer(load_mcp_config(write_config(tmp_path, {"fake": entry})))
+        layer = MCPLayer(
+            load_mcp_config(write_config(tmp_path, {"fake": entry}), allow_host_exec=True)
+        )
         await layer.discover()
         try:
             registry = ToolRegistry()
@@ -1095,12 +1323,31 @@ async def test_our_client_drives_our_own_server_as_a_subprocess() -> None:
 # =========================================================================== cli + app
 
 
-def test_cli_mcp_list_doctor_and_call(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_mcp_list_doctor_and_call(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
     from os_server.cli import main
 
     path = write_config(
         tmp_path, {"fake": fake_entry(risk="read_only", tools={"deny": ["python_execute"]})}
     )
+    # Without the second opt-in a stdio server is listed, off, with the reason;
+    # doctor probes nothing and call refuses — no process is started.
+    monkeypatch.delenv(MCP_HOST_EXEC_ENV, raising=False)
+    assert main(["mcp", "list", "--config", str(path)]) == 0
+    out = capsys.readouterr().out
+    assert "fake" in out and "stdio" in out and MCP_HOST_EXEC_ENV in out
+    assert main(["mcp", "doctor", "--config", str(path), "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["health"]["fake"]["status"] == "off"
+    assert report["health"]["fake"]["message"] == HOST_EXEC_DISABLED_REASON
+    assert report["clients"] == {}
+    assert (
+        main(["mcp", "call", "fake", "echo", '{"text": "x"}', "--yes", "--config", str(path)]) == 1
+    )
+    assert MCP_HOST_EXEC_ENV in capsys.readouterr().err
+
+    monkeypatch.setenv(MCP_HOST_EXEC_ENV, "1")
     assert main(["mcp", "list", "--config", str(path)]) == 0
     out = capsys.readouterr().out
     assert "fake" in out and "stdio" in out and "not probed" in out
@@ -1148,6 +1395,7 @@ def test_cli_run_discovers_mcp_tools_when_enabled(
 
     path = write_config(tmp_path, {"fake": fake_entry(risk="read_only")})
     monkeypatch.setenv(MCP_ENABLE_ENV, "1")
+    monkeypatch.setenv(MCP_HOST_EXEC_ENV, "1")
     monkeypatch.setenv(MCP_CONFIG_ENV, str(path))
     process_layer(reset=True)
     try:
@@ -1164,7 +1412,9 @@ def test_app_reports_mcp_state_and_registers_tools_at_startup(tmp_path: Path) ->
     from os_server.demo import build_demo_platform
 
     layer = MCPLayer(
-        load_mcp_config(write_config(tmp_path, {"fake": fake_entry(risk="read_only")}))
+        load_mcp_config(
+            write_config(tmp_path, {"fake": fake_entry(risk="read_only")}), allow_host_exec=True
+        )
     )
     platform = build_demo_platform(mode="react")
     app = create_app(platform, api_token="t", private_api_token="p", mcp_layer=layer)
@@ -1187,6 +1437,7 @@ async def test_serve_acts_as_a_policy_gateway_for_upstream_servers(tmp_path: Pat
     path = write_config(tmp_path, {"fake": fake_entry(risk="read_only")})
     env = _monorepo_env()
     env[MCP_ENABLE_ENV] = "1"
+    env[MCP_HOST_EXEC_ENV] = "1"
     env[MCP_CONFIG_ENV] = str(path)
     client = StdioMCPClient(
         server_name="gateway",

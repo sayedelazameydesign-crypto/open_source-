@@ -35,7 +35,6 @@ from typing import Any
 
 import httpx
 from os_core.types import ToolResult, ToolStatus
-from os_reach.security import scrub_credentials, truncate
 from os_tools.egress import EgressPolicy, EgressPolicyError, parse_http_target
 
 from os_mcp.protocol import (
@@ -66,6 +65,7 @@ from os_mcp.protocol import (
     parse_sse,
     parse_tool_result,
 )
+from os_mcp.security import scrub_credentials, truncate
 
 SANDBOX_MARKER_ENV = "CELA_SANDBOXED"
 
@@ -242,6 +242,7 @@ class BaseMCPClient:
             "has_instructions": bool(self.instructions),
             "calls": self.calls,
             "rejected_server_requests": self.rejected_requests,
+            "tools_changed": self.tools_changed,
             "notes": list(self.notes),
         }
 
@@ -307,6 +308,7 @@ class StdioMCPClient(BaseMCPClient):
         self._write_lock = asyncio.Lock()
         self._stderr_tail = bytearray()
         self._closed = False
+        self._stdout_closed = asyncio.Event()
         self.protocol_errors = 0
         self.late_responses = 0
         self.exit_code: int | None = None
@@ -318,6 +320,18 @@ class StdioMCPClient(BaseMCPClient):
     @property
     def stderr_tail(self) -> str:
         return self._stderr_tail.decode("utf-8", errors="replace")
+
+    async def wait_closed(self, timeout: float = 5.0) -> bool:
+        """Wait until the server's stdout is closed (crash, kill, or clean exit).
+
+        Event-driven, not a sleep: tests and supervisors use it to observe a
+        teardown deterministically. Returns ``False`` on timeout.
+        """
+        try:
+            await asyncio.wait_for(self._stdout_closed.wait(), timeout=timeout)
+        except TimeoutError:
+            return False
+        return True
 
     def resolve_binary(self) -> str:
         """Absolute path of the executable, or :class:`MCPConnectError`."""
@@ -353,6 +367,7 @@ class StdioMCPClient(BaseMCPClient):
         except (OSError, ValueError) as exc:
             raise MCPConnectError(f"cannot start {binary}: {exc}") from None
         self._closed = False
+        self._stdout_closed.clear()
         self._reader_task = asyncio.create_task(
             self._read_loop(), name=f"mcp-{self.server_name}-out"
         )
@@ -457,6 +472,7 @@ class StdioMCPClient(BaseMCPClient):
         finally:
             self._fail_pending(MCPTransportError(f"mcp server '{self.server_name}' closed stdout"))
             self.connected = False
+            self._stdout_closed.set()
 
     async def _dispatch(self, message: dict[str, Any]) -> None:
         kind = classify_message(message)

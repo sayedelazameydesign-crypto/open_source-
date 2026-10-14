@@ -54,6 +54,15 @@ from os_mcp.protocol import MCPError
 
 MCP_ENABLE_ENV = "CELA_MCP_ENABLE"
 MCP_CONFIG_ENV = "CELA_MCP_CONFIG"
+#: Second, separate opt-in for *stdio* servers. ``CELA_MCP_ENABLE=1`` only says
+#: "read the config and talk to MCP servers"; a stdio server is additionally a
+#: process the platform did not write, started on the host OUTSIDE the sandbox
+#: and outside ``EgressPolicy`` — that needs its own, explicit yes.
+MCP_HOST_EXEC_ENV = "CELA_MCP_ALLOW_HOST_EXEC"
+HOST_EXEC_DISABLED_REASON = (
+    "stdio server would run as a process on the host, outside the sandbox and the egress "
+    f"policy; set {MCP_HOST_EXEC_ENV}=1 to allow host execution"
+)
 CANONICAL_CONFIG_PATH = "~/.config/cela/mcp.json"
 
 DEFAULT_TIMEOUT = 60.0
@@ -275,6 +284,12 @@ _KNOWN_KEYS = {
 }
 
 
+def host_exec_allowed(env: Mapping[str, str] | None = None) -> bool:
+    """``True`` only when the operator set ``CELA_MCP_ALLOW_HOST_EXEC=1``."""
+    source = os.environ if env is None else env
+    return source.get(MCP_HOST_EXEC_ENV) == "1"
+
+
 def default_config_path(env: Mapping[str, str] | None = None) -> Path:
     source = os.environ if env is None else env
     raw = source.get(MCP_CONFIG_ENV) or CANONICAL_CONFIG_PATH
@@ -296,8 +311,14 @@ def _check_permissions(path: Path) -> None:
         )
 
 
-def parse_mcp_config(payload: Any, *, path: str | None = None) -> MCPConfig:
-    """Build an :class:`MCPConfig` from the decoded JSON document."""
+def parse_mcp_config(payload: Any, *, allow_host_exec: bool, path: str | None = None) -> MCPConfig:
+    """Build an :class:`MCPConfig` from the decoded JSON document.
+
+    *allow_host_exec* is deliberately required: without it every stdio entry
+    is parsed, kept, and marked ``enabled=False`` with
+    :data:`HOST_EXEC_DISABLED_REASON`, so ``cela mcp list`` shows exactly what
+    would run and why it does not. HTTP entries are unaffected.
+    """
     if not isinstance(payload, dict):
         raise MCPConfigError("config root must be a JSON object")
     raw_servers = payload.get("mcpServers")
@@ -309,6 +330,7 @@ def parse_mcp_config(payload: Any, *, path: str | None = None) -> MCPConfig:
         raise MCPConfigError("'mcpServers' must be an object keyed by server name")
 
     config = MCPConfig(path=path)
+    held_back: list[str] = []
     for name, raw in raw_servers.items():
         if not isinstance(raw, dict):
             raise MCPConfigError(f"server {name!r}: entry must be an object")
@@ -343,20 +365,38 @@ def parse_mcp_config(payload: Any, *, path: str | None = None) -> MCPConfig:
                 "or run the server over stdio"
             )
         try:
-            config.servers.append(MCPServerConfig(**data))
+            server = MCPServerConfig(**data)
         except ValueError as exc:
             raise MCPConfigError(f"server {name!r}: {exc}") from None
+        if server.transport == "stdio" and server.enabled and not allow_host_exec:
+            server = server.model_copy(
+                update={"enabled": False, "disabled_reason": HOST_EXEC_DISABLED_REASON}
+            )
+            held_back.append(name)
+        config.servers.append(server)
+    if held_back:
+        config.notes.append(
+            f"{len(held_back)} stdio server(s) held back ({', '.join(held_back)}): "
+            f"{HOST_EXEC_DISABLED_REASON}"
+        )
     return config
 
 
 def load_mcp_config(
-    path: str | Path | None = None, *, env: Mapping[str, str] | None = None
+    path: str | Path | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+    allow_host_exec: bool | None = None,
 ) -> MCPConfig:
     """Read and validate the config file at *path* (default: ``CELA_MCP_CONFIG``).
 
     A missing file is not an error: it yields an empty config with a note, so
-    ``cela mcp list`` can explain where the file is expected.
+    ``cela mcp list`` can explain where the file is expected. stdio servers
+    stay disabled unless *allow_host_exec* is true — by default that is read
+    from ``CELA_MCP_ALLOW_HOST_EXEC`` in *env*.
     """
+    if allow_host_exec is None:
+        allow_host_exec = host_exec_allowed(env)
     target = Path(path).expanduser() if path is not None else default_config_path(env)
     if not target.exists():
         return MCPConfig(path=str(target), notes=[f"no config file at {target}"])
@@ -365,7 +405,7 @@ def load_mcp_config(
         payload = json.loads(target.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise MCPConfigError(f"cannot read {target}: {exc}") from None
-    return parse_mcp_config(payload, path=str(target))
+    return parse_mcp_config(payload, allow_host_exec=allow_host_exec, path=str(target))
 
 
 __all__ = [
@@ -373,14 +413,17 @@ __all__ = [
     "DEFAULT_ENV_ALLOW",
     "DEFAULT_MAX_CHARS",
     "DEFAULT_TIMEOUT",
+    "HOST_EXEC_DISABLED_REASON",
     "MCP_CONFIG_ENV",
     "MCP_ENABLE_ENV",
+    "MCP_HOST_EXEC_ENV",
     "MCPConfig",
     "MCPConfigError",
     "MCPServerConfig",
     "MCPToolFilter",
     "default_config_path",
     "expand_env",
+    "host_exec_allowed",
     "load_mcp_config",
     "parse_mcp_config",
     "references_env",

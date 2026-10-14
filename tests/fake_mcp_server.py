@@ -6,7 +6,7 @@ misbehaviour so the client's defences are exercised for real:
     normal          well-behaved server (default)
     noisy           non-JSON lines on stdout and chatter on stderr before replies
     bad-version     initialize answers with an unknown protocol version
-    slow-init       sleeps before answering initialize (startup timeout)
+    hang-init       never answers initialize (startup timeout) — blocks until killed
     crash           exits right after initialize (closed stdout)
     server-request  sends a sampling/createMessage request before answering tools/list
     notify          sends notifications/tools/list_changed after initialize
@@ -22,7 +22,6 @@ import base64
 import json
 import os
 import sys
-import time
 
 TINY_PNG = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16).decode()
 
@@ -57,13 +56,9 @@ TOOLS: list[dict] = [
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
-        "name": "sleep",
-        "description": "Sleep for `seconds` before answering.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"seconds": {"type": "number"}},
-            "required": ["seconds"],
-        },
+        "name": "hold",
+        "description": "Do not answer until the next `ping` arrives (deterministic timeout).",
+        "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "big",
@@ -146,6 +141,7 @@ class Server:
         self.initialized = False
         self.sampling_reply: dict | None = None
         self.next_id = 1000
+        self.held: list = []  # request ids of `hold` calls, answered on the next ping
 
     # -- wire ------------------------------------------------------------
     def send(self, message: dict) -> None:
@@ -192,6 +188,11 @@ class Server:
             if method == "initialize":
                 self.handle_initialize(request_id)
             elif method == "ping":
+                # Release held calls *before* the ping result: the client sees the
+                # late answer first, then the ping — an ordering the pipe guarantees.
+                for held in self.held:
+                    self.result(held, {"content": [{"type": "text", "text": "released"}]})
+                self.held.clear()
                 self.result(request_id, {})
             elif method == "tools/list":
                 self.handle_list(request_id, params)
@@ -201,8 +202,12 @@ class Server:
                 self.error(request_id, -32601, f"method not found: {method}")
 
     def handle_initialize(self, request_id) -> None:
-        if self.mode == "slow-init":
-            time.sleep(5)
+        if self.mode == "hang-init":
+            # Never answer; wait for the client to give up and kill us. Reading
+            # stdin blocks until EOF or SIGKILL, so no timing is involved.
+            while sys.stdin.buffer.readline():
+                pass
+            sys.exit(0)
         version = "1999-01-01" if self.mode == "bad-version" else "2025-06-18"
         capabilities = {} if self.mode == "no-tools-cap" else {"tools": {"listChanged": True}}
         self.result(
@@ -270,9 +275,8 @@ class Server:
                 request_id,
                 {"content": [{"type": "text", "text": "it broke"}], "isError": True},
             )
-        elif name == "sleep":
-            time.sleep(float(args["seconds"]))
-            self.result(request_id, {"content": [{"type": "text", "text": "woke up"}]})
+        elif name == "hold":
+            self.held.append(request_id)  # answered when the next ping arrives
         elif name == "big":
             self.result(request_id, {"content": [{"type": "text", "text": "x" * int(args["n"])}]})
         elif name == "resource":

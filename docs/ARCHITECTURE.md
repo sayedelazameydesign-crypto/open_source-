@@ -36,7 +36,7 @@ User UI (Next.js split-view)  ← WebSockets / SSE
 | `os_core` | الأنواع المشتركة، توجيه النماذج، الحواجز، الأحداث، الحالة، سجل النتائج | `types.py`, `router.py`, `guardrails.py`, `hitl.py`, `events.py`, `state.py`, `ledger.py` |
 | `os_agents` | حلقة ReAct، مخطط DAG، الميزانية، المراجع | `react.py`, `flow.py`, `dag.py`, `budget.py`, `reviewer.py` |
 | `os_tools` | تنفيذ الكود المعزول، المتصفح، حارس SSRF، سياسة الخروج، الذكاء المحلي، سجل الأدوات | `code_exec.py`, `browser.py`, `ssrf.py`, `egress.py`, `local_ai.py`, `registry.py`, `mcp.py` |
-| `os_mcp` | نقل MCP في الاتجاهين: عميل stdio/Streamable HTTP، جسر الأدوات الخارجية إلى `ToolRegistry` عبر الحواجز، خادم MCP فوق السجل (ADR-0017) | `protocol.py`, `config.py`, `client.py`, `bridge.py`, `layer.py`, `server.py` |
+| `os_mcp` | نقل MCP في الاتجاهين: عميل stdio/Streamable HTTP، جسر الأدوات الخارجية إلى `ToolRegistry` عبر الحواجز (البادئة `mcp_` محجوزة برمجيًا في السجل)، خادم MCP فوق السجل؛ إذنان منفصلان `CELA_MCP_ENABLE` و`CELA_MCP_ALLOW_HOST_EXEC` (ADR-0017) | `protocol.py`, `config.py`, `client.py`, `bridge.py`, `layer.py`, `server.py`, `security.py` |
 | `os_orchestration` | واجهة المنصة واختيار الوضع | `platform.py` |
 | `os_server` | REST/WS/SSE + `/cela/v1` + `CelaBrowser` + CLI + حزمة العرض دون مفاتيح | `app.py`, `runtime.py`, `cela.py`, `cli.py`, `demo.py` |
 
@@ -156,15 +156,15 @@ User UI (Next.js split-view)  ← WebSockets / SSE
 
 ## 6. الاختبار والتقييم
 
-765 اختبارًا، كلها دون مفاتيح API ودون شبكة. على جهاز يتوفر فيه `unshare` تظهر
-`765 passed`؛ وعلى عدّاء CI الذي يرفض إنشاء netns يُتخطّى اختبار الشبكة تحديدًا
+772 اختبارًا، كلها دون مفاتيح API ودون شبكة. على جهاز يتوفر فيه `unshare` تظهر
+`772 passed`؛ وعلى عدّاء CI الذي يرفض إنشاء netns يُتخطّى اختبار الشبكة تحديدًا
 (`test_sandbox_cannot_reach_the_network`) تخطيًا صريحًا بدل ادعاء عزل غير موجود.
 
 CI أخضر على Python 3.11 / 3.12 / 3.13 — انظر <https://github.com/sayedelazameydesign-crypto/open_source-/actions>:
 
 ```bash
 pip install -e ".[dev]"
-pytest            # 765 passed محليًا (تخطٍّ واحد على عدّاء بلا netns)
+pytest            # 772 passed محليًا (تخطٍّ واحد على عدّاء بلا netns)
 ruff check .      # All checks passed
 ```
 

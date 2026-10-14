@@ -24,6 +24,7 @@ from collections.abc import Iterator
 from typing import Any, Literal
 
 from os_core.types import Artifact
+from os_tools.registry import MCP_TOOL_PREFIX
 from pydantic import BaseModel, Field
 
 JSONRPC_VERSION = "2.0"
@@ -246,7 +247,7 @@ def bridged_tool_name(server: str, tool: str) -> str:
     a name that had to be truncated carries a short hash so two long names do
     not collapse into one.
     """
-    raw = f"mcp_{server}_{tool}"
+    raw = f"{MCP_TOOL_PREFIX}{server}_{tool}"
     cleaned = _FUNCTION_NAME_RE.sub("_", raw)
     if len(cleaned) <= MAX_FUNCTION_NAME_CHARS:
         return cleaned

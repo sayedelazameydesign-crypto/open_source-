@@ -17,13 +17,13 @@
 | سياسة شبكة صريحة (allow-list + SSRF floor) | ✅ | `test_egress.py` (94) |
 | سلسلة fallback الثلاثية للمتصفح | ✅ | `test_browser.py` (12) |
 | سجل أدوات بنمط MCP | ✅ | `test_e2e.py` |
-| عميل MCP حقيقي (stdio + Streamable HTTP) + جسر بالحواجز + خادم MCP فوق السجل + بوابة سياسة | ✅ | `test_mcp.py` (52) |
+| عميل MCP حقيقي (stdio + Streamable HTTP) + جسر بالحواجز + خادم MCP فوق السجل + بوابة سياسة | ✅ | `test_mcp.py` (59) |
 | REST + SSE + WebSocket + تذاكر WS + استئناف `after_seq` | ✅ | `test_server.py` (37) |
 | `cela_use_browser` (`/cela/v1` + `CelaBrowser`) | ✅ | `test_cela_api.py` (50) |
 | محرك الذكاء المحلي (`LocalAIEngine` + `/api/*` + `/cela/v1/*`) | ✅ | `test_local_ai.py` (15) |
 | سجل نتائج دائم لكل تشغيل (JSONL + ملخّص + `/ledger`) | ✅ | `test_ledger.py` |
 
-**المجموع: 765 اختبارًا، 0 فشل، دون مفاتيح API ودون شبكة.**
+**المجموع: 772 اختبارًا، 0 فشل، دون مفاتيح API ودون شبكة.**
 
 CI أخضر على Python 3.11 / 3.12 / 3.13 (Lint + Test + Smoke-test):
 <https://github.com/sayedelazameydesign-crypto/open_source-/actions>

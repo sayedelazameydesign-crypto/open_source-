@@ -178,6 +178,7 @@ def _make_tool(
         # so the client's (more informative) timeout result wins.
         timeout=timeout + 1.0,
         fn=_call,
+        origin="mcp",  # ToolRegistry.add refuses to let this replace anything
     )
 
 

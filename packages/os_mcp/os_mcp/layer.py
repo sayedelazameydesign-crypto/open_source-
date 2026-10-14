@@ -19,7 +19,6 @@ from enum import StrEnum
 from typing import Any
 
 from os_core.guardrails import Guardrails
-from os_reach.security import scrub_credentials
 from os_tools.egress import EgressPolicy
 from os_tools.registry import Tool, ToolRegistry
 from pydantic import BaseModel, Field
@@ -35,6 +34,7 @@ from os_mcp.config import (
     load_mcp_config,
 )
 from os_mcp.protocol import MCPError
+from os_mcp.security import scrub_credentials
 
 ClientFactory = Callable[[MCPServerConfig], BaseMCPClient]
 
@@ -142,8 +142,13 @@ class MCPLayer:
     async def discover(self) -> dict[str, ServerHealth]:
         """Connect every enabled server, list and bridge its tools.
 
-        Idempotent per process: calling it again closes and re-discovers,
-        which is how a ``tools/list_changed`` notification is honoured.
+        Sequential, in config order, so bridged names (and collision suffixes)
+        are deterministic across restarts. The tool list is **pinned at
+        discovery**: a later ``notifications/tools/list_changed`` is recorded
+        (``stale_servers()``, ``report()["stale"]``) but not acted upon — a
+        hot refresh would swap tools under a running agent and needs an
+        explicit design (deferred; see ADR-0017). Restart to pick up changes.
+        Calling ``discover()`` again closes every client and starts over.
         """
         if self.discovered:
             await self.close()
@@ -228,11 +233,23 @@ class MCPLayer:
     def is_active(self) -> bool:
         return any(h.status is ServerState.OK for h in self.health.values())
 
+    def stale_servers(self) -> list[str]:
+        """Servers that announced a tool-list change since discovery (list is still pinned)."""
+        return sorted(name for name, c in self.clients.items() if c.tools_changed)
+
     def report(self) -> dict[str, Any]:
         """JSON-able view for ``cela mcp list|doctor`` and ``GET /api/mcp/servers``."""
+        stale = self.stale_servers()
         return {
             "config_path": self.config.path,
             "discovered": self.discovered,
+            "stale": stale,
+            "refresh": (
+                "tool list is pinned at startup; restart to pick up upstream changes "
+                "(hot refresh deferred — ADR-0017)"
+                if stale
+                else None
+            ),
             "servers": [s.describe() for s in self.config.servers],
             "health": {name: h.model_dump(mode="json") for name, h in self.health.items()},
             "tools": [
@@ -260,8 +277,13 @@ class MCPLayer:
             lines.append("  no servers configured")
         for server in self.config.servers:
             health = self.health.get(server.name)
-            state = health.status.value if health else "not probed"
-            detail = f" — {health.message}" if health and health.message else ""
+            if health is not None:
+                state, message = health.status.value, health.message
+            elif not server.enabled:
+                state, message = ServerState.OFF.value, server.disabled_reason or "disabled"
+            else:
+                state, message = "not probed", ""
+            detail = f" — {message}" if message else ""
             lines.append(
                 f"  {server.name:<20} {server.transport:<5} risk={server.risk.value:<9} "
                 f"{state}{detail}"
@@ -275,13 +297,24 @@ class MCPLayer:
                     lines.append(f"      ✗ {q.name}  QUARANTINED: {', '.join(q.matched)}")
                 for name in report.filtered:
                     lines.append(f"      · {name}  filtered by allow/deny")
+        for name in self.stale_servers():
+            lines.append(
+                f"  ! {name}: announced a tool-list change after startup; the platform keeps "
+                "the startup list — restart to pick it up (hot refresh deferred, ADR-0017)"
+            )
         for note in self.config.notes:
             lines.append(f"  ! {note}")
         return "\n".join(lines)
 
 
 def register_mcp_tools(registry: ToolRegistry, layer: MCPLayer) -> list[str]:
-    """Add the layer's bridged tools to *registry*; never overwrite an existing name."""
+    """Add the layer's bridged tools to *registry*; never overwrite an existing name.
+
+    Idempotent: a name that is already present (a previous registration of the
+    same layer) is skipped. ``ToolRegistry.add`` enforces the same rule
+    independently for every ``origin="mcp"`` tool, so even a caller that
+    bypasses this helper cannot make an MCP tool shadow a platform tool.
+    """
     added: list[str] = []
     for tool in layer.registry_tools():
         if registry.get(tool.name) is not None:
