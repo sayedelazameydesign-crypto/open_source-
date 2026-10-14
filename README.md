@@ -59,6 +59,8 @@ python -m os_server.cli serve --demo --host 0.0.0.0 --port 8080
 القرارات: [`adr/`](adr) · ما تبقّى: [`docs/ROADMAP.md`](docs/ROADMAP.md)
 ربط Agent Mode بـ GitHub: [`docs/arena-github-integration.md`](docs/arena-github-integration.md)
 دمج ArtCraft Launcher (مضيف + محوّل): [`docs/CRAFT_LAUNCHER_PLAN.md`](docs/CRAFT_LAUNCHER_PLAN.md)
+توسيع القدرات (ذاكرة/معرفة/مهارات/مراقبة): [`docs/INTEGRATIONS_PLAN.md`](docs/INTEGRATIONS_PLAN.md) —
+**خطة غير مُنفَّذة** بمعايير خروج ومرشّحات فُحصت من مصدرها؛ القرار المقترح في مسودة `adr/0016`.
 
 ## مصادقة API والـ API الخاص (`cela_use_browser`)
 
