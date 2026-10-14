@@ -35,6 +35,7 @@ class EventType(StrEnum):
     ARTIFACT = "artifact"
     LOG = "log"
     WARNING = "warning"
+    BROWSER_ACTION = "browser_action"
     REVIEW = "review"
     RUN_FINISHED = "run_finished"
     ERROR = "error"

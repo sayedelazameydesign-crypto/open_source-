@@ -197,6 +197,7 @@ class ReActAgent(BaseModel):
                 run_id=run.run_id,
                 data={
                     "status": run.status.value,
+                    "answer": run.final_answer,
                     "reason": stopped_reason,
                     "steps": budget.steps,
                     "tokens": run.tokens_used,
@@ -246,6 +247,28 @@ class ReActAgent(BaseModel):
         result = await self.registry.execute(call)
         budget.note_result(ok=result.ok)
         await self.bus.tool_result(result, step_id=step.id)
+        # Emit browser_action after browser tool calls
+        if call.name in {"browser_navigate", "browser_click", "browser_fill"}:
+            action_map = {
+                "browser_navigate": "goto",
+                "browser_click": "click",
+                "browser_fill": "fill",
+            }
+            await self.bus.publish(
+                Event(
+                    type=EventType.BROWSER_ACTION,
+                    run_id=self.bus.run_id,
+                    step_id=step.id,
+                    data={
+                        "action": action_map.get(call.name, "unknown"),
+                        "url": call.args.get("url", ""),
+                        "selector": call.args.get("selector", ""),
+                        "x": None,
+                        "y": None,
+                        "step": step.id,
+                    },
+                )
+            )
         for art in result.artifacts:
             await self.bus.artifact(art, step_id=step.id)
         return result

@@ -96,7 +96,8 @@ class PlanningFlow(BaseModel):
 
         await self.bus.publish(
             Event(
-                type=EventType.RUN_STARTED, run_id=run.run_id, data={"task": task, "mode": "flow"}
+                type=EventType.RUN_STARTED,
+                run_id=self.bus.run_id, data={"task": task, "mode": "flow"}
             )
         )
 
@@ -138,9 +139,10 @@ class PlanningFlow(BaseModel):
         await self.bus.publish(
             Event(
                 type=EventType.RUN_FINISHED,
-                run_id=run.run_id,
+                run_id=self.bus.run_id,
                 data={
                     "status": run.status.value,
+                    "answer": answer,
                     "steps": len(graph.steps),
                     "replans": run.replans,
                     "budget": budget.status(),
@@ -176,7 +178,7 @@ class PlanningFlow(BaseModel):
         await self.bus.publish(
             Event(
                 type=EventType.PLAN_CREATED,
-                run_id=run.run_id,
+                run_id=self.bus.run_id,
                 data={
                     "steps": [s.model_dump(mode="json") for s in graph.steps],
                     "order": graph.topo_order(),
@@ -193,7 +195,7 @@ class PlanningFlow(BaseModel):
         await self.bus.publish(
             Event(
                 type=EventType.PLAN_UPDATED,
-                run_id=run.run_id,
+                run_id=self.bus.run_id,
                 data={
                     "reason": "step failures",
                     "replan": run.replans,
@@ -226,7 +228,7 @@ class PlanningFlow(BaseModel):
         await self.bus.publish(
             Event(
                 type=EventType.STEP_STARTED,
-                run_id=run.run_id,
+                run_id=self.bus.run_id,
                 step_id=step.id,
                 data={"title": step.title, "tool": step.tool, "attempt": step.attempts},
             )
@@ -265,7 +267,7 @@ class PlanningFlow(BaseModel):
             await self.bus.publish(
                 Event(
                     type=EventType.APPROVAL_REQUESTED,
-                    run_id=run.run_id,
+                    run_id=self.bus.run_id,
                     step_id=step.id,
                     data={"id": call.id, "name": call.name, "risk": risk.value},
                 )
@@ -299,6 +301,28 @@ class PlanningFlow(BaseModel):
         result = await self.registry.execute(call)
         if result.ok:
             await self.bus.tool_result(result, step_id=step.id)
+            # Emit browser_action for browser tool calls
+            if call.name in {"browser_navigate", "browser_click", "browser_fill"}:
+                action_map = {
+                    "browser_navigate": "goto",
+                    "browser_click": "click",
+                    "browser_fill": "fill",
+                }
+                await self.bus.publish(
+                    Event(
+                        type=EventType.BROWSER_ACTION,
+                        run_id=self.bus.run_id,
+                        step_id=step.id,
+                        data={
+                            "action": action_map.get(call.name, "unknown"),
+                            "url": call.args.get("url", "") if call.args else "",
+                            "selector": call.args.get("selector", "") if call.args else "",
+                            "x": None,
+                            "y": None,
+                            "step": step.id,
+                        },
+                    ),
+                )
             for art in result.artifacts:
                 await self.bus.artifact(art, step_id=step.id)
             return result
@@ -310,7 +334,7 @@ class PlanningFlow(BaseModel):
         await self.bus.publish(
             Event(
                 type=EventType.STEP_FINISHED,
-                run_id=run.run_id,
+                run_id=self.bus.run_id,
                 step_id=step.id,
                 data={
                     "status": step.status.value,
