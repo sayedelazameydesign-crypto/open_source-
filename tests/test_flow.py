@@ -214,3 +214,64 @@ async def test_synthesis_uses_the_observations(registry, bus) -> None:
     result = await flow.run("synthesise")
     assert result.answer == "final"
     assert any("Observations" in s and "data" in s for s in seen)
+
+
+async def test_browser_action_maps_all_tool_names(browser_registry, browser_tool) -> None:
+    from os_agents.flow import BROWSER_ACTIONS, browser_action
+
+    for tool_name, canonical in (
+        ("browser_navigate", "goto"),
+        ("browser_click", "click"),
+        ("browser_fill", "fill"),
+        ("browser_type", "type"),
+        ("browser_scroll", "scroll"),
+        ("browser_key", "key"),
+    ):
+        assert BROWSER_ACTIONS[tool_name] == canonical
+    await browser_tool.navigate("https://example.org/search")
+    r = await browser_action(browser_tool, "fill", selector="#q", value="hi")
+    assert r.metadata["action"] == "fill"
+    assert isinstance(r.metadata["x"], int)
+    assert isinstance(r.metadata["y"], int)
+
+
+async def test_flow_browser_action_carries_x_y_and_finished_data_answer(
+    browser_registry, bus, events
+) -> None:
+    """Flow run that clicks via browser_action and surfaces answer in finished.data."""
+    plan = json.dumps(
+        [
+            {
+                "id": "s1",
+                "title": "open",
+                "tool": "browser_navigate",
+                "args": {"url": "https://example.org/search"},
+            },
+            {
+                "id": "s2",
+                "title": "click",
+                "tool": "browser_click",
+                "args": {"selector": "#go"},
+                "depends_on": ["s1"],
+            },
+        ]
+    )
+    flow = make_flow(
+        plan_model(plan, final="answer-from-flow"),
+        browser_registry,
+        bus,
+        parallelism=1,
+        max_replans=0,
+    )
+    result = await flow.run("do a browser click")
+    assert result.answer == "answer-from-flow"
+    assert result.run.status is RunStatus.COMPLETED
+    click_results = [r for r in result.run.results if r.tool_name == "browser_click"]
+    assert click_results, "expected a browser_click result"
+    meta = click_results[0].metadata
+    assert meta.get("action") == "click"
+    assert isinstance(meta.get("x"), int) and isinstance(meta.get("y"), int)
+    finished = [e for e in events if e.type.value == "run_finished"]
+    assert finished
+    assert finished[0].data["answer"] == "answer-from-flow"
+    assert finished[0].data["status"] == RunStatus.COMPLETED.value

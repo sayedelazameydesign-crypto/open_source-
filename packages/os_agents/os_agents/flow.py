@@ -146,6 +146,7 @@ class PlanningFlow(BaseModel):
                     "steps": len(graph.steps),
                     "replans": run.replans,
                     "budget": budget.status(),
+                    "answer": answer or "",
                 },
             )
         )
@@ -405,3 +406,40 @@ def _maybe_json(text: str, field: str) -> Any:
     except (json.JSONDecodeError, TypeError):
         return text
     return parsed if isinstance(parsed, (dict, list)) else text
+
+
+# Tool-name -> canonical browser action. Mirrors os_agents.react so flow and
+# ReAct use identical action vocabulary when reporting to the UI/test harness.
+BROWSER_ACTIONS: dict[str, str] = {
+    "browser_navigate": "goto",
+    "browser_goto": "goto",
+    "goto": "goto",
+    "browser_click": "click",
+    "click": "click",
+    "browser_fill": "fill",
+    "fill": "fill",
+    "browser_type": "type",
+    "type": "type",
+    "browser_scroll": "scroll",
+    "scroll": "scroll",
+    "browser_key": "key",
+    "browser_press": "key",
+    "key": "key",
+}
+
+
+async def browser_action(tool: Any, action: str, **kwargs: Any) -> ToolResult:
+    """Dispatch a browser action through a BrowserTool and surface x, y coords.
+
+    Accepts either a canonical action name (``goto``, ``click``, ``fill``,
+    ``type``, ``scroll``, ``key``) or a tool name (``browser_navigate`` etc.)
+    and returns a :class:`ToolResult` whose ``metadata`` carries the action
+    name. For ``click`` and ``fill`` the FakeBrowser backend additionally
+    reports deterministic integer ``x``/``y`` center coordinates.
+    """
+    canonical = BROWSER_ACTIONS.get(action, action)
+    result = await tool.browser_action(canonical, **kwargs)
+    meta = dict(result.metadata)
+    meta.setdefault("action", canonical)
+    result.metadata = meta
+    return result
