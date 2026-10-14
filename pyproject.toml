@@ -87,6 +87,7 @@ packages = [
     "packages/os_evals/os_evals",
     "packages/os_skills/os_skills",
     "packages/os_reach/os_reach",
+    "packages/os_launcher/os_launcher",
 ]
 
 # --- Monorepo path setup: every package is importable without installation ---
@@ -105,6 +106,7 @@ pythonpath = [
     "packages/os_evals",
     "packages/os_skills",
     "packages/os_reach",
+    "packages/os_launcher",
     "packages/legacy/src",
 ]
 markers = [
@@ -115,13 +117,13 @@ filterwarnings = ["error::RuntimeWarning"]
 
 [tool.coverage.run]
 branch = true
-source = ["os_core", "os_agents", "os_tools", "os_orchestration", "os_server", "os_evals", "os_skills", "os_reach"]
+source = ["os_core", "os_agents", "os_tools", "os_orchestration", "os_server", "os_evals", "os_skills", "os_reach", "os_launcher"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py311"
 src = ["packages", "tests"]
-extend-exclude = ["packages/legacy", "packages/web"]
+extend-exclude = ["packages/legacy", "packages/web", "packages/craft-launcher"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RUF", "ASYNC"]

@@ -1,4 +1,4 @@
-.PHONY: install test lint format demo-react demo-flow serve check clean
+.PHONY: install test lint format demo-react demo-flow serve check clean launcher-test launcher-build
 
 install:
 	pip install -e ".[dev,server]"
@@ -22,6 +22,14 @@ demo-flow:
 
 serve:
 	python -m os_server.cli serve --demo --host 0.0.0.0 --port 8080
+
+# Vendored ArtCraft Launcher workspace (packages/craft-launcher, ADR-0015).
+# Independent of the Python toolchain: needs Rust 1.90+ on PATH.
+launcher-test:
+	cd packages/craft-launcher && cargo test --workspace --locked
+
+launcher-build:
+	cd packages/craft-launcher && cargo build --workspace --locked
 
 clean:
 	rm -rf .pytest_cache .ruff_cache .coverage **/__pycache__
