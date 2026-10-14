@@ -165,3 +165,25 @@ curl -H "Authorization: Bearer $CELA_API_TOKEN" \
 ```
 
 القرار وسببه: [`adr/0014-run-outcome-ledger.md`](../adr/0014-run-outcome-ledger.md).
+
+## 9. أحداث مهمة (Events)
+
+يعرض هذا القسم الأحداث الداخلية الرئيسية التي تُصدرها المنصة أثناء دورة حياة التشغيل، ويستخدمها الواجهة الأمامية وعملاء Python.
+
+| الحدث | البيانات الرئيسية | الوصف |
+|---|---|---|
+| `run_started` | `data.task, data.mode, data.max_steps` | بداية مهمة جديدة |
+| `model_selected` | `data.model, data.role, data.reason, data.est_tokens, data.cost_units` | اختيار نموذج للتشغيل |
+| `plan_created` | `data.steps[].id, data.steps[].title, data.steps[].tool, data.steps[].args` | خطة خطوات تنفيذية (وضع PlanningFlow) |
+| `step_started` | `data.title, data.step` | شروع خطوة ما |
+| `tool_call` | `data.id, data.name, data.args` | استدعاء أداة قبل التنفيذ |
+| `tool_result` | `data.id, data.name, data.status, data.output, data.duration_ms` | نتيجة أداة بعد التنفيذ |
+| `artifact` | `data.kind, data.filename, data.mime_type, data.size` | خروج artefact (لقطات شاشة) |
+| `thought` | `data.text` | Thought من النموذج |
+| `browser_action` | `data.action, data.url, data.selector, data.x, data.y, data.step` | أحداث إجراءات المتصفح (goto, click, fill/type) |
+| `approval_requested` | `data.id, data.name, data.args, data.risk` | طلب موافقة بشرية (HITL) |
+| `approval_resolved` | `data.id, data.decision` | قرار الموافقة أو الرفض |
+| `run_finished` | `data.status, data.answer, data.reason, data.steps, data.tokens, data.budget` | انتهاء المهمة ونتيجة final answer |
+| `run_finished` *(مع `answer`) | مضاف حديثاً: `data.answer` يحتوي على النص النهائي للمهمة | |
+
+ملاحظة: الحقل `data.answer` في حدث `run_finished` تم إضافته مؤخراً ليحتوي على texto النهائي للمهمة بدلاً من `reason` فقط. يفضل استخدام `answer` للحصول على النص الكامل، و `reason` كملخص مختصر.
