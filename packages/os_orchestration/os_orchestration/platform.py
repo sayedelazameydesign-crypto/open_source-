@@ -51,6 +51,13 @@ class Platform(BaseModel):
     skill_manager: Any = None
     skill_auto_learn: bool = True
     last_skill_id: str | None = None
+    # Same duck-typed hook for long-term memory (os_memory.MemoryManager): recalled
+    # records are appended to the task as a *quoted, delimited block*, and the
+    # finished run is distilled back. Kept duck-typed so this layer never imports
+    # os_memory — the same discipline that keeps os_tools and os_agents strangers.
+    memory_manager: Any = None
+    memory_auto_write: bool = True
+    last_memory_ids: list[str] = Field(default_factory=list)
     last_bus: EventBus | None = None  # kept so the server can stream events
     ledger: RunLedger | None = None  # append-only outcome log; None = don't record
 
@@ -90,6 +97,7 @@ class Platform(BaseModel):
         stream = bus or self.make_bus(state.run_id)
         stream.run_id = state.run_id
 
+        used_memory_ids: list[str] = []
         try:
             # Skill reuse: retrieve a learned pattern for this task and inject it
             # as initial guidance. The original task remains the state's identity;
@@ -117,6 +125,40 @@ class Platform(BaseModel):
                                 ),
                                 "skill_id": skill.skill_id,
                                 "skill_match": score,
+                            },
+                        )
+                    )
+
+            # Memory recall: quoted, attributed context — appended *after* the task,
+            # never substituted for it, and never placed in the system turn. A stored
+            # fact may inform the agent; it may not address it.
+            if self.memory_manager is not None:
+                try:
+                    recalled = self.memory_manager.guidance_for_task(task)
+                except Exception as exc:
+                    # Symmetric with _settle_memory: an unreadable memory layer
+                    # costs the run its context, never its result.
+                    recalled = None
+                    await stream.log(f"memory recall unavailable: {exc}", level="warning")
+                if recalled is not None:
+                    block, memory_ids, best = recalled
+                    effective_task = f"{effective_task}\n\n{block}"
+                    used_memory_ids = list(memory_ids)
+                    self.last_memory_ids = list(memory_ids)
+                    state.metadata["memory_ids"] = list(memory_ids)
+                    state.metadata["memory_match"] = best
+                    await stream.publish(
+                        Event(
+                            type=EventType.LOG,
+                            run_id=state.run_id,
+                            data={
+                                "text": (
+                                    f"injecting {len(memory_ids)} stored memories "
+                                    f"(best match={best:.2f})"
+                                ),
+                                "kind": "memory_recalled",
+                                "memory_ids": list(memory_ids),
+                                "memory_match": best,
                             },
                         )
                     )
@@ -156,6 +198,10 @@ class Platform(BaseModel):
                 state.mark_finished(RunStatus.FAILED, error=f"{type(exc).__name__}: {exc}")
             raise
         finally:
+            # Memory settles first: a recalled fact that turned out wrong has to be
+            # discounted even when the run itself failed — that is exactly the case
+            # where believing memory is most expensive.
+            await self._settle_memory(state, used_memory_ids, bus=stream)
             # Every execution is recorded — completed, failed, budget-exhausted
             # or interrupted. That is the whole point of a ledger. It runs after
             # _learn, so skill feedback is settled before the record is written.
@@ -176,6 +222,43 @@ class Platform(BaseModel):
         except LedgerError as exc:
             if stream is not None:
                 await stream.log(f"run-outcome ledger write failed: {exc}", level="error")
+
+    async def _settle_memory(
+        self, state: RunState, memory_ids: list[str], *, bus: EventBus | None = None
+    ) -> None:
+        """Feed the outcome back to memory, then distil this run into an episode.
+
+        Never raises. A memory layer that is down must cost a run its *memory*,
+        not its result — the same reasoning that keeps a ledger write failure on
+        the event bus instead of out of the ``finally`` block.
+        """
+        if self.memory_manager is None:
+            return
+        stream = bus if bus is not None else self.last_bus
+        success = state.status.value == "completed"
+        try:
+            if memory_ids:
+                self.memory_manager.feedback(memory_ids, success=success)
+            if success and self.memory_auto_write:
+                record = self.memory_manager.learn_from_run(state)
+                if record is not None:
+                    state.metadata.setdefault("learned_memory_id", record.memory_id)
+                    if stream is not None:
+                        await stream.publish(
+                            Event(
+                                type=EventType.LOG,
+                                run_id=state.run_id,
+                                data={
+                                    "text": f"stored episode {record.memory_id}",
+                                    "kind": "memory_written",
+                                    "memory_id": record.memory_id,
+                                    "memory_status": record.status.value,
+                                },
+                            )
+                        )
+        except Exception as exc:
+            if stream is not None:
+                await stream.log(f"memory layer unavailable: {exc}", level="warning")
 
     def _learn(self, *, state: RunState, used_skill_id: str | None) -> RunState:
         """Feedback loop: score a reused skill, then distill the run itself."""
@@ -202,6 +285,7 @@ def build_platform(
     token_budget: int = 200_000,
     max_steps: int = 25,
     skill_manager: Any = None,
+    memory_manager: Any = None,
     ledger: RunLedger | None = None,
 ) -> Platform:
     """Convenience factory used by the CLI, the server and the tests."""
@@ -211,5 +295,6 @@ def build_platform(
         config=PlatformConfig(mode=mode, token_budget=token_budget, max_steps=max_steps),
         approver=approver or DenyApprover(),
         skill_manager=skill_manager,
+        memory_manager=memory_manager,
         ledger=ledger,
     )
