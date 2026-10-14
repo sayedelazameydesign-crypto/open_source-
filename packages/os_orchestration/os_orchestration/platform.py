@@ -14,7 +14,7 @@ from os_agents.budget import BudgetConfig
 from os_agents.flow import PlanningFlow
 from os_agents.react import ReActAgent
 from os_agents.reviewer import HeuristicReviewer
-from os_core.events import EventBus
+from os_core.events import Event, EventBus, EventType
 from os_core.guardrails import Guardrails
 from os_core.hitl import Approver, DenyApprover
 from os_core.models import ChatModel
@@ -43,6 +43,12 @@ class Platform(BaseModel):
     guardrails: Guardrails = Field(default_factory=Guardrails)
     approver: Approver = Field(default_factory=DenyApprover)
     reviewer: Any = Field(default_factory=HeuristicReviewer)
+    # Optional continuous-learning hook (os_skills.SkillManager, duck-typed so
+    # this layer never imports os_skills): retrieved skills are injected as
+    # initial guidance and completed runs are distilled back into the library.
+    skill_manager: Any = None
+    skill_auto_learn: bool = True
+    last_skill_id: str | None = None
     last_bus: EventBus | None = None  # kept so the server can stream events
 
     model_config = {"arbitrary_types_allowed": True}
@@ -81,6 +87,34 @@ class Platform(BaseModel):
         stream = bus or self.make_bus(state.run_id)
         stream.run_id = state.run_id
 
+        # Skill reuse: retrieve a learned pattern for this task and inject it
+        # as initial guidance. The original task remains the state's identity;
+        # only the text the agents reason over is enriched. Guardrails and
+        # HITL still apply to every resulting tool call, exactly as before.
+        effective_task = task
+        used_skill_id: str | None = None
+        if self.skill_manager is not None:
+            found = self.skill_manager.guidance_for_task(task)
+            if found is not None:
+                skill, score, enriched = found
+                effective_task = enriched
+                used_skill_id = skill.skill_id
+                self.last_skill_id = skill.skill_id
+                state.metadata["skill_id"] = skill.skill_id
+                state.metadata["skill_status"] = skill.status
+                state.metadata["skill_match"] = score
+                await stream.publish(
+                    Event(
+                        type=EventType.LOG,
+                        run_id=state.run_id,
+                        data={
+                            "text": f"reusing learned skill {skill.skill_id} (match={score:.2f})",
+                            "skill_id": skill.skill_id,
+                            "skill_match": score,
+                        },
+                    )
+                )
+
         if mode == "flow":
             flow = PlanningFlow(
                 planner=self.model,
@@ -93,8 +127,8 @@ class Platform(BaseModel):
                 max_replans=self.config.max_replans,
                 parallelism=self.config.parallelism,
             )
-            result = await flow.run(task, state=state)
-            return result.run
+            result = await flow.run(effective_task, state=state)
+            return self._learn(state=result.run, used_skill_id=used_skill_id)
 
         agent = ReActAgent(
             model=self.model,
@@ -106,8 +140,23 @@ class Platform(BaseModel):
             budget_cfg=self.budget(),
             reviewer=self.reviewer,
         )
-        outcome = await agent.run(task, state=state)
-        return outcome.run
+        outcome = await agent.run(effective_task, state=state)
+        return self._learn(state=outcome.run, used_skill_id=used_skill_id)
+
+    def _learn(self, *, state: RunState, used_skill_id: str | None) -> RunState:
+        """Feedback loop: score a reused skill, then distill the run itself."""
+        if self.skill_manager is None:
+            return state
+        success = state.status.value == "completed"
+        if used_skill_id is not None:
+            self.skill_manager.record_outcome(
+                used_skill_id, success=success, tokens_used=state.tokens_used
+            )
+        elif self.skill_auto_learn and success:
+            learned = self.skill_manager.learn_from_run(state)
+            if learned is not None:
+                state.metadata.setdefault("learned_skill_id", learned.skill_id)
+        return state
 
 
 def build_platform(
@@ -118,6 +167,7 @@ def build_platform(
     approver: Approver | None = None,
     token_budget: int = 200_000,
     max_steps: int = 25,
+    skill_manager: Any = None,
 ) -> Platform:
     """Convenience factory used by the CLI, the server and the tests."""
     return Platform(
@@ -125,4 +175,5 @@ def build_platform(
         registry=registry,
         config=PlatformConfig(mode=mode, token_budget=token_budget, max_steps=max_steps),
         approver=approver or DenyApprover(),
+        skill_manager=skill_manager,
     )

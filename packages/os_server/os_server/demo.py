@@ -14,6 +14,7 @@ Ollama and the exact same code path drives real models.
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
 from os_core.hitl import QueueApprover
@@ -22,7 +23,7 @@ from os_core.router import ModelRouter, RouterConfig
 from os_core.types import ToolCall
 from os_orchestration.platform import Platform, PlatformConfig
 from os_tools.browser import BrowserTool, FakeBrowser, PageSnapshot, RetryPolicy
-from os_tools.code_exec import LocalSubprocessBackend
+from os_tools.code_exec import code_exec_backend_from_env
 from os_tools.egress import EgressPolicy
 from os_tools.registry import ToolRegistry
 from os_tools.ssrf import SSRFGuard
@@ -84,7 +85,7 @@ def build_registry(
     guard = policy.guard
     browser = demo_browser()
     engine = ai_engine if ai_engine is not None else LocalAIEngine()
-    registry.add(python_execute_tool(LocalSubprocessBackend(), timeout=20.0))
+    registry.add(python_execute_tool(code_exec_backend_from_env(), timeout=20.0))
     registry.extend(browser_tools(browser, ssrf_check=policy.for_tool("browser")))
     registry.extend(local_ai_tools(engine))
     return registry, guard, browser
@@ -164,6 +165,29 @@ def build_demo_platform_for(mode: str, *, interactive: bool = False) -> Platform
     return build_demo_platform(mode="flow" if mode == "flow" else "react", interactive=interactive)
 
 
+_SKILL_MANAGER = None
+
+
+def demo_skill_manager():
+    """One process-wide skill manager when ``CELA_SKILL_STORE_URL`` is set.
+
+    Shared deliberately: the server builds a platform per run, so a manager
+    per platform could never accumulate a library. Unset env = feature off,
+    which keeps the offline demo and every existing test hermetic.
+    """
+    global _SKILL_MANAGER
+    url = os.environ.get("CELA_SKILL_STORE_URL")
+    if not url:
+        return None
+    if _SKILL_MANAGER is None:
+        from os_tools.local_ai import LocalAIEngine
+
+        from os_skills import SkillManager, skill_store_from_url
+
+        _SKILL_MANAGER = SkillManager(skill_store_from_url(url), LocalAIEngine())
+    return _SKILL_MANAGER
+
+
 def build_demo_platform(*, mode: str = "auto", interactive: bool = False) -> Platform:
     registry, _guard, _browser = build_registry()
     model = demo_planner_model("") if mode == "flow" else demo_react_model("")
@@ -173,4 +197,5 @@ def build_demo_platform(*, mode: str = "auto", interactive: bool = False) -> Pla
         config=PlatformConfig(mode=mode, max_steps=8, token_budget=50_000),
         router=ModelRouter(config=RouterConfig(token_budget=50_000)),
         approver=QueueApprover(timeout=60.0) if interactive else QueueApprover(timeout=1.0),
+        skill_manager=demo_skill_manager(),
     )

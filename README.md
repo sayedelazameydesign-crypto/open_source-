@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 
-> **362 اختبارًا ناجحًا · 0 فشل · دون مفاتيح API ودون شبكة.**
+> **403 اختبارًا ناجحًا · 0 فشل · دون مفاتيح API ودون شبكة.**
 
 ---
 
@@ -97,7 +97,7 @@ packages/
 ## الاختبار
 
 ```bash
-pytest -q          # 362 passed
+pytest -q          # 403 passed
 ruff check .       # All checks passed
 ruff format .      # تنسيق موحّد
 ```
@@ -124,7 +124,7 @@ model = OpenAICompatModel(
 * `unshare` يحتاج Linux + صلاحيات؛ عند غيابه **لا يوجد عزل شبكة فعلي** ويُبلَّغ
   `network="unverified"` بدل ادعاء العزل. الإنتاج يحتاج E2B/Firecracker.
 * `packages/web` هيكل موثّق فقط — الواجهة لم تُبنَ.
-* حالة التشغيل في `os_server/app.py` قواميس داخل الذاكرة، فلا تعمل مع أكثر من نسخة.
+* حالة التشغيل الحية داخل العملية افتراضيًا؛ مع `CELA_RUN_STORE_URL=sqlite:///<path>` (أو `--store-url`) تُحفظ الحالات والأحداث والـArtifacts والتذاكر (مجزّأة) بشكل دائم وتنجو التشغيلات المنتهية من إعادة التشغيل — لكن تعدد النسخ المتزامن ما زال يحتاج Postgres+Redis (ADR-0004).
 * مقاعد GAIA / SWE-bench / OSWorld غير مبنية؛ الطبقات جاهزة لكن لا أرقام بعد.
 
 ## الترخيص

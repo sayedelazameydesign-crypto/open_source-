@@ -83,6 +83,11 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--demo", action="store_true")
     s.add_argument("--host", default="0.0.0.0")
     s.add_argument("--port", type=int, default=8080)
+    s.add_argument(
+        "--store-url",
+        default=None,
+        help="run store: sqlite:///<path> (default: memory; or CELA_RUN_STORE_URL)",
+    )
 
     args = parser.parse_args(argv)
 
@@ -108,6 +113,7 @@ def main(argv: list[str] | None = None) -> int:
             port=args.port,
             api_token=api_token,
             private_api_token=private_token,
+            store_url=args.store_url,
         )
         return 0
 

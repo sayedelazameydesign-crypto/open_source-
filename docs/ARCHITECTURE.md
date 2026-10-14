@@ -139,15 +139,15 @@ User UI (Next.js split-view)  ← WebSockets / SSE
 
 ## 6. الاختبار والتقييم
 
-362 اختبارًا، كلها دون مفاتيح API ودون شبكة. على جهاز يتوفر فيه `unshare` تظهر
-`362 passed`؛ وعلى عدّاء CI الذي يرفض إنشاء netns يُتخطّى اختبار الشبكة تحديدًا
+403 اختبارًا، كلها دون مفاتيح API ودون شبكة. على جهاز يتوفر فيه `unshare` تظهر
+`403 passed`؛ وعلى عدّاء CI الذي يرفض إنشاء netns يُتخطّى اختبار الشبكة تحديدًا
 (`test_sandbox_cannot_reach_the_network`) تخطيًا صريحًا بدل ادعاء عزل غير موجود.
 
 CI أخضر على Python 3.11 / 3.12 / 3.13 — انظر <https://github.com/sayedelazameydesign-crypto/open_source-/actions>:
 
 ```bash
 pip install -e ".[dev]"
-pytest            # 362 passed محليًا (تخطٍّ واحد على عدّاء بلا netns)
+pytest            # 403 passed محليًا (تخطٍّ واحد على عدّاء بلا netns)
 ruff check .      # All checks passed
 ```
 
@@ -197,3 +197,14 @@ model = OpenAICompatModel(
 ```
 
 نفس المسار البرمجي تمامًا؛ لا تغيير في الوكلاء أو الأدوات.
+
+
+## ملحق (2026-10-14) — تخزين التشغيلات الدائم (ADR-0004)
+
+أُضيف `os_server/storage.py`: بروتوكول `RunStore` يفصل `ApiRuntime` عن وسط
+التخزين، بتنفيذين — `InMemoryRunStore` (الافتراضي) و`SQLiteRunStore` الدائم
+(WAL، أحداث بمفتاح `(run_id, seq)`، تذاكر مجزّأة SHA-256). مع
+`CELA_RUN_STORE_URL=sqlite:///<path>` تنجو التشغيلات المنتهية من إعادة تشغيل
+الخادم: اللقطة، إعادة تشغيل الأحداث بـ`after_seq` عبر SSE/WS، والـArtifacts.
+المقابض الحية تبقى داخل العملية بطبيعتها، والتوسع الأفقي متعدد النسخ يظل
+تنفيذًا مستقبليًا لـ`RunStore` فوق Postgres+Redis خلف نفس الواجهة.

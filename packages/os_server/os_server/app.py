@@ -77,6 +77,7 @@ def create_app(
     egress_policy: EgressPolicy | None = None,
     ws_ticket_ttl: float = DEFAULT_WS_TICKET_TTL,
     runtime: ApiRuntime | None = None,
+    store_url: str | None = None,
 ) -> FastAPI:
     """Build the FastAPI application hosting both the platform and ``/cela/v1``."""
     configured_token = resolve_token(api_token)
@@ -97,6 +98,7 @@ def create_app(
             platform_or_factory,
             egress_policy=egress_policy,
             ws_ticket_ttl=ws_ticket_ttl,
+            store_url=store_url,
         )
     )
     if egress_policy is not None:
@@ -147,7 +149,7 @@ def create_app(
     async def stream_events(
         run_id: str, after_seq: int = Query(default=0, ge=0)
     ) -> StreamingResponse:
-        if rt.get_handle(run_id) is None:
+        if not rt.has_run(run_id):
             raise HTTPException(404, "unknown run_id")
         return StreamingResponse(
             rt.sse_events(run_id, after_seq=after_seq), media_type="text/event-stream"
@@ -173,7 +175,7 @@ def create_app(
             await ws.close(code=4401)
             return
         handle = rt.get_handle(run_id)
-        if handle is None:
+        if handle is None and not rt.has_run(run_id):
             await ws.close(code=4404)
             return
         after_seq = 0
@@ -188,6 +190,11 @@ def create_app(
                 return
         await ws.accept()
         try:
+            if handle is None:
+                # Recovered finished run: replay the durable event log.
+                for event in rt.stored_events(run_id, after_seq=after_seq):
+                    await ws.send_text(event.to_wire())
+                return
             if rt.stream_exhausted(run_id, after_seq):
                 return  # nothing left to send; the finally block closes cleanly
             # Subscribe before the backlog is delivered so a client that connects
@@ -235,6 +242,7 @@ def serve(
     port: int = 8080,
     api_token: str | None = None,
     private_api_token: str | None = None,
+    store_url: str | None = None,
 ) -> None:
     import uvicorn
 
@@ -245,7 +253,7 @@ def serve(
         )
     priv_token = resolve_private_token(private_api_token)
     uvicorn.run(
-        create_app(platform, api_token=token, private_api_token=priv_token),
+        create_app(platform, api_token=token, private_api_token=priv_token, store_url=store_url),
         host=host,
         port=port,
         log_level="info",

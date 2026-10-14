@@ -25,12 +25,22 @@ portable:
 
 ``CodeExecBackend`` is the seam: swap :class:`LocalSubprocessBackend` for an
 E2B/Firecracker implementation without touching the agents.
+
+Production isolation (step 2): :class:`E2BBackend` and
+:class:`FirecrackerBackend` execute only inside a remote microVM/sandbox
+service. They are **fail-closed**: missing SDK, missing endpoint, an
+unreachable manager or a provider error all return ``DENIED`` — they never
+fall back to the local subprocess backend. Selection is via
+``CELA_CODE_EXEC_MODE=production`` + ``CELA_CODE_EXEC_BACKEND=e2b|firecracker``
+(see :func:`code_exec_backend_from_env`); the local backend remains the
+explicit default for offline development and tests.
 """
 
 from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import functools
 import json
 import os
@@ -311,6 +321,215 @@ class LocalSubprocessBackend(BaseModel):
         if netns_unshare_available():
             return "blocked (netns)"
         return "unverified (netns unavailable on this host)"
+
+
+def _denied(backend: str, reason: str) -> ToolResult:
+    """Fail closed: report *no* execution happened, never degrade locally."""
+    return ToolResult(
+        tool_call_id="",
+        tool_name="python_execute",
+        status=ToolStatus.DENIED,
+        error=f"[{backend}] execution refused (fail-closed): {reason}",
+        metadata={"isolation": backend, "executed": False, "network": "not started"},
+    )
+
+
+class FirecrackerBackend(BaseModel):
+    """Execute via a Firecracker microVM manager service (HTTP contract).
+
+    The manager (outside this repo — e.g. a host-side agent that boots a
+    microVM per request) must expose ``POST {endpoint}/execute`` accepting
+    ``{code, language, files, timeout}`` and returning
+    ``{output, error, status, files:[{path, b64}]}``. Without a reachable
+    manager this backend denies every request; it never runs code locally.
+    """
+
+    endpoint: str | None = None
+    endpoint_env: str = "CELA_FIRECRACKER_ENDPOINT"
+    api_token_env: str = "CELA_FIRECRACKER_API_TOKEN"
+    transport: Any = Field(default=None, exclude=True)
+
+    model_config = {"arbitrary_types_allowed": True}
+
+    async def execute(
+        self,
+        code: str,
+        *,
+        language: str = "python",
+        files: dict[str, str] | None = None,
+        timeout: float | None = None,
+    ) -> ToolResult:
+        endpoint = self.endpoint or os.environ.get(self.endpoint_env)
+        if not endpoint:
+            return _denied("firecracker", f"${self.endpoint_env} is not configured")
+        try:
+            import httpx
+        except ImportError:
+            return _denied("firecracker", "httpx is not installed")
+        headers = {}
+        token = os.environ.get(self.api_token_env)
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        try:
+            async with httpx.AsyncClient(
+                transport=self.transport, timeout=timeout or 30.0
+            ) as client:
+                resp = await client.post(
+                    f"{endpoint.rstrip('/')}/execute",
+                    json={
+                        "code": code,
+                        "language": language,
+                        "files": files or {},
+                        "timeout": timeout or 30.0,
+                    },
+                    headers=headers,
+                )
+        except Exception as exc:  # unreachable manager -> fail closed
+            return _denied("firecracker", f"manager unreachable: {exc}")
+        if resp.status_code != 200:
+            return _denied("firecracker", f"manager returned HTTP {resp.status_code}")
+        try:
+            payload = resp.json()
+        except ValueError:
+            return _denied("firecracker", "manager returned a non-JSON response")
+        artifacts = [
+            _to_artifact(entry["path"], base64.b64decode(entry["b64"]))
+            for entry in payload.get("files", [])
+            if entry.get("path") and entry.get("b64")
+        ]
+        status = (
+            ToolStatus.SUCCESS
+            if payload.get("status", "success") == "success"
+            else ToolStatus.ERROR
+        )
+        return ToolResult(
+            tool_call_id="",
+            tool_name="python_execute",
+            status=status,
+            output=_truncate(str(payload.get("output", ""))),
+            error=payload.get("error"),
+            artifacts=artifacts,
+            metadata={
+                "isolation": "firecracker-microvm",
+                "executed": True,
+                "network": "manager-policy",
+            },
+        )
+
+
+class E2BBackend(BaseModel):
+    """Execute inside an E2B sandbox (microVM) via the optional E2B SDK.
+
+    Requires ``pip install 'cela-use-browser[sandbox]'`` and ``E2B_API_KEY``.
+    Any missing piece denies execution — there is deliberately no local
+    fallback path in this class.
+    """
+
+    api_key_env: str = "E2B_API_KEY"
+    template: str | None = None
+    sandbox_factory: Any = Field(default=None, exclude=True)
+
+    model_config = {"arbitrary_types_allowed": True}
+
+    async def _make_sandbox(self) -> Any:
+        if self.sandbox_factory is not None:
+            return await asyncio.to_thread(self.sandbox_factory)
+        try:
+            from e2b_code_interpreter import Sandbox
+        except ImportError:
+            raise RuntimeError("e2b-code-interpreter is not installed") from None
+        api_key = os.environ.get(self.api_key_env)
+        if not api_key:
+            raise RuntimeError(f"${self.api_key_env} is not set")
+        kwargs: dict[str, Any] = {"api_key": api_key}
+        if self.template:
+            kwargs["template"] = self.template
+        return await asyncio.to_thread(lambda: Sandbox.create(**kwargs))
+
+    async def execute(
+        self,
+        code: str,
+        *,
+        language: str = "python",
+        files: dict[str, str] | None = None,
+        timeout: float | None = None,
+    ) -> ToolResult:
+        if language not in {"python", "py"}:
+            return _denied("e2b", f"language '{language}' not supported (python only)")
+        try:
+            sandbox = await self._make_sandbox()
+        except Exception as exc:
+            return _denied("e2b", str(exc))
+        try:
+            for name, content in (files or {}).items():
+                await asyncio.to_thread(sandbox.files.write, name, content)
+            execution = await asyncio.to_thread(sandbox.run_code, code)
+            logs = getattr(execution, "logs", None)
+            stdout = "".join(getattr(logs, "stdout", []) or [])
+            error_obj = getattr(execution, "error", None)
+            text = getattr(execution, "text", None)
+            output = stdout or (text if isinstance(text, str) else "")
+            if error_obj is not None:
+                return ToolResult(
+                    tool_call_id="",
+                    tool_name="python_execute",
+                    status=ToolStatus.ERROR,
+                    output=_truncate(output),
+                    error=f"{getattr(error_obj, 'name', 'Error')}: "
+                    f"{getattr(error_obj, 'value', '')}",
+                    metadata={
+                        "isolation": "e2b-microvm",
+                        "executed": True,
+                        "network": "sandbox-policy",
+                    },
+                )
+            return ToolResult(
+                tool_call_id="",
+                tool_name="python_execute",
+                status=ToolStatus.SUCCESS,
+                output=_truncate(output),
+                metadata={
+                    "isolation": "e2b-microvm",
+                    "executed": True,
+                    "network": "sandbox-policy",
+                },
+            )
+        except Exception as exc:  # provider failure mid-run: report, never rerun locally
+            return _denied("e2b", f"sandbox execution failed: {exc}")
+        finally:
+            with contextlib.suppress(Exception):
+                kill = getattr(sandbox, "kill", None)
+                if callable(kill):
+                    await asyncio.to_thread(kill)
+
+
+def code_exec_backend_from_env(env: dict[str, str] | None = None) -> CodeExecBackend:
+    """Select the code-execution backend from the environment.
+
+    ``CELA_CODE_EXEC_MODE``: ``local`` (default) | ``production`` | ``e2b`` |
+    ``firecracker``. Production refuses to construct a local backend: it
+    requires ``CELA_CODE_EXEC_BACKEND=e2b|firecracker`` and raises otherwise,
+    so a misconfigured production deployment fails at startup instead of
+    silently executing untrusted code on the host.
+    """
+    cfg = os.environ if env is None else env
+    mode = cfg.get("CELA_CODE_EXEC_MODE", "local").lower()
+    if mode == "local":
+        return LocalSubprocessBackend()
+    if mode in {"e2b", "production"} and (
+        mode == "e2b" or cfg.get("CELA_CODE_EXEC_BACKEND") == "e2b"
+    ):
+        return E2BBackend()
+    if mode in {"firecracker", "production"} and (
+        mode == "firecracker" or cfg.get("CELA_CODE_EXEC_BACKEND") == "firecracker"
+    ):
+        return FirecrackerBackend()
+    if mode == "production":
+        raise RuntimeError(
+            "CELA_CODE_EXEC_MODE=production requires CELA_CODE_EXEC_BACKEND=e2b|firecracker; "
+            "refusing to fall back to the local subprocess backend"
+        )
+    raise RuntimeError(f"unknown CELA_CODE_EXEC_MODE={mode!r}")
 
 
 class InMemoryBackend(BaseModel):

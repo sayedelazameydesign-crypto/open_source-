@@ -13,9 +13,12 @@ from os_tools.browser import (
 )
 from os_tools.code_exec import (
     CodeExecBackend,
+    E2BBackend,
+    FirecrackerBackend,
     InMemoryBackend,
     LocalSubprocessBackend,
     SandboxLimits,
+    code_exec_backend_from_env,
     python_execute_tool,
 )
 from os_tools.egress import (
@@ -39,11 +42,13 @@ __all__ = [
     "BlockedURLError",
     "BrowserTool",
     "CodeExecBackend",
+    "E2BBackend",
     "EgressPolicy",
     "EgressPolicyError",
     "EgressRule",
     "EgressVerdict",
     "FakeBrowser",
+    "FirecrackerBackend",
     "InMemoryBackend",
     "LocalAIEngine",
     "LocalMCPServer",
@@ -61,6 +66,7 @@ __all__ = [
     "URLVerdict",
     "browser_tools",
     "build_default_registry",
+    "code_exec_backend_from_env",
     "detect_language",
     "local_ai_tools",
     "normalise_arabic",
