@@ -67,6 +67,10 @@ jobs:
             --api-key-env CELA_EVAL_API_KEY
             --out eval-report.json)
           if [ "$AB_SKILLS" = "true" ]; then args+=(--ab-skills); fi
+          # Safe to echo: every argument is non-secret by construction — the
+          # key travels only through $CELA_EVAL_API_KEY, and argparse receives
+          # the *name* of that variable, never its value.
+          echo "running: python -m os_evals ${args[*]}"
           python -m os_evals "${args[@]}"
       - name: Upload report
         # Always: even a failed run (A/B regression, unreachable endpoint)
