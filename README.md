@@ -57,6 +57,7 @@ python -m os_server.cli serve --demo --host 0.0.0.0 --port 8080
 
 البنية الكاملة: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · الـ API الخاص: [`docs/CELA_API.md`](docs/CELA_API.md) ·
 القرارات: [`adr/`](adr) · ما تبقّى: [`docs/ROADMAP.md`](docs/ROADMAP.md)
+ربط Agent Mode بـ GitHub: [`docs/arena-github-integration.md`](docs/arena-github-integration.md)
 
 ## مصادقة API والـ API الخاص (`cela_use_browser`)
 
