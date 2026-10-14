@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 
-> **665 اختبارًا ناجحًا · 0 فشل · دون مفاتيح API ودون شبكة.**
+> **765 اختبارًا ناجحًا · 0 فشل · دون مفاتيح API ودون شبكة.**
 
 ---
 
@@ -116,7 +116,8 @@ curl -H "Authorization: Bearer $CELA_PRIVATE_API_TOKEN" http://127.0.0.1:8080/ce
 packages/
 ├── os_core/          الأنواع، التوجيه، الحواجز، HITL، الأحداث، الحالة، سجل النتائج
 ├── os_agents/        ReAct، PlanningFlow، DAG، الميزانية، المراجع
-├── os_tools/         Sandbox، المتصفح، SSRF، سياسة الخروج (egress)، سجل الأدوات، MCP
+├── os_tools/         Sandbox، المتصفح، SSRF، سياسة الخروج (egress)، سجل الأدوات، عقد MCP الداخلي
+├── os_mcp/           عميل MCP (stdio + Streamable HTTP) + جسر إلى السجل + خادم MCP فوق السجل
 ├── os_orchestration/ واجهة Platform واختيار الوضع
 ├── os_server/        REST/WS/SSE + /cela/v1 + CelaBrowser + CLI + حزمة العرض
 └── web/              هيكل فقط (المرحلة 3 — لم يُبنَ)
@@ -128,7 +129,7 @@ packages/
 ## الاختبار
 
 ```bash
-pytest -q          # 665 passed (2 اختبارات مُعلَّقة اختياريًا: playwright, psycopg)
+pytest -q          # 765 passed (2 اختبارات مُعلَّقة اختياريًا: playwright, psycopg)
 ruff check .       # All checks passed
 ruff format .      # تنسيق موحّد
 ```
@@ -205,6 +206,44 @@ cela reach run github_search "agents" --yes
 `POST /api/reach/read|rss|github|cli/{channel}`، ونظيرها في `/cela/v1/reach/*` —
 برمز المصادقة نفسه لكل فضاء. التفاصيل: [`docs/REACH_PLAN.md`](docs/REACH_PLAN.md).
 
+## MCP في الاتجاهين (`os_mcp` — ADR-0017)
+
+نقل MCP حقيقي بلا تبعيات جديدة: الوكيل يستدعي **خوادم MCP خارجية** (stdio أو Streamable HTTP)،
+وأي مضيف MCP (Claude Desktop, Cursor, …) يستدعي **أدوات هذه المنصة** — وفي الحالتين تمرّ كل
+أداة على `Guardrails` وتصنيف الخطر وHITL قبل أن تصل إلى النموذج أو تُنفَّذ.
+
+```jsonc
+// ~/.config/cela/mcp.json  (أو CELA_MCP_CONFIG=<path>) — صيغة mcpServers المألوفة + مفاتيحنا
+{
+  "mcpServers": {
+    "fs": {
+      "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/srv/docs"],
+      "env": {"HOME": "${HOME}"},
+      "risk": "read_only",                       // الافتراضي dangerous = HITL قبل كل نداء
+      "tool_risk": {"write_file": "dangerous"},  // استثناء لأداة بعينها
+      "tools": {"allow": ["read_file", "list_directory", "write_file"]}
+    },
+    "remote": {"url": "https://mcp.example.com/mcp", "headers": {"Authorization": "Bearer ${MCP_TOKEN}"}}
+  }
+}
+```
+
+```bash
+export CELA_MCP_ENABLE=1                 # مغلق افتراضيًا: لا قراءة إعداد ولا إطلاق عمليات بدونه
+cela mcp list                            # ما هو مُعدّ ولماذا (بلا إطلاق)
+cela mcp doctor                          # يتصل بكل خادم: الأدوات المجسورة / المحجورة / المُرشَّحة
+cela mcp call fs read_file '{"path": "README.md"}' --yes
+cela run --demo "اقرأ README.md ولخّصه"     # الأداة تظهر للوكيل باسم mcp_fs_read_file
+cela mcp serve --demo                    # الاتجاه الآخر: المنصة خادم MCP عبر stdio لأي مضيف
+```
+
+ما يحدث عند الاكتشاف: وصف كل أداة ومخططها يُفحَص بأنماط الحقن (en/ar/zh) — التطابق يعني **حجرًا**
+فلا يرى النموذج الأداة أصلًا؛ `destructiveHint` من الخادم **يرفع** الخطر ولا يخفّضه؛ الأسماء تُسبَّق
+بـ`mcp_<server>_` ولا تكتب فوق أداة قائمة أبدًا؛ المخرجات تُقصّ إلى `max_chars`. خوادم HTTP تمرّ على
+`EgressPolicy` لأصلها المُعدّ فقط فوق أرضية `SSRFGuard`؛ خوادم stdio تنطلق ببيئة بيضاء وترفض العمل داخل
+الصندوق. الأسطح: `GET /api/mcp/servers` و`GET /cela/v1/mcp/servers`. القرار وحدوده:
+[`adr/0017-mcp-transport.md`](adr/0017-mcp-transport.md).
+
 ## ArtCraft Launcher — استضافة + محوّل قراءة فقط
 
 شجرة Rust طبق الأصل من [`storytold/craft-launcher`](https://github.com/storytold/craft-launcher)
@@ -235,6 +274,11 @@ cela reach run github_search "agents" --yes
   `os_evals` فقط (مرحلة 4).
 * لا استخراج كوكيز من متصفح المستخدم ولا قراءة إعدادات Agent-Reach، ولا عمليات كتابة
   (نشر/تعليق) — القراءة فقط.
+* **خوادم MCP عبر stdio تعمل على المضيف خارج الصندوق وخارج `EgressPolicy`** (عملية تفتح شبكتها
+  بنفسها — نفس حدّ قنوات CLI). الضوابط البديلة: `CELA_MCP_ENABLE=1` صريح، بيئة بيضاء، `dangerous`
+  افتراضيًا مع HITL، حجر الأوصاف المسمومة، والرفض داخل الصندوق. خوادم HTTP وحدها تمرّ على
+  `EgressPolicy`. الدعم للأدوات فقط (لا `resources`/`prompts`/`sampling`/OAuth)، وقائمة الأدوات
+  تُثبَّت عند الإقلاع ولا تتبدّل أثناء التشغيل.
 
 ## الترخيص
 

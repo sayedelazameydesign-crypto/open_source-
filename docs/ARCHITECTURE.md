@@ -23,10 +23,10 @@ User UI (Next.js split-view)  ← WebSockets / SSE
         │
    os_orchestration.Platform   ← اختيار الوضع + تركيب الطبقات
         ├──────────────┬─────────────────┐
-   os_agents        os_core          os_tools
-   (ReAct/Flow)     (router,          (sandbox, browser,
-                    guardrails,        MCP registry)
-                    events, state)
+   os_agents        os_core          os_tools ── os_mcp
+   (ReAct/Flow)     (router,          (sandbox,   (MCP client/
+                    guardrails,        browser,    bridge/server)
+                    events, state)     registry)
 ```
 
 ## 2. الحزم
@@ -36,6 +36,7 @@ User UI (Next.js split-view)  ← WebSockets / SSE
 | `os_core` | الأنواع المشتركة، توجيه النماذج، الحواجز، الأحداث، الحالة، سجل النتائج | `types.py`, `router.py`, `guardrails.py`, `hitl.py`, `events.py`, `state.py`, `ledger.py` |
 | `os_agents` | حلقة ReAct، مخطط DAG، الميزانية، المراجع | `react.py`, `flow.py`, `dag.py`, `budget.py`, `reviewer.py` |
 | `os_tools` | تنفيذ الكود المعزول، المتصفح، حارس SSRF، سياسة الخروج، الذكاء المحلي، سجل الأدوات | `code_exec.py`, `browser.py`, `ssrf.py`, `egress.py`, `local_ai.py`, `registry.py`, `mcp.py` |
+| `os_mcp` | نقل MCP في الاتجاهين: عميل stdio/Streamable HTTP، جسر الأدوات الخارجية إلى `ToolRegistry` عبر الحواجز، خادم MCP فوق السجل (ADR-0017) | `protocol.py`, `config.py`, `client.py`, `bridge.py`, `layer.py`, `server.py` |
 | `os_orchestration` | واجهة المنصة واختيار الوضع | `platform.py` |
 | `os_server` | REST/WS/SSE + `/cela/v1` + `CelaBrowser` + CLI + حزمة العرض دون مفاتيح | `app.py`, `runtime.py`, `cela.py`, `cli.py`, `demo.py` |
 
@@ -155,15 +156,15 @@ User UI (Next.js split-view)  ← WebSockets / SSE
 
 ## 6. الاختبار والتقييم
 
-644 اختبارًا، كلها دون مفاتيح API ودون شبكة. على جهاز يتوفر فيه `unshare` تظهر
-`644 passed`؛ وعلى عدّاء CI الذي يرفض إنشاء netns يُتخطّى اختبار الشبكة تحديدًا
+765 اختبارًا، كلها دون مفاتيح API ودون شبكة. على جهاز يتوفر فيه `unshare` تظهر
+`765 passed`؛ وعلى عدّاء CI الذي يرفض إنشاء netns يُتخطّى اختبار الشبكة تحديدًا
 (`test_sandbox_cannot_reach_the_network`) تخطيًا صريحًا بدل ادعاء عزل غير موجود.
 
 CI أخضر على Python 3.11 / 3.12 / 3.13 — انظر <https://github.com/sayedelazameydesign-crypto/open_source-/actions>:
 
 ```bash
 pip install -e ".[dev]"
-pytest            # 644 passed محليًا (تخطٍّ واحد على عدّاء بلا netns)
+pytest            # 765 passed محليًا (تخطٍّ واحد على عدّاء بلا netns)
 ruff check .      # All checks passed
 ```
 
@@ -177,7 +178,8 @@ ruff check .      # All checks passed
 | كسر الحلقة + المراجع | `test_budget.py`, `test_reviewer.py` |
 | HITL، الحواجز، بث الأحداث | `test_react.py` |
 | DAG، التوازي، إعادة التخطيط الديناميكية | `test_flow.py` |
-| المسار الكامل + MCP | `test_e2e.py` |
+| المسار الكامل + عقد MCP الداخلي | `test_e2e.py` |
+| نقل MCP: stdio/HTTP، الحجر، رفع الخطر، HITL في الاتجاهين، التشغيل البيني بعملية حقيقية | `test_mcp.py` |
 | تسليم الأحداث بلا فجوة + مؤشر الاستئناف `seq` | `test_events.py` |
 | سياسة الخروج (allow-list فوق أرضية SSRF) | `test_egress.py` |
 | السطح الخاص `/cela/v1` + `CelaBrowser` | `test_cela_api.py` |

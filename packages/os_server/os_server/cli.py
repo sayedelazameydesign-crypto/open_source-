@@ -8,6 +8,11 @@ python -m os_server.cli reach list            # native + CLI channels, no fetchi
 python -m os_server.cli reach enable gh_search --yes   # opt-in, writes reach.toml
 python -m os_server.cli reach doctor          # health of every channel
 python -m os_server.cli ledger --limit 20     # how did our runs end?
+
+python -m os_server.cli mcp list              # configured MCP servers (no connecting)
+python -m os_server.cli mcp doctor            # connect, handshake, list + scan tools
+python -m os_server.cli mcp call fs read_file '{"path": "README.md"}' --yes
+python -m os_server.cli mcp serve --demo      # expose the platform's tools to an MCP host
 """
 
 from __future__ import annotations
@@ -95,12 +100,27 @@ def _print_ledger(report: dict[str, Any]) -> None:
 
 async def _run(platform: Platform, task: str) -> int:
     from os_core.state import RunState
+    from os_mcp.layer import process_layer, register_mcp_tools
 
+    mcp = process_layer()
+    if mcp is not None:
+        # Child processes belong to this event loop, so discovery happens here,
+        # not at import time. A server that is down is reported, not fatal.
+        await mcp.discover()
+        added = register_mcp_tools(platform.registry, mcp)
+        for name, health in mcp.health.items():
+            print(f"  🔌 mcp {name}: {health.status.value} — {health.message}")
+        if added:
+            print(f"  🔌 mcp tools: {', '.join(added)}")
     state = RunState(task=task, mode=platform.choose_mode(task))
     bus = platform.make_bus(state.run_id)
     bus.subscribe(_print_event)
     print(f"\n▶ task: {task}\n  mode: {state.mode}\n")
-    result = await platform.run(task, run_id=state.run_id, bus=bus)
+    try:
+        result = await platform.run(task, run_id=state.run_id, bus=bus)
+    finally:
+        if mcp is not None:
+            await mcp.close()
     print(f"\n── status: {result.status.value}")
     if result.error:
         print(f"── error : {result.error}")
@@ -289,6 +309,168 @@ def _reach_run(channel: str, query: str, *, assume_yes: bool) -> int:
     return 0
 
 
+MCP_CONFIRMATION = (
+    "An MCP server is a program (or remote service) this platform did not write. stdio servers "
+    "run on the host OUTSIDE the sandbox and the egress policy; every tool they offer is "
+    "scanned, and calls are gated by the risk you configured (default: dangerous -> HITL)."
+)
+
+
+def _mcp_layer(config_path: str | None):
+    from os_mcp.config import MCPConfigError, load_mcp_config
+    from os_mcp.layer import MCPLayer
+
+    try:
+        config = load_mcp_config(config_path)
+    except MCPConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return None
+    return MCPLayer(config)
+
+
+def _mcp_list(config_path: str | None, *, as_json: bool) -> int:
+    layer = _mcp_layer(config_path)
+    if layer is None:
+        return 2
+    if as_json:
+        print(json.dumps(layer.report(), ensure_ascii=False, indent=2))
+        return 0
+    print(layer.render())
+    print()
+    print("enable for runs with: CELA_MCP_ENABLE=1 CELA_MCP_CONFIG=<path>")
+    print(f"! {MCP_CONFIRMATION}")
+    return 0
+
+
+async def _mcp_probe(layer, *, as_json: bool) -> int:
+    try:
+        await layer.discover()
+        if as_json:
+            print(json.dumps(layer.report(), ensure_ascii=False, indent=2))
+        else:
+            print(layer.render())
+        return 0 if layer.is_active() or not layer.config.enabled_servers() else 1
+    finally:
+        await layer.close()
+
+
+def _mcp_doctor(config_path: str | None, *, as_json: bool) -> int:
+    layer = _mcp_layer(config_path)
+    if layer is None:
+        return 2
+    return asyncio.run(_mcp_probe(layer, as_json=as_json))
+
+
+async def _mcp_call_async(layer, server: str, tool: str, arguments: dict[str, Any]) -> int:
+    from os_core.types import ToolCall
+    from os_tools.registry import ToolRegistry
+
+    try:
+        await layer.discover()
+        health = layer.health.get(server)
+        if health is None or health.status.value != "ok":
+            reason = health.message if health is not None else "not configured"
+            print(f"✗ server '{server}': {reason}", file=sys.stderr)
+            return 1
+        registry = ToolRegistry()
+        for t in layer.registry_tools():
+            registry.add(t)
+        report = layer.reports[server]
+        match = next((b for b in report.bridged if b.name == tool), None)
+        if match is None:
+            quarantined = next((q for q in report.quarantined if q.name == tool), None)
+            if quarantined is not None:
+                print(f"✗ tool '{tool}' is QUARANTINED: {quarantined.reason}", file=sys.stderr)
+            else:
+                print(f"✗ tool '{tool}' not offered by '{server}'", file=sys.stderr)
+            return 1
+        result = await registry.execute(ToolCall(name=match.registry_name, args=arguments))
+        print(result.observation())
+        print(
+            f"── {match.registry_name}  status: {result.status.value}  risk: {match.risk.value}"
+            f"  {result.duration_ms:.0f}ms  artifacts: {len(result.artifacts)}"
+        )
+        return 0 if result.ok else 1
+    finally:
+        await layer.close()
+
+
+def _mcp_call(
+    config_path: str | None, server: str, tool: str, raw_args: str, *, assume_yes: bool
+) -> int:
+    try:
+        arguments = json.loads(raw_args) if raw_args else {}
+    except json.JSONDecodeError as exc:
+        print(f"error: arguments must be a JSON object: {exc}", file=sys.stderr)
+        return 2
+    if not isinstance(arguments, dict):
+        print("error: arguments must be a JSON object", file=sys.stderr)
+        return 2
+    print(f"! {MCP_CONFIRMATION}")
+    if not _confirm(f"call '{tool}' on '{server}'?", assume_yes=assume_yes):
+        print("aborted; nothing ran", file=sys.stderr)
+        return 2
+    layer = _mcp_layer(config_path)
+    if layer is None:
+        return 2
+    return asyncio.run(_mcp_call_async(layer, server, tool, arguments))
+
+
+def _mcp_serve(*, demo: bool, allow_dangerous: bool, instructions: str) -> int:
+    """Expose the platform's registry to an MCP host over this process's stdio.
+
+    With ``CELA_MCP_ENABLE=1`` the configured upstream servers are discovered
+    first and their bridged tools are served too — which turns this process
+    into a policy gateway: the host sees one server, every upstream tool has
+    been scanned and risk-classified, and dangerous calls still fail closed.
+    """
+    from os_core.hitl import AutoApprover, DenyApprover
+    from os_mcp.layer import process_layer, register_mcp_tools
+    from os_mcp.server import MCPRegistryServer, serve_stdio
+
+    if not demo:
+        print(
+            "error: only --demo (offline registry: sandbox + local AI + fake browser) is wired "
+            "in this prototype",
+            file=sys.stderr,
+        )
+        return 2
+    from os_server.demo import build_registry
+
+    async def _serve() -> None:
+        registry, _guard, _browser = build_registry()
+        upstream = process_layer()
+        try:
+            if upstream is not None:
+                await upstream.discover()
+                for name, health in upstream.health.items():
+                    print(
+                        f"mcp upstream {name}: {health.status.value} — {health.message}",
+                        file=sys.stderr,
+                    )
+                register_mcp_tools(registry, upstream)
+            server = MCPRegistryServer(
+                registry,
+                approver=AutoApprover() if allow_dangerous else DenyApprover(),
+                instructions=instructions,
+            )
+            # stdout is the wire; everything human-readable goes to stderr.
+            policy = (
+                "AUTO-APPROVED (--allow-dangerous)" if allow_dangerous else "denied (fail closed)"
+            )
+            print(
+                f"cela mcp server: {len(server.tool_entries())} tool(s); dangerous calls {policy}",
+                file=sys.stderr,
+            )
+            await serve_stdio(server)
+        finally:
+            if upstream is not None:
+                await upstream.close()
+
+    asyncio.run(_serve())
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     from os_core.ledger import resolve_ledger
 
@@ -337,7 +519,44 @@ def main(argv: list[str] | None = None) -> int:
     reach_run.add_argument("query")
     reach_run.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
 
+    mcp = sub.add_parser("mcp", help="Model Context Protocol: list, doctor, call, serve (ADR-0017)")
+    mcp_sub = mcp.add_subparsers(dest="mcp_command", required=True)
+    mcp_config_help = "mcpServers JSON file (default: $CELA_MCP_CONFIG or ~/.config/cela/mcp.json)"
+    mcp_list = mcp_sub.add_parser("list", help="configured servers and policy (no connecting)")
+    mcp_list.add_argument("--config", default=None, help=mcp_config_help)
+    mcp_list.add_argument("--json", action="store_true")
+    mcp_doctor = mcp_sub.add_parser("doctor", help="connect to every server, list and scan tools")
+    mcp_doctor.add_argument("--config", default=None, help=mcp_config_help)
+    mcp_doctor.add_argument("--json", action="store_true")
+    mcp_call = mcp_sub.add_parser("call", help="call one tool on one server (with confirmation)")
+    mcp_call.add_argument("server")
+    mcp_call.add_argument("tool", help="the server-side tool name")
+    mcp_call.add_argument("arguments", nargs="?", default="{}", help="JSON object")
+    mcp_call.add_argument("--config", default=None, help=mcp_config_help)
+    mcp_call.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    mcp_serve = mcp_sub.add_parser("serve", help="serve the platform's tools over stdio")
+    mcp_serve.add_argument("--demo", action="store_true", help="offline registry")
+    mcp_serve.add_argument(
+        "--allow-dangerous",
+        action="store_true",
+        help="auto-approve dangerous calls (default: deny — no human sits on a pipe)",
+    )
+    mcp_serve.add_argument("--instructions", default="", help="text for initialize.instructions")
+
     args = parser.parse_args(argv)
+
+    if args.command == "mcp":
+        if args.mcp_command == "list":
+            return _mcp_list(args.config, as_json=args.json)
+        if args.mcp_command == "doctor":
+            return _mcp_doctor(args.config, as_json=args.json)
+        if args.mcp_command == "call":
+            return _mcp_call(
+                args.config, args.server, args.tool, args.arguments, assume_yes=args.yes
+            )
+        return _mcp_serve(
+            demo=args.demo, allow_dangerous=args.allow_dangerous, instructions=args.instructions
+        )
 
     if args.command == "ledger":
         ledger = resolve_ledger(args.ledger)

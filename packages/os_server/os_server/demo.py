@@ -104,6 +104,15 @@ def build_registry(
         # build_reach_layer: with neither set the CLI half stays inert and this is
         # the native-only wiring as before.
         register_reach_tools(registry, reach=build_reach_layer())
+    # MCP tools (ADR-0017) join the registry only after the process-wide layer
+    # has *discovered* its servers — an async step the server performs in its
+    # lifespan hook and the CLI performs before a run. Before discovery there
+    # is nothing to add, and with CELA_MCP_ENABLE unset there is no layer.
+    from os_mcp.layer import process_layer, register_mcp_tools
+
+    mcp = process_layer()
+    if mcp is not None and mcp.discovered:
+        register_mcp_tools(registry, mcp)
     return registry, guard, browser
 
 

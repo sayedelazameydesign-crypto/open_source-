@@ -17,12 +17,13 @@
 | سياسة شبكة صريحة (allow-list + SSRF floor) | ✅ | `test_egress.py` (94) |
 | سلسلة fallback الثلاثية للمتصفح | ✅ | `test_browser.py` (12) |
 | سجل أدوات بنمط MCP | ✅ | `test_e2e.py` |
+| عميل MCP حقيقي (stdio + Streamable HTTP) + جسر بالحواجز + خادم MCP فوق السجل + بوابة سياسة | ✅ | `test_mcp.py` (52) |
 | REST + SSE + WebSocket + تذاكر WS + استئناف `after_seq` | ✅ | `test_server.py` (37) |
 | `cela_use_browser` (`/cela/v1` + `CelaBrowser`) | ✅ | `test_cela_api.py` (50) |
 | محرك الذكاء المحلي (`LocalAIEngine` + `/api/*` + `/cela/v1/*`) | ✅ | `test_local_ai.py` (15) |
 | سجل نتائج دائم لكل تشغيل (JSONL + ملخّص + `/ledger`) | ✅ | `test_ledger.py` |
 
-**المجموع: 644 اختبارًا، 0 فشل، دون مفاتيح API ودون شبكة.**
+**المجموع: 765 اختبارًا، 0 فشل، دون مفاتيح API ودون شبكة.**
 
 CI أخضر على Python 3.11 / 3.12 / 3.13 (Lint + Test + Smoke-test):
 <https://github.com/sayedelazameydesign-crypto/open_source-/actions>
@@ -248,9 +249,9 @@ PyPI metadata. النتيجة: من ٢١ اسمًا متداولًا — ٣ تُ
       والمستورَد `candidate` حتى تشغيلَين ناجحَين في `os_evals`.
 - [ ] **٤ · تصدير OTLP** ‏opt-in ‏(`CELA_OTEL_ENDPOINT`) من `EventBus` + `LedgerEntry` — بدل SDK مورد
       مغلق. **معيار الخروج:** بلا نقطة نهاية = **صفر** مقابلة شبكة (مثبَت)، ولا أسرار في أي span.
-- [ ] **٥ · قناة Graphify** ‏CLI ‏/ MCP خلف `[know]` مثبَّت **بـSHA**، argv بلا shell، سقف بايت، تدقيق،
+- [ ] **٥ · قناة Graphify** ‏CLI ‏/ MCP (النقل موجود الآن: `os_mcp` — ADR-0017) خلف `[know]` مثبَّت **بـSHA**، argv بلا shell، سقف بايت، تدقيق،
       **مرفوض داخل الصندوق** — ويعمل غيابه إلى `off` بسبب مكتوب.
-- [ ] **٦ · محوّلات الخدمة** ‏(`mem0`/`letta` REST بـ`httpx` حصرا، `graphiti` عبر MCP): **لا
+- [ ] **٦ · محوّلات الخدمة** ‏(`mem0`/`letta` REST بـ`httpx` حصرا، `graphiti` عبر MCP — أي مدخل `mcpServers` عادي في `os_mcp`): **لا
       `import mem0ai`** (٥٦ تبعية منها `posthog`)؛ عقود بـ`MockTransport`؛ انحدار إلى المحلي عند
       التعذّر؛ و**استثناء loopback** ضيّق (`EgressRule` بمنفذ واحد وأدوات `memory_*`/`know_*` فقط)
       لأن `SSRFGuard` يمنع `127.0.0.1` افتراضًا — وهو القيد الذي كان سيُفاجئ أي تنفيذ أعمى.

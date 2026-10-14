@@ -28,6 +28,12 @@ Launcher namespace (ADR-0015, behind the token of its parent API, opt-in via
 ``POST /api/launcher/check``                update check over installed versions
 ``GET|POST /cela/v1/launcher/...``          the same surface in the private namespace
 
+MCP namespace (ADR-0017, behind the token of its parent API, opt-in via
+``CELA_MCP_ENABLE=1`` + ``CELA_MCP_CONFIG``; read-only — connections are made
+at startup, never per request):
+``GET  /api/mcp/servers``                   configured servers, health, bridged + quarantined tools
+``GET  /cela/v1/mcp/servers``               the same report in the private namespace
+
 Private browser namespace (guarded by ``CELA_PRIVATE_API_TOKEN``):
 ``GET  /cela/v1/whoami``
 ``POST /cela/v1/egress/check``
@@ -47,7 +53,8 @@ from __future__ import annotations
 
 import json
 import secrets
-from contextlib import aclosing
+from collections.abc import AsyncIterator
+from contextlib import aclosing, asynccontextmanager
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
@@ -56,6 +63,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from os_core.events import EventType, replay_and_stream
 from os_core.hitl import ApprovalDecision
 from os_core.ledger import RunLedger
+from os_mcp.layer import MCPLayer, mcp_enabled, process_layer, register_mcp_tools
 from os_orchestration.platform import Platform
 from os_tools.egress import EgressPolicy
 from pydantic import BaseModel
@@ -122,6 +130,8 @@ def create_app(
     launcher_service: LauncherService | None = None,
     launcher_policy: EgressPolicy | None = None,
     ledger: RunLedger | None = None,
+    mcp_enabled_flag: bool | None = None,
+    mcp_layer: MCPLayer | None = None,
 ) -> FastAPI:
     """Build the FastAPI application hosting both the platform and ``/cela/v1``."""
     configured_token = resolve_token(api_token)
@@ -169,10 +179,39 @@ def create_app(
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-    app = FastAPI(title="cela_use_browser private + platform API", version=PRODUCT_VERSION)
+    # MCP (ADR-0017): external tool servers are connected once, at startup,
+    # inside the server's own event loop (a stdio server is a child process
+    # bound to that loop) and their bridged tools join the shared registry.
+    # Disabled unless CELA_MCP_ENABLE=1 or an explicit layer is passed — the
+    # default app never spawns anything.
+    use_mcp = mcp_enabled() if mcp_enabled_flag is None else mcp_enabled_flag
+    if mcp_layer is not None:
+        use_mcp = True
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        layer: MCPLayer | None = None
+        if use_mcp:
+            layer = mcp_layer if mcp_layer is not None else process_layer()
+        if layer is not None:
+            await layer.discover()
+            register_mcp_tools(rt.platform.registry, layer)
+        app.state.mcp = layer
+        try:
+            yield
+        finally:
+            if layer is not None:
+                await layer.close()
+
+    app = FastAPI(
+        title="cela_use_browser private + platform API",
+        version=PRODUCT_VERSION,
+        lifespan=lifespan,
+    )
     cela_browser = CelaBrowser(runtime=rt)
     app.state.runtime = rt
     app.state.cela = cela_browser
+    app.state.mcp = None
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
@@ -294,6 +333,27 @@ def create_app(
     ) -> dict[str, Any]:
         """Persisted outcome of every run: recent entries + aggregate summary."""
         return rt.ledger_report(limit=limit)
+
+    def _mcp_report() -> dict[str, Any]:
+        layer: MCPLayer | None = getattr(app.state, "mcp", None)
+        if layer is None:
+            return {
+                "enabled": False,
+                "reason": "set CELA_MCP_ENABLE=1 and point CELA_MCP_CONFIG at an mcpServers file",
+            }
+        return {"enabled": True, **layer.report()}
+
+    @app.get("/api/mcp/servers", dependencies=[Depends(require_api_auth)])
+    async def mcp_servers() -> dict[str, Any]:
+        """Configured MCP servers, their health and what was bridged or quarantined."""
+        return _mcp_report()
+
+    @app.get(
+        "/cela/v1/mcp/servers",
+        dependencies=[Depends(private_auth_dependency(private_api_token))],
+    )
+    async def mcp_servers_private() -> dict[str, Any]:
+        return _mcp_report()
 
     app.include_router(create_local_ai_router(cela_browser, api_token=api_token))
     app.include_router(create_private_router(cela_browser, private_api_token=private_api_token))
