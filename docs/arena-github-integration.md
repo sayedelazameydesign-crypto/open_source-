@@ -28,6 +28,7 @@ pip install "mcp-arena[github,agents]"   # github preset + LangChain bridge; quo
 
 ```python
 import os
+
 # yes: "presents" — the literal directory name in the published package, not a typo here
 from mcp_arena.presents.github import GithubMCPServer
 from mcp_arena.agent import make_mcp_agent
