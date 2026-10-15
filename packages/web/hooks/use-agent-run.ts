@@ -32,6 +32,8 @@ export function useAgentRun() {
   );
   const activeRun = useRef<string | null>(null);
   const snapshotVersion = useRef(0);
+  const snapshotRef = useRef<Snapshot | null>(null);
+  const snapshotsInFlight = useRef(new Set<string>());
   const startingRef = useRef(false);
   const approvingRef = useRef(false);
   const seq = useRef(0);
@@ -76,6 +78,10 @@ export function useAgentRun() {
     };
   }, []);
   const refreshSnapshot = useCallback(async (id: string) => {
+    // Polling, SSE and approvals share this guard; a slow request must not overlap.
+    if (snapshotsInFlight.current.has(id)) return;
+    const inFlight = snapshotsInFlight.current;
+    inFlight.add(id);
     const version = ++snapshotVersion.current;
     try {
       const response = await fetch(
@@ -88,6 +94,7 @@ export function useAgentRun() {
         activeRun.current === id &&
         version === snapshotVersion.current
       ) {
+        snapshotRef.current = data;
         setSnapshot(data);
         setBackend("available");
       }
@@ -100,6 +107,8 @@ export function useAgentRun() {
         setNotice(
           "تعذر تحديث حالة المهمة أو أن الاستجابة غير صالحة. لا نفترض نجاح التنفيذ من انقطاع الاتصال.",
         );
+    } finally {
+      inFlight.delete(id);
     }
   }, []);
   const stream = useCallback(
@@ -189,6 +198,7 @@ export function useAgentRun() {
       activeRun.current = null;
       seq.current = 0;
       setRunId(null);
+      snapshotRef.current = null;
       setSnapshot(null);
       setEvents([]);
       setConnection("idle");
@@ -259,16 +269,22 @@ export function useAgentRun() {
     activeRun.current = null;
     seq.current = 0;
     setRunId(null);
+    snapshotRef.current = null;
     setSnapshot(null);
     setEvents([]);
     setNotice("");
     setConnection("idle");
   }, []);
   useEffect(() => {
-    if (!runId || (snapshot && TERMINAL.has(snapshot.status))) return;
-    const interval = setInterval(() => void refreshSnapshot(runId), 1500);
+    if (!runId) return;
+    // Keep one stable clock per run, regardless of snapshots or SSE updates.
+    const interval = setInterval(() => {
+      const current = snapshotRef.current;
+      if (current?.run_id === runId && TERMINAL.has(current.status)) return;
+      void refreshSnapshot(runId);
+    }, 1500);
     return () => clearInterval(interval);
-  }, [runId, snapshot, refreshSnapshot]);
+  }, [runId, refreshSnapshot]);
   return {
     runId,
     events,
