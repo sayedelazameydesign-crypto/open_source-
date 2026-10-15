@@ -302,10 +302,98 @@ def test_corrupt_row_is_skipped_not_fatal(tmp_path) -> None:
     record.memory_id = "mem_good"
     store.save_record(record)
     with sqlite3.connect(str(path)) as conn:
-        conn.execute("INSERT INTO memory VALUES('mem_bad','f','k','active','{not json}',0.0)")
+        conn.execute(
+            "INSERT INTO memory(memory_id, fingerprint, key, status, record_json, updated_at) "
+            "VALUES('mem_bad','f','k','active','{not json}',0.0)"
+        )
     reloaded = SQLiteMemoryStore(path)
     records = reloaded.list_records()
     assert [r.memory_id for r in records] == ["mem_good"] and reloaded.skipped == 1
+
+
+# ----------------------------------------------------------- namespaces --
+_OLD_DDL = (
+    "CREATE TABLE memory(memory_id TEXT PRIMARY KEY, fingerprint TEXT, key TEXT, "
+    "status TEXT, record_json TEXT NOT NULL, updated_at REAL)"
+)
+
+
+@pytest.mark.parametrize("backend", ["memory", "sqlite"])
+def test_namespaces_do_not_corroborate_supersede_or_recall_across(tmp_path, backend: str) -> None:
+    store = (
+        InMemoryMemoryStore()
+        if backend == "memory"
+        else SQLiteMemoryStore(tmp_path / "memory.sqlite")
+    )
+    tenant_a = MemoryManager(store, LocalAIEngine(), namespace="tenant-a")
+    tenant_b = tenant_a.scoped("tenant-b")
+
+    first, _ = tenant_a.remember("deploy target is debian 12", key="deploy.target")
+    twin, decision = tenant_b.remember("deploy target is debian 12", key="deploy.target")
+    # Same sentence, different space: two records, no corroboration leak.
+    assert first and twin and first.memory_id != twin.memory_id
+    assert decision.reason != "corroborated" and tenant_a.stats["deduplicated"] == 0
+    assert first.namespace == "tenant-a" and twin.namespace == "tenant-b"
+
+    # A new answer about the same key supersedes only inside its own space.
+    tenant_b.remember("deploy target is ubuntu 24.04", key="deploy.target")
+    assert store.get_record(first.memory_id).status != MemoryStatus.EXPIRED
+    assert store.get_record(twin.memory_id).status == MemoryStatus.EXPIRED
+
+    # Recall is confined to the caller's space; the operator view sees both.
+    assert {h.record.namespace for h in tenant_a.recall("deploy target")} == {"tenant-a"}
+    assert {h.record.namespace for h in tenant_b.recall("deploy target")} == {"tenant-b"}
+    assert tenant_a.guidance_for_task("where do we deploy?")[1] == [first.memory_id]
+    assert len(tenant_a.list_records()) == 3
+    assert [r.memory_id for r in tenant_a.list_records(namespace="tenant-a")] == [first.memory_id]
+    # Dedup is still real *inside* a space.
+    again, decision = tenant_a.remember("deploy target is debian 12", key="deploy.target")
+    assert again.memory_id == first.memory_id and decision.reason == "corroborated"
+    store.close()
+
+
+def test_scoped_view_shares_store_gate_and_counters(manager: MemoryManager) -> None:
+    view = manager.scoped("ops", agent_id="agent-7")
+    assert view.store is manager.store and view.gate is manager.gate
+    assert view.stats is manager.stats and view.retriever is manager.retriever
+    record, _ = view.remember("ops uses pagerduty for on-call")
+    assert record.namespace == "ops" and record.agent_id == "agent-7"
+    assert manager.namespace == "default" and manager.stats["written"] == 1
+    # Writes from the view are invisible to the default space's read path.
+    assert manager.recall("pagerduty on-call") == []
+    assert view.recall("pagerduty on-call")[0].record.memory_id == record.memory_id
+
+
+def test_tools_do_not_let_the_model_pick_a_namespace(manager: MemoryManager) -> None:
+    for tool in memory_tools(manager):
+        params = tool.parameters.get("properties", {})
+        assert "namespace" not in params and "agent_id" not in params, tool.name
+
+
+def test_sqlite_store_adds_the_namespace_column_to_an_old_file(tmp_path) -> None:
+    import sqlite3
+
+    path = tmp_path / "memory.sqlite"
+    with sqlite3.connect(str(path)) as conn:
+        conn.execute(_OLD_DDL)
+        legacy = MemoryRecord(memory_id="mem_old", text="written before namespaces", key="k")
+        conn.execute(
+            "INSERT INTO memory VALUES(?,?,?,?,?,?)",
+            ("mem_old", legacy.fingerprint, "k", "active", legacy.model_dump_json(), 1.0),
+        )
+    store = SQLiteMemoryStore(path)
+    columns = {row[1] for row in store._conn.execute("PRAGMA table_info(memory)")}
+    assert "namespace" in columns
+    # Old rows live in 'default' — both the column default and the JSON default agree.
+    assert [r.memory_id for r in store.list_records(namespace="default")] == ["mem_old"]
+    assert store.find_by_fingerprint(legacy.fingerprint, namespace="other") is None
+    assert store.find_by_key("k", namespace="default")[0].namespace == "default"
+    fresh = MemoryRecord(memory_id="mem_new", text="after the migration", namespace="other")
+    store.save_record(fresh)
+    assert [r.memory_id for r in store.list_records(namespace="other")] == ["mem_new"]
+    # Reopening must be idempotent: no second ALTER TABLE, no duplicate column error.
+    store.close()
+    assert len(SQLiteMemoryStore(path).list_records()) == 2
 
 
 @pytest.mark.parametrize("url", ["postges://typo", "redis://cache:6379", "s3://bucket/mem"])
@@ -401,3 +489,129 @@ async def test_memory_tools_round_trip_through_the_registry(manager: MemoryManag
         )
     )
     assert '"stored": false' in refused.output and "injection" in refused.output
+
+
+@pytest.mark.parametrize("raw", ["", None, "  ", "default"])
+def test_normalize_namespace_blank_means_default(raw) -> None:
+    from os_memory import DEFAULT_NAMESPACE, normalize_namespace
+
+    assert normalize_namespace(raw) == DEFAULT_NAMESPACE
+
+
+@pytest.mark.parametrize("raw", ["has space", "a/b", "-leading", "x" * 65, "tab\tname", "ع"])
+def test_normalize_namespace_refuses_instead_of_merging(raw) -> None:
+    from os_memory import normalize_namespace
+
+    with pytest.raises(ValueError, match="invalid memory namespace"):
+        normalize_namespace(raw)
+
+
+def test_self_written_episodes_name_their_author(ai: LocalAIEngine) -> None:
+    manager = MemoryManager(InMemoryMemoryStore(), ai, namespace="ops")
+    state = RunState(task="sum the numbers", mode="react")
+    state.status = RunStatus.COMPLETED
+    state.final_answer = "5050"
+    record = manager.learn_from_run(state)
+    assert record is not None and record.namespace == "ops" and record.agent_id == "run:react"
+    assert (
+        manager.scoped("ops", agent_id="agent-9")
+        .learn_from_run(
+            RunState(
+                task="another task", mode="flow", final_answer="done", status=RunStatus.COMPLETED
+            )
+        )
+        .agent_id
+        == "agent-9"
+    )
+
+
+# ------------------------------------------------- the postgres SQL shapes --
+class _FakePgCursor:
+    """sqlite standing in for a DBAPI cursor: ``%s`` → ``?`` and the two Postgres-only spellings."""
+
+    def __init__(self, conn) -> None:
+        self._conn = conn
+        self._cur = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc) -> bool:
+        return False
+
+    def execute(self, sql: str, params=()) -> None:
+        import sqlite3
+
+        sql = sql.replace("%s", "?").replace("DOUBLE PRECISION", "REAL")
+        if "ADD COLUMN IF NOT EXISTS" in sql:
+            try:
+                self._cur = self._conn.execute(sql.replace("IF NOT EXISTS ", ""), tuple(params))
+            except sqlite3.OperationalError as exc:  # sqlite has no IF NOT EXISTS here
+                if "duplicate column" not in str(exc):
+                    raise
+            return
+        self._cur = self._conn.execute(sql, tuple(params))
+
+    def fetchone(self):
+        return self._cur.fetchone()
+
+    def fetchall(self):
+        return self._cur.fetchall()
+
+    @property
+    def rowcount(self) -> int:
+        return self._cur.rowcount
+
+
+def _fake_pg_factory(path):
+    import sqlite3
+
+    conn = sqlite3.connect(str(path), check_same_thread=False)
+
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc) -> bool:
+            return False
+
+        def cursor(self) -> _FakePgCursor:
+            return _FakePgCursor(conn)
+
+        def commit(self) -> None:
+            conn.commit()
+
+    return _Conn
+
+
+def test_postgres_store_sql_carries_the_namespace_and_migrates(tmp_path) -> None:
+    import sqlite3
+
+    from os_memory import PostgresMemoryStore
+
+    path = tmp_path / "pg.sqlite"
+    with sqlite3.connect(str(path)) as raw:  # a table from before the column existed
+        raw.execute(_OLD_DDL)
+        legacy = MemoryRecord(memory_id="mem_old", text="legacy", key="k")
+        raw.execute(
+            "INSERT INTO memory VALUES(?,?,?,?,?,?)",
+            ("mem_old", legacy.fingerprint, "k", "active", legacy.model_dump_json(), 1.0),
+        )
+    factory = _fake_pg_factory(path)
+    store = PostgresMemoryStore(factory)
+    a = MemoryRecord(memory_id="mem_a", text="same words", namespace="a")
+    b = MemoryRecord(memory_id="mem_b", text="same words", namespace="b")
+    store.save_record(a)
+    store.save_record(b)
+    assert store.find_by_fingerprint(a.fingerprint, namespace="b").memory_id == "mem_b"
+    assert store.find_by_fingerprint(a.fingerprint, namespace="zz") is None
+    assert [r.memory_id for r in store.list_records(namespace="a")] == ["mem_a"]
+    assert [r.memory_id for r in store.list_records(namespace="default")] == ["mem_old"]
+    assert [r.namespace for r in store.find_by_key("k")] == ["default"]
+    assert len(store.list_records()) == 3
+    # Upsert keeps the namespace column in step with the JSON.
+    b.namespace = "a"
+    store.save_record(b)
+    assert sorted(r.memory_id for r in store.list_records(namespace="a")) == ["mem_a", "mem_b"]
+    # A second process opening the same database must not trip on the existing column.
+    assert len(PostgresMemoryStore(factory).list_records()) == 3

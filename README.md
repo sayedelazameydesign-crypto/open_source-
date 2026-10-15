@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 
-> **835 اختبارًا ناجحًا · 0 فشل · دون مفاتيح API ودون شبكة.**
+> **915 اختبارًا ناجحًا · 0 فشل · دون مفاتيح API ودون شبكة.**
 
 ---
 
@@ -119,7 +119,8 @@ curl -H "Authorization: Bearer $CELA_PRIVATE_API_TOKEN" http://127.0.0.1:8080/ce
 packages/
 ├── os_core/          الأنواع، التوجيه، الحواجز، HITL، الأحداث، الحالة، سجل النتائج
 ├── os_agents/        ReAct، PlanningFlow، DAG، الميزانية، المراجع
-├── os_tools/         Sandbox، المتصفح، SSRF، سياسة الخروج (egress)، سجل الأدوات، MCP
+├── os_tools/         Sandbox، المتصفح، SSRF، سياسة الخروج (egress)، سجل الأدوات، عقد MCP الداخلي
+├── os_mcp/           عميل MCP (stdio + Streamable HTTP) + جسر إلى السجل + خادم MCP فوق السجل
 ├── os_orchestration/ واجهة Platform واختيار الوضع
 ├── os_server/        REST/WS/SSE + /cela/v1 + CelaBrowser + CLI + حزمة العرض
 └── web/              هيكل فقط (المرحلة 3 — لم يُبنَ)
@@ -131,7 +132,7 @@ packages/
 ## الاختبار
 
 ```bash
-pytest -q          # 835 passed, 1 skipped (اختبار مخزن موزّع يتخطّى حين يكون psycopg مثبَّت)
+pytest -q          # 915 passed, 1 skipped (اختبار مخزن موزّع يتخطّى حين يكون psycopg مثبَّت)
 ruff check .       # All checks passed
 ruff format .      # تنسيق موحّد
 ```
@@ -208,6 +209,67 @@ cela reach run github_search "agents" --yes
 `POST /api/reach/read|rss|github|cli/{channel}`، ونظيرها في `/cela/v1/reach/*` —
 برمز المصادقة نفسه لكل فضاء. التفاصيل: [`docs/REACH_PLAN.md`](docs/REACH_PLAN.md).
 
+## MCP في الاتجاهين (`os_mcp` — ADR-0017)
+
+نقل MCP حقيقي بلا تبعيات جديدة: الوكيل يستدعي **خوادم MCP خارجية** (stdio أو Streamable HTTP)،
+وأي مضيف MCP (Claude Desktop, Cursor, …) يستدعي **أدوات هذه المنصة** — وفي الحالتين تمرّ كل
+أداة على `Guardrails` وتصنيف الخطر وHITL قبل أن تصل إلى النموذج أو تُنفَّذ.
+
+```jsonc
+// ~/.config/cela/mcp.json  (أو CELA_MCP_CONFIG=<path>) — صيغة mcpServers المألوفة + مفاتيحنا
+{
+  "mcpServers": {
+    "fs": {
+      "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/srv/docs"],
+      "env": {"HOME": "${HOME}"},
+      "risk": "read_only",                       // الافتراضي dangerous = HITL قبل كل نداء
+      "tool_risk": {"write_file": "dangerous"},  // استثناء لأداة بعينها
+      "tools": {"allow": ["read_file", "list_directory", "write_file"]}
+    },
+    "remote": {"url": "https://mcp.example.com/mcp", "headers": {"Authorization": "Bearer ${MCP_TOKEN}"}}
+  }
+}
+```
+
+```bash
+export CELA_MCP_ENABLE=1                 # الإذن الأول: اقرأ الإعداد واتصل بالخوادم (مغلق افتراضيًا)
+export CELA_MCP_ALLOW_HOST_EXEC=1        # الإذن الثاني: اسمح بخوادم stdio تحديدًا (انظر القسم التالي)
+cela mcp list                            # ما هو مُعدّ ولماذا (بلا اتصال)
+cela mcp doctor                          # يتصل بكل خادم: الأدوات المجسورة / المحجورة / المُرشَّحة
+cela mcp call fs read_file '{"path": "README.md"}' --yes
+cela run --demo "اقرأ README.md ولخّصه"     # الأداة تظهر للوكيل باسم mcp_fs_read_file
+cela mcp serve --demo                    # الاتجاه الآخر: المنصة خادم MCP عبر stdio لأي مضيف
+```
+
+ما يحدث عند الاكتشاف: وصف كل أداة ومخططها يُفحَص بأنماط الحقن (en/ar/zh) — التطابق يعني **حجرًا**
+فلا يرى النموذج الأداة أصلًا. هذا الحجر **إرشادي (heuristic)**: أنماط لها سلبيات كاذبة، وخادم مسموم
+يستطيع إعادة الصياغة؛ خطّ الدفاع الفعلي هو الخطر الافتراضي `dangerous` مع HITL، لا الحجر.
+`destructiveHint` من الخادم **يرفع** الخطر ولا يخفّضه؛ الأسماء تُسبَّق بـ`mcp_<server>_` والبادئة
+**محجوزة برمجيًا** في `ToolRegistry` (أداة منصة لا تأخذها، وأداة MCP لا تستبدل أي اسم قائم)؛
+المخرجات تُقصّ إلى `max_chars`. خوادم HTTP تمرّ على `EgressPolicy` لأصلها المُعدّ فقط فوق أرضية
+`SSRFGuard`. قائمة الأدوات **تُثبَّت عند الإقلاع**: إن أعلن خادم تغييرها يظهر `stale` في `doctor`
+و`/api/mcp/servers` وتُطلب إعادة التشغيل — التحديث الساخن مؤجَّل صراحة. النطاق: **أدوات فقط**
+(لا `resources`/`prompts`/`sampling`/OAuth). الأسطح: `GET /api/mcp/servers` و`GET /cela/v1/mcp/servers`.
+القرار وحدوده والمؤجَّل منه: [`adr/0017-mcp-transport.md`](adr/0017-mcp-transport.md).
+
+### خوادم MCP على المضيف (stdio): إذن ثانٍ، وحدّ يبقى مفتوحًا
+
+خادم MCP عبر stdio هو **برنامج لم تكتبه هذه المنصة يعمل كعملية على جهازك، بامتيازات عملية `cela`،
+خارج الصندوق المعزول وخارج `EgressPolicy`** — يفتح اتصالاته بنفسه ويقرأ ما تسمح له أذونات مستخدمك
+بقراءته. لا توجد آلية داخل هذه المنصة تُغلق هذا الحدّ، ولذلك لا نزعم ذلك. ما نفعله هو تضييقه وإظهاره:
+
+| الضابط | ما يفعله |
+|---|---|
+| `CELA_MCP_ENABLE=1` | الإذن الأول: قراءة الإعداد والاتصال بالخوادم (HTTP وstdio) |
+| `CELA_MCP_ALLOW_HOST_EXEC=1` | الإذن الثاني، **لخوادم stdio وحدها**: بدونه تُعرض `off` بسببها ولا تُطلق |
+| ملف إعداد بـ`chmod 600` | يُرفض إن كان قابلًا للكتابة من المجموعة/العالم (من يكتب الملف يشغّل أوامر) |
+| بيئة بيضاء | العملية ترى `PATH`/`HOME`/`LANG`… وما أعلنته في `env` فقط، لا بيئة cela كاملة |
+| `risk: dangerous` افتراضيًا | كل نداء يمرّ على HITL حتى تخفّضه أنت لخادم أو أداة بعينها |
+| الرفض داخل الصندوق | لا إطلاق خوادم stdio من داخل `CELA_SANDBOXED=1` |
+| `argv` بلا shell، مهلات، سقوف | لا تفسير shell، مهلة إقلاع ومهلة لكل نداء، سقف طول السطر والمخرجات |
+
+خوادم **HTTP** لا تحتاج الإذن الثاني لأنها لا تُشغّل شيئًا على جهازك وتمرّ على `EgressPolicy`.
+
 ## ArtCraft Launcher — استضافة + محوّل قراءة فقط
 
 شجرة Rust طبق الأصل من [`storytold/craft-launcher`](https://github.com/storytold/craft-launcher)
@@ -242,6 +304,13 @@ cela telemetry export --out trace.json     # OTLP/JSON بلا مجموعة جم�
 تشغيلًا** — تُسجَّل كتحوّط وتُمضَى الجلسة. التفاصيل: [الخطة وأرقامها](docs/INTEGRATIONS_PLAN.md) ·
 [القرار](adr/0016-memory-and-retrieval-layer.md).
 
+**فضاءات الذاكرة (`namespace`):** كل سجل يحمل فضاءً، والدمج (التأكيد/التجاوز) والاسترجاع **لا يعبران
+الفضاء أبدًا** — الجملة نفسها في فضاءين سجلان مستقلان. الخادم يربط ذاكرته كلّها بفضاء واحد يسمّيه
+المشغّل: `CELA_MEMORY_NAMESPACE` (افتراضيًا `default`)؛ وفي CLI ‏`--namespace` لكل أمر، و`list --all`
+لعرض المشغّل عبر الفضاءات. أدوات `memory_*` **لا تكشف** الفضاء للنموذج، فلا يختار وكيلٌ ذاكرةَ مَن يقرأ.
+اسم فضاء غير صالح **خطأ إعداد** (رمز خروج 2) لا انزلاق صامت إلى `default`. الملفات المخزَّنة قبل هذا
+العمود تُرحَّل في مكانها (`ADD COLUMN`) وتُقرأ صفوفها في `default`.
+
 ---
 
 ## حدود صادقة
@@ -262,6 +331,16 @@ cela telemetry export --out trace.json     # OTLP/JSON بلا مجموعة جم�
   `os_evals` فقط (مرحلة 4).
 * لا استخراج كوكيز من متصفح المستخدم ولا قراءة إعدادات Agent-Reach، ولا عمليات كتابة
   (نشر/تعليق) — القراءة فقط.
+* **فضاء الذاكرة لكل عملية خادم لا لكل مستدعٍ:** واجهة HTTP تُصادق برمز حامل واحد مشترك، فكل
+  المستدعين مبدأٌ واحد ولا هوية يُشتق منها فضاء لكل طلب. الحدّ الصادق اليوم: `CELA_MEMORY_NAMESPACE`
+  يسمّي فضاء الخادم كلّه؛ ومع `CELA_MEMORY_STORE_URL` مضبوطًا على خادم مشترك يقرأ كل طلب ويكتب في
+  ذلك الفضاء الواحد (الكتابة التلقائية للحلقات قابلة للإيقاف بـ`memory_auto_write=False`). الفضاء لكل
+  مبدأ ينتظر أن تعرف الواجهة مبادئ متعددة — نقطة الربط جاهزة (`manager.scoped(ns)`).
+* **خوادم MCP عبر stdio تعمل على المضيف خارج الصندوق وخارج `EgressPolicy`** (عملية تفتح شبكتها
+  بنفسها — نفس حدّ قنوات CLI)؛ القسم المخصص أعلاه يشرح الإذنين والضوابط. حجر الأوصاف المسمومة
+  **إرشادي** لا ضمان. خوادم HTTP وحدها تمرّ على `EgressPolicy`. الدعم للأدوات فقط
+  (لا `resources`/`prompts`/`sampling`/OAuth)، وقائمة الأدوات تُثبَّت عند الإقلاع — التحديث الساخن
+  مؤجَّل صراحة (ADR-0017).
 
 ## الترخيص
 

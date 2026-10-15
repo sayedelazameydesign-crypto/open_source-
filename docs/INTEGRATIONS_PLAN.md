@@ -100,7 +100,7 @@ PY
 | `langgraph` | **٦** | 1.2.15 · MIT · نشِط | الأخفّ بينها، لكنه **يزاحم `PlanningFlow`** لا يكمله |
 | `letta-client` | **٨** | 1.12.1 · Apache-2.0 | مقبول **داخل extra** فقط |
 | `langfuse` | **٩** | 5.0.1 · OTel | مقبول — لكن `opentelemetry-*` يكفي وأصفى |
-| `fastmcp` | **٩** | 4.1.0 | لا حاجة: عقد `MCPServer` عندنا منذ `os_tools/mcp.py` |
+| `fastmcp` | **٩** | 4.1.0 | لا حاجة: عقد `MCPServer` عندنا منذ `os_tools/mcp.py`، والنقل الفعلي (stdio + Streamable HTTP، الاتجاهان) في `os_mcp` منذ ADR-0017 |
 | `mem0ai` | **٥٦** (منها `posthog`, `qdrant-client`, `openai`, `litellm`, `elasticsearch`, `chromadb`, `pymongo`, `redis`) | 2.2.1 · Apache-2.0 | **مرفوض كمكتبة**: ٥٦ تبعية + **تلّمتر افتراضي** |
 | `crawl4ai` | **٥٤** (منها `torch`, `playwright`, `playwright-stealth`, `aiohttp`, `numpy`, `rich`) | 0.9.5 · Apache-2.0 | **مرفوض كمكتبة**؛ يُقبل كخدمة جانبية |
 | `crewai` | **٥٧** | 1.15.28 · MIT | مرفوض (مكرر + يلفّ `ToolRegistry`) |
@@ -156,7 +156,7 @@ packages/os_memory/os_memory/
 └── adapters/        # كلها اختيارية خلف CelaMemoryProvider — لا استيراد في المسار الافتراضي
     ├── mem0.py      # httpx → Mem0 REST المستضاف ذاتيًا (لا `import mem0ai` إطلاقًا)
     ├── letta.py     # httpx → Letta server `/v1/...` (أو `letta-client` داخل `[memory-letta]`)
-    └── graphiti.py  # خادم MCP عبر عقد MCPServer القائم (list_tools/call_tool)
+    └── graphiti.py  # خادم MCP عبر `os_mcp` (مدخل mcpServers عادي؛ يمرّ بالحجر والتصنيف — ADR-0017)
 ```
 
 ### ٤.٣ القيد الذي لا يُساوَم عليه: تسميم الذاكرة (Memory Poisoning)
@@ -242,7 +242,7 @@ packages/os_know/os_know/
 * **تحليل الكود محلي وحتمي:** AST بـ**tree-sitter**، «بلا LLM، ولا شيء يغادر الجهاز» — يطابق عهدنا تمامًا.
 * **واجهة مألوفة لدينا:** `graphify query "<سؤال>"` و`graphify path A B` كـ**CLI** — و`os_reach` يملك
   محوّل CLI جاهزًا (`CLIChannelAdapter`: argv بلا shell، قائمة وسطاء، ميزانية بايت متدفقة، تدقيق).
-* **وخادم MCP اختياري:** `graphifyy[mcp]` → يمرّ عبر عقد `MCPServer` القائم بلا أي كود جديد.
+* **وخادم MCP اختياري:** `graphifyy[mcp]` → مدخل `mcpServers` في `os_mcp` بلا أي كود جديد (ADR-0017).
 * **شرطان:** (١) التثبيت بـ**SHA مثبَّت من GitHub** مثل `[reach]`، لا من PyPI باسم خاطئ؛ (٢) اسم PyPI
   الصحيح **`graphifyy`** — وتوثيق ذلك في `pyproject.toml` لتفادي الاختطاف.
 * **حدّ صادق:** الحزمة ٣٠٨ م.ب ومجلّدات extra فيها ١٠٤ تبعية؛ **لا** تُثبَّت في النواة ولا في CI الاختباري.

@@ -94,6 +94,7 @@ packages = [
     "packages/os_launcher/os_launcher",
     "packages/os_memory/os_memory",
     "packages/os_know/os_know",
+    "packages/os_mcp/os_mcp",
 ]
 
 # --- Monorepo path setup: every package is importable without installation ---
@@ -115,6 +116,7 @@ pythonpath = [
     "packages/os_launcher",
     "packages/os_memory",
     "packages/os_know",
+    "packages/os_mcp",
     "packages/legacy/src",
 ]
 markers = [
@@ -125,7 +127,7 @@ filterwarnings = ["error::RuntimeWarning"]
 
 [tool.coverage.run]
 branch = true
-source = ["os_core", "os_agents", "os_tools", "os_orchestration", "os_server", "os_evals", "os_skills", "os_reach", "os_launcher", "os_memory", "os_know"]
+source = ["os_core", "os_agents", "os_tools", "os_orchestration", "os_server", "os_evals", "os_skills", "os_reach", "os_launcher", "os_memory", "os_know", "os_mcp"]
 
 [tool.ruff]
 line-length = 100
@@ -147,3 +149,7 @@ ignore = ["RUF001", "RUF002", "RUF003", "B008"]
 # caller wait deadline while shielding the underlying run task.
 "packages/os_tools/os_tools/code_exec.py" = ["ASYNC109"]
 "packages/os_server/os_server/cela.py" = ["ASYNC109"]
+# Same contract for the MCP clients: the per-request deadline belongs to the
+# caller (handshake vs. tool call vs. teardown each have their own), and it
+# must be reported in the timeout result the model sees.
+"packages/os_mcp/os_mcp/client.py" = ["ASYNC109"]

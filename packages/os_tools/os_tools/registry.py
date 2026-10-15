@@ -19,6 +19,14 @@ from pydantic import BaseModel, Field
 
 ToolFn = Callable[..., Any]
 
+#: Registry names under this prefix belong to tools bridged from external MCP
+#: servers (ADR-0017) and to nothing else. The reservation is enforced by
+#: :meth:`ToolRegistry.add`, not by convention: a platform tool cannot take an
+#: ``mcp_`` name, and a bridged tool can never replace an existing name — so
+#: the two namespaces are disjoint and ``python_execute``, ``browser_*``,
+#: ``web_read`` … are protected by the same rule, not by special cases.
+MCP_TOOL_PREFIX = "mcp_"
+
 
 class Tool(BaseModel):
     """A callable capability with schema + risk metadata."""
@@ -30,6 +38,9 @@ class Tool(BaseModel):
     timeout: float = 60.0
     retries: int = 0
     fn: ToolFn
+    #: ``"platform"`` for tools this codebase wrote; ``"mcp"`` for tools an
+    #: external MCP server offered (set by ``os_mcp.bridge`` only).
+    origin: str = "platform"
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -80,6 +91,23 @@ class ToolRegistry(BaseModel):
         return decorator
 
     def add(self, tool: Tool) -> None:
+        """Register *tool*; platform tools may be re-registered, MCP tools may not.
+
+        Raises :class:`ValueError` when a platform tool claims the reserved
+        ``mcp_`` prefix, or when an MCP-origin tool would replace *any*
+        existing name (the bridge suffixes collisions; this is the backstop).
+        """
+        if tool.origin == "mcp":
+            if tool.name in self.tools:
+                raise ValueError(
+                    f"tool {tool.name!r} is already registered; tools bridged from MCP "
+                    "servers never replace an existing tool"
+                )
+        elif tool.name.startswith(MCP_TOOL_PREFIX):
+            raise ValueError(
+                f"tool name {tool.name!r}: the {MCP_TOOL_PREFIX!r} prefix is reserved for tools "
+                "bridged from MCP servers (origin='mcp')"
+            )
         self.tools[tool.name] = tool
 
     def extend(self, tools: list[Tool]) -> None:

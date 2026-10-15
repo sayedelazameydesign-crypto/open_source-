@@ -21,24 +21,43 @@ from os_memory.types import MemoryRecord, MemoryStatus
 _DDL = (
     "CREATE TABLE IF NOT EXISTS memory("
     "memory_id TEXT PRIMARY KEY, fingerprint TEXT, key TEXT, status TEXT, "
-    "record_json TEXT NOT NULL, updated_at REAL)"
+    "record_json TEXT NOT NULL, updated_at REAL, "
+    "namespace TEXT NOT NULL DEFAULT 'default')"
 )
+#: Columns added after the first release, as ``(name, ALTER TABLE clause)``.
+#: ``CREATE TABLE IF NOT EXISTS`` leaves an existing table alone, so a store
+#: opened on an older file adds what is missing; rows written before the
+#: column existed read back as ``'default'`` — the same value their JSON
+#: implies — so old and new rows stay in one namespace, not two.
+_ADDED_COLUMNS = (("namespace", "TEXT NOT NULL DEFAULT 'default'"),)
 _INDEXES = (
     "CREATE INDEX IF NOT EXISTS memory_fingerprint ON memory(fingerprint)",
     "CREATE INDEX IF NOT EXISTS memory_key ON memory(key)",
     "CREATE INDEX IF NOT EXISTS memory_status ON memory(status)",
+    "CREATE INDEX IF NOT EXISTS memory_namespace ON memory(namespace)",
 )
+_COLUMNS = "memory_id, fingerprint, key, status, record_json, updated_at, namespace"
 
 
 @runtime_checkable
 class MemoryStore(Protocol):
-    """What every backend must answer. Writes are upserts by ``memory_id``."""
+    """What every backend must answer. Writes are upserts by ``memory_id``.
+
+    ``namespace=None`` means *every* namespace — the operator's view
+    (``list``/``stats``/``prune``). The manager's read and merge paths always
+    pass a concrete namespace, so a fact in one space can neither corroborate,
+    supersede, nor be recalled into another.
+    """
 
     def save_record(self, record: MemoryRecord) -> None: ...
     def get_record(self, memory_id: str) -> MemoryRecord | None: ...
-    def list_records(self, *, statuses: Iterable[str] | None = None) -> list[MemoryRecord]: ...
-    def find_by_fingerprint(self, fingerprint: str) -> MemoryRecord | None: ...
-    def find_by_key(self, key: str) -> list[MemoryRecord]: ...
+    def list_records(
+        self, *, statuses: Iterable[str] | None = None, namespace: str | None = None
+    ) -> list[MemoryRecord]: ...
+    def find_by_fingerprint(
+        self, fingerprint: str, *, namespace: str | None = None
+    ) -> MemoryRecord | None: ...
+    def find_by_key(self, key: str, *, namespace: str | None = None) -> list[MemoryRecord]: ...
     def delete_record(self, memory_id: str) -> bool: ...
     def close(self) -> None: ...
 
@@ -58,24 +77,37 @@ class InMemoryMemoryStore:
             found = self._records.get(memory_id)
         return found.model_copy(deep=True) if found else None
 
-    def list_records(self, *, statuses: Iterable[str] | None = None) -> list[MemoryRecord]:
+    def list_records(
+        self, *, statuses: Iterable[str] | None = None, namespace: str | None = None
+    ) -> list[MemoryRecord]:
         wanted = {str(s) for s in statuses} if statuses is not None else None
         with self._lock:
             records = list(self._records.values())
         return [
-            r.model_copy(deep=True) for r in records if wanted is None or r.status.value in wanted
+            r.model_copy(deep=True)
+            for r in records
+            if (wanted is None or r.status.value in wanted)
+            and (namespace is None or r.namespace == namespace)
         ]
 
-    def find_by_fingerprint(self, fingerprint: str) -> MemoryRecord | None:
+    def find_by_fingerprint(
+        self, fingerprint: str, *, namespace: str | None = None
+    ) -> MemoryRecord | None:
         with self._lock:
             for record in self._records.values():
-                if record.fingerprint == fingerprint:
+                if record.fingerprint == fingerprint and (
+                    namespace is None or record.namespace == namespace
+                ):
                     return record.model_copy(deep=True)
         return None
 
-    def find_by_key(self, key: str) -> list[MemoryRecord]:
+    def find_by_key(self, key: str, *, namespace: str | None = None) -> list[MemoryRecord]:
         with self._lock:
-            return [r.model_copy(deep=True) for r in self._records.values() if r.key == key]
+            return [
+                r.model_copy(deep=True)
+                for r in self._records.values()
+                if r.key == key and (namespace is None or r.namespace == namespace)
+            ]
 
     def delete_record(self, memory_id: str) -> bool:
         with self._lock:
@@ -89,8 +121,9 @@ class SQLiteMemoryStore:
     """One file, WAL, no schema migrations beyond ``CREATE IF NOT EXISTS``.
 
     Rows keep the whole record as JSON so the model can grow without an
-    ALTER TABLE; the indexed columns are exactly the three the store is queried
-    by. A corrupt row is *skipped with a count*, not fatal — losing one memory
+    ALTER TABLE; the indexed columns are exactly the ones the store is queried
+    by (``namespace`` arrived later and is the one additive migration, see
+    ``_ADDED_COLUMNS``). A corrupt row is *skipped with a count*, not fatal — losing one memory
     is better than losing recall for the whole platform, and
     :meth:`skipped` keeps the loss visible.
     """
@@ -105,6 +138,10 @@ class SQLiteMemoryStore:
         self._conn.execute("PRAGMA journal_mode=WAL")
         with self._lock, self._conn:
             self._conn.execute(_DDL)
+            present = {row[1] for row in self._conn.execute("PRAGMA table_info(memory)")}
+            for name, clause in _ADDED_COLUMNS:
+                if name not in present:
+                    self._conn.execute(f"ALTER TABLE memory ADD COLUMN {name} {clause}")
             for statement in _INDEXES:
                 self._conn.execute(statement)
 
@@ -112,9 +149,11 @@ class SQLiteMemoryStore:
         record.updated_at = time.time()
         with self._lock, self._conn:
             self._conn.execute(
-                "INSERT INTO memory VALUES(?,?,?,?,?,?) ON CONFLICT(memory_id) DO UPDATE SET "
+                f"INSERT INTO memory({_COLUMNS}) VALUES(?,?,?,?,?,?,?) "
+                "ON CONFLICT(memory_id) DO UPDATE SET "
                 "fingerprint=excluded.fingerprint, key=excluded.key, status=excluded.status, "
-                "record_json=excluded.record_json, updated_at=excluded.updated_at",
+                "record_json=excluded.record_json, updated_at=excluded.updated_at, "
+                "namespace=excluded.namespace",
                 (
                     record.memory_id,
                     record.fingerprint,
@@ -122,6 +161,7 @@ class SQLiteMemoryStore:
                     record.status.value,
                     record.model_dump_json(),
                     record.updated_at,
+                    record.namespace,
                 ),
             )
 
@@ -132,33 +172,43 @@ class SQLiteMemoryStore:
             ).fetchone()
         return self._decode(row)
 
-    def list_records(self, *, statuses: Iterable[str] | None = None) -> list[MemoryRecord]:
+    def list_records(
+        self, *, statuses: Iterable[str] | None = None, namespace: str | None = None
+    ) -> list[MemoryRecord]:
         wanted = [str(s) for s in statuses] if statuses is not None else None
-        with self._lock:
-            if wanted:
-                marks = ",".join("?" for _ in wanted)
-                rows = self._conn.execute(
-                    f"SELECT record_json FROM memory WHERE status IN ({marks}) ORDER BY updated_at",
-                    wanted,
-                ).fetchall()
-            else:
-                rows = self._conn.execute(
-                    "SELECT record_json FROM memory ORDER BY updated_at"
-                ).fetchall()
-        return [record for record in (self._decode(row) for row in rows) if record is not None]
-
-    def find_by_fingerprint(self, fingerprint: str) -> MemoryRecord | None:
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT record_json FROM memory WHERE fingerprint=? LIMIT 1", (fingerprint,)
-            ).fetchone()
-        return self._decode(row)
-
-    def find_by_key(self, key: str) -> list[MemoryRecord]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if wanted:
+            clauses.append(f"status IN ({','.join('?' for _ in wanted)})")
+            params.extend(wanted)
+        if namespace is not None:
+            clauses.append("namespace=?")
+            params.append(namespace)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
         with self._lock:
             rows = self._conn.execute(
-                "SELECT record_json FROM memory WHERE key=? ORDER BY updated_at", (key,)
+                f"SELECT record_json FROM memory{where} ORDER BY updated_at", params
             ).fetchall()
+        return [record for record in (self._decode(row) for row in rows) if record is not None]
+
+    def find_by_fingerprint(
+        self, fingerprint: str, *, namespace: str | None = None
+    ) -> MemoryRecord | None:
+        sql = "SELECT record_json FROM memory WHERE fingerprint=?"
+        params: tuple[object, ...] = (fingerprint,)
+        if namespace is not None:
+            sql, params = sql + " AND namespace=?", (fingerprint, namespace)
+        with self._lock:
+            row = self._conn.execute(sql + " LIMIT 1", params).fetchone()
+        return self._decode(row)
+
+    def find_by_key(self, key: str, *, namespace: str | None = None) -> list[MemoryRecord]:
+        sql = "SELECT record_json FROM memory WHERE key=?"
+        params: tuple[object, ...] = (key,)
+        if namespace is not None:
+            sql, params = sql + " AND namespace=?", (key, namespace)
+        with self._lock:
+            rows = self._conn.execute(sql + " ORDER BY updated_at", params).fetchall()
         return [record for record in (self._decode(row) for row in rows) if record is not None]
 
     def delete_record(self, memory_id: str) -> bool:
@@ -196,8 +246,12 @@ class PostgresMemoryStore:
             cur.execute(
                 f"CREATE TABLE IF NOT EXISTS {self.table}("
                 "memory_id TEXT PRIMARY KEY, fingerprint TEXT, key TEXT, status TEXT, "
-                "record_json TEXT NOT NULL, updated_at DOUBLE PRECISION)"
+                "record_json TEXT NOT NULL, updated_at DOUBLE PRECISION, "
+                "namespace TEXT NOT NULL DEFAULT 'default')"
             )
+            for name, clause in _ADDED_COLUMNS:
+                cur.execute(f"ALTER TABLE {self.table} ADD COLUMN IF NOT EXISTS {name} {clause}")
+            conn.commit()
 
     def _conn(self):
         return self._connect()  # type: ignore[operator]
@@ -205,10 +259,11 @@ class PostgresMemoryStore:
     def save_record(self, record: MemoryRecord) -> None:
         record.updated_at = time.time()
         sql = (
-            f"INSERT INTO {self.table} (memory_id, fingerprint, key, status, record_json, "
-            "updated_at) VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (memory_id) DO UPDATE SET "
+            f"INSERT INTO {self.table} ({_COLUMNS}) VALUES (%s,%s,%s,%s,%s,%s,%s) "
+            "ON CONFLICT (memory_id) DO UPDATE SET "
             "fingerprint = EXCLUDED.fingerprint, key = EXCLUDED.key, status = EXCLUDED.status, "
-            "record_json = EXCLUDED.record_json, updated_at = EXCLUDED.updated_at"
+            "record_json = EXCLUDED.record_json, updated_at = EXCLUDED.updated_at, "
+            "namespace = EXCLUDED.namespace"
         )
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
@@ -220,21 +275,27 @@ class PostgresMemoryStore:
                     record.status.value,
                     record.model_dump_json(),
                     record.updated_at,
+                    record.namespace,
                 ),
             )
             conn.commit()
 
-    def list_records(self, *, statuses: Iterable[str] | None = None) -> list[MemoryRecord]:
+    def list_records(
+        self, *, statuses: Iterable[str] | None = None, namespace: str | None = None
+    ) -> list[MemoryRecord]:
         wanted = [str(s) for s in statuses] if statuses is not None else None
-        sql = f"SELECT record_json FROM {self.table}"
-        params: tuple[object, ...] = ()
+        clauses: list[str] = []
+        params: list[object] = []
         if wanted:
-            marks = ",".join("%s" for _ in wanted)
-            sql += f" WHERE status IN ({marks})"
-            params = tuple(wanted)
-        sql += " ORDER BY updated_at"
+            clauses.append(f"status IN ({','.join('%s' for _ in wanted)})")
+            params.extend(wanted)
+        if namespace is not None:
+            clauses.append("namespace = %s")
+            params.append(namespace)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        sql = f"SELECT record_json FROM {self.table}{where} ORDER BY updated_at"
         with self._conn() as conn, conn.cursor() as cur:
-            cur.execute(sql, params)
+            cur.execute(sql, tuple(params))
             rows = cur.fetchall()
         return [record for record in (self._decode(row) for row in rows) if record is not None]
 
@@ -244,20 +305,25 @@ class PostgresMemoryStore:
             row = cur.fetchone()
         return self._decode(row)
 
-    def find_by_fingerprint(self, fingerprint: str) -> MemoryRecord | None:
+    def find_by_fingerprint(
+        self, fingerprint: str, *, namespace: str | None = None
+    ) -> MemoryRecord | None:
+        sql = f"SELECT record_json FROM {self.table} WHERE fingerprint = %s"
+        params: tuple[object, ...] = (fingerprint,)
+        if namespace is not None:
+            sql, params = sql + " AND namespace = %s", (fingerprint, namespace)
         with self._conn() as conn, conn.cursor() as cur:
-            cur.execute(
-                f"SELECT record_json FROM {self.table} WHERE fingerprint = %s LIMIT 1",
-                (fingerprint,),
-            )
+            cur.execute(sql + " LIMIT 1", params)
             row = cur.fetchone()
         return self._decode(row)
 
-    def find_by_key(self, key: str) -> list[MemoryRecord]:
+    def find_by_key(self, key: str, *, namespace: str | None = None) -> list[MemoryRecord]:
+        sql = f"SELECT record_json FROM {self.table} WHERE key = %s"
+        params: tuple[object, ...] = (key,)
+        if namespace is not None:
+            sql, params = sql + " AND namespace = %s", (key, namespace)
         with self._conn() as conn, conn.cursor() as cur:
-            cur.execute(
-                f"SELECT record_json FROM {self.table} WHERE key = %s ORDER BY updated_at", (key,)
-            )
+            cur.execute(sql + " ORDER BY updated_at", params)
             rows = cur.fetchall()
         return [record for record in (self._decode(row) for row in rows) if record is not None]
 
