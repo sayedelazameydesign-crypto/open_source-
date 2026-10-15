@@ -28,6 +28,14 @@ Launcher namespace (ADR-0015, behind the token of its parent API, opt-in via
 ``POST /api/launcher/check``                update check over installed versions
 ``GET|POST /cela/v1/launcher/...``          the same surface in the private namespace
 
+WaAPI namespace (server-side credentials only, explicitly opt-in via
+``CELA_WAAPI_ENABLE=1``; webhook requires its separate path secret):
+``GET  /api/waapi/status``                  secret-safe connector readiness
+``GET  /api/waapi/instances``               allow-listed instance fields
+``POST /api/waapi/notifications``           idempotent durable notification enqueue
+``GET  /api/waapi/notifications/{id}``       safe delivery status
+``POST /api/webhooks/waapi/{secret}``        secret-protected incoming text message
+
 MCP namespace (ADR-0017, behind the token of its parent API, opt-in via
 ``CELA_MCP_ENABLE=1`` + ``CELA_MCP_CONFIG``; read-only — connections are made
 at startup, never per request):
@@ -51,10 +59,11 @@ Private browser namespace (guarded by ``CELA_PRIVATE_API_TOKEN``):
 
 from __future__ import annotations
 
+import asyncio
 import json
 import secrets
 from collections.abc import AsyncIterator
-from contextlib import aclosing, asynccontextmanager
+from contextlib import aclosing, asynccontextmanager, suppress
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
@@ -99,6 +108,7 @@ from os_server.runtime import (
     resolve_token,
     valid_bearer_token,
 )
+from os_server.waapi import WaapiService, create_waapi_router
 
 # Backwards-compatible alias for internal callers.
 _valid_bearer_token = valid_bearer_token
@@ -130,6 +140,7 @@ def create_app(
     launcher_enabled: bool | None = None,
     launcher_service: LauncherService | None = None,
     launcher_policy: EgressPolicy | None = None,
+    waapi_service: WaapiService | None = None,
     ledger: RunLedger | None = None,
     mcp_enabled_flag: bool | None = None,
     mcp_layer: MCPLayer | None = None,
@@ -159,6 +170,8 @@ def create_app(
     )
     if egress_policy is not None:
         rt.egress_policy = egress_policy
+
+    waapi = waapi_service if waapi_service is not None else WaapiService()
 
     bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -192,17 +205,28 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         layer: MCPLayer | None = None
-        if use_mcp:
-            layer = mcp_layer if mcp_layer is not None else process_layer()
-        if layer is not None:
-            await layer.discover()
-            register_mcp_tools(rt.platform.registry, layer)
-        app.state.mcp = layer
+        waapi_worker: asyncio.Task[None] | None = None
         try:
+            if use_mcp:
+                layer = mcp_layer if mcp_layer is not None else process_layer()
+            if layer is not None:
+                await layer.discover()
+                register_mcp_tools(rt.platform.registry, layer)
+            app.state.mcp = layer
+            if waapi.worker_enabled:
+                waapi_worker = asyncio.create_task(
+                    waapi.run_worker(rt), name="waapi-message-worker"
+                )
+            app.state.waapi_worker = waapi_worker
             yield
         finally:
+            if waapi_worker is not None:
+                waapi_worker.cancel()
+                with suppress(asyncio.CancelledError):
+                    await waapi_worker
             if layer is not None:
                 await layer.close()
+            await waapi.aclose()
 
     app = FastAPI(
         title="cela_use_browser private + platform API",
@@ -216,6 +240,7 @@ def create_app(
     app.state.runtime = rt
     app.state.cela = cela_browser
     app.state.mcp = None
+    app.state.waapi = waapi
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
@@ -400,6 +425,7 @@ def create_app(
             prefix=LAUNCHER_PRIVATE_PREFIX,
         )
     )
+    app.include_router(create_waapi_router(waapi, require_api_auth))
     return app
 
 
@@ -432,6 +458,7 @@ def serve(
         host=host,
         port=port,
         log_level="info",
+        access_log=False,
     )
 
 
