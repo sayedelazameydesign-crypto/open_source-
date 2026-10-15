@@ -16,7 +16,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
 
-from os_core.types import Message, ModelResponse, ToolCall, Usage
+from os_core.types import ExecutionInfo, Message, ModelResponse, ToolCall, Usage
 
 
 @runtime_checkable
@@ -184,3 +184,16 @@ def _approx(text: str) -> int:
 
 def _approx_tokens(messages: Sequence[Message]) -> int:
     return sum(_approx(m.content) for m in messages)
+
+
+def describe_execution(model: object) -> ExecutionInfo:
+    """Expose only allowlisted public identity fields, never endpoints or keys.
+
+    An adapter describes configuration, not independently verified model identity
+    or successful task completion. Unknown implementations remain unknown.
+    """
+    if isinstance(model, ScriptedModel):
+        return ExecutionInfo(kind="scripted", model_name=model.name)
+    if isinstance(model, OpenAICompatModel):
+        return ExecutionInfo(kind="provider_adapter", model_name=model.name)
+    return ExecutionInfo()

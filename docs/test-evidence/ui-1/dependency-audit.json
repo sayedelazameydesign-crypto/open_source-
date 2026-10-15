@@ -1,0 +1,43 @@
+{
+  "source": "npm audit --json; local dependency audit, not exploitation testing",
+  "result": "WARNINGS_REMAIN",
+  "metadata": {
+    "vulnerabilities": {
+      "info": 0,
+      "low": 0,
+      "moderate": 1,
+      "high": 1,
+      "critical": 0,
+      "total": 2
+    },
+    "dependencies": {
+      "prod": 16,
+      "dev": 114,
+      "optional": 38,
+      "peer": 0,
+      "peerOptional": 0,
+      "total": 167
+    }
+  },
+  "packages": {
+    "next": {
+      "installed": "15.5.27",
+      "severity": "moderate",
+      "fixAvailable": {
+        "name": "next",
+        "version": "16.4.1",
+        "isSemVerMajor": true
+      }
+    },
+    "postcss": {
+      "installed": "8.4.31",
+      "severity": "high",
+      "fixAvailable": {
+        "name": "next",
+        "version": "16.4.1",
+        "isSemVerMajor": true
+      }
+    }
+  },
+  "automaticFixApplied": false
+}

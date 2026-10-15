@@ -149,9 +149,14 @@ def demo_react_model(task: str) -> ScriptedModel:
                 usage=Usage(prompt_tokens=120, completion_tokens=30),
             )
         observation = seen_tools[-1].content
+        first_line = (observation.splitlines() or ["(empty output)"])[0].strip()
+        answer = (
+            "The sandbox returned: 5050. The sum of 0..100 is 5050."
+            if first_line == "5050"
+            else f"Demo calculation not verified. Tool observation: {first_line}"
+        )
         return ModelResponse(
-            content=f"The sandbox returned: {observation.splitlines()[0].strip()}. "
-            "The sum of 0..100 is 5050.",
+            content=answer,
             usage=Usage(prompt_tokens=180, completion_tokens=40),
         )
 
@@ -189,19 +194,23 @@ def demo_planner_model(task: str) -> ScriptedModel:
         name="demo-planner",
         script=[ModelResponse(content=plan, usage=Usage(prompt_tokens=400, completion_tokens=150))],
         final_content=(
-            "Plan complete. The sandbox counted 143 multiples of 7 below 1000 and the "
-            "browser confirmed the model list page loaded."
+            "Demo transcript finished. Inspect the recorded tool results and their statuses. "
+            "This scripted response does not verify the user's goal or real browser access."
         ),
     )
 
 
-def build_demo_platform_for(mode: str, *, interactive: bool = False) -> Platform:
+def build_demo_platform_for(
+    mode: str, *, interactive: bool = False, max_steps: int = 8
+) -> Platform:
     """A platform whose scripted model matches the requested execution mode.
 
     Each run gets its own instance: the run must never mutate shared config,
     otherwise a later request inherits an earlier one's mode.
     """
-    return build_demo_platform(mode="flow" if mode == "flow" else "react", interactive=interactive)
+    platform = build_demo_platform(mode=mode, interactive=interactive)
+    platform.config.max_steps = max_steps
+    return platform
 
 
 _SKILL_MANAGER = None

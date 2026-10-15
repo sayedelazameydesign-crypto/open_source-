@@ -1,0 +1,11 @@
+PASS: A: Arabic RTL, upload, visible plan, no automatic execution
+PASS: A: explicit click, real download bytes and SHA-256
+PASS: A: reload, restore, duplicate execute returns the same artifact
+PASS: B: oversize upload is rejected visibly without starting a task
+PASS: B: invalid UTF-8 and extension are rejected by the real backend
+PASS: B: unauthenticated and missing-object requests fail safely
+PASS: B: real report-creation fault shows failure, never success
+PASS: C: 390x844 mobile emulation, keyboard controls, plan and download
+PASS: C: mobile error remains visible and within viewport
+PASS: A/B/C: no page errors, external requests or unexpected HTTP/console errors
+RESULT: PASS; 10 passed; 0 failed. Mobile emulation, not physical hardware.

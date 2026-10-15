@@ -23,16 +23,18 @@ async function proxy(req: NextRequest, ctx: { params: Promise<{ path: string[] }
   const url = `${BACKEND}/${joined}${req.nextUrl.search}`;
   const res = await fetch(url, {
     method: req.method,
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: req.method === "GET" || req.method === "HEAD" ? undefined : await req.text(),
-    // @ts-expect-error Node fetch streaming for SSE passthrough
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": req.headers.get("content-type") ?? "application/octet-stream" },
+    body: req.method === "GET" || req.method === "HEAD" ? undefined : req.body,
     duplex: "half",
-  });
+  } as RequestInit & { duplex: string });
   return new Response(res.body, {
     status: res.status,
     headers: {
       "Content-Type": res.headers.get("content-type") ?? "application/json",
-      "Cache-Control": "no-cache, no-transform",
+      "Cache-Control": "no-store, no-transform",
+      ...(res.headers.has("content-disposition")
+        ? { "Content-Disposition": res.headers.get("content-disposition")! } : {}),
+      "X-Content-Type-Options": "nosniff",
     },
   });
 }

@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "eslint app components hooks lib",
+    "typecheck": "tsc --noEmit",
+    "test:components": "node ../../tests/web/run-components.cjs"
   },
   "dependencies": {
     "next": "^15.1.0",
@@ -14,9 +16,14 @@
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
-    "typescript": "^5.7.0"
+    "eslint": "^9.39.5",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "globals": "^16.5.0",
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.71.2"
   }
 }

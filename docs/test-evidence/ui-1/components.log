@@ -1,0 +1,134 @@
+
+> cela-web@0.1.0 test:components
+> node ../../tests/web/run-components.cjs
+
+TAP version 13
+# Subtest: empty state explains actual absence
+ok 1 - empty state explains actual absence
+  ---
+  duration_ms: 7.243116
+  type: 'test'
+  ...
+# Subtest: loading is a named status, not an asserted success
+ok 2 - loading is a named status, not an asserted success
+  ---
+  duration_ms: 0.869291
+  type: 'test'
+  ...
+# Subtest: error is textual and an alert
+ok 3 - error is textual and an alert
+  ---
+  duration_ms: 1.192215
+  type: 'test'
+  ...
+# Subtest: completed means engine ended, not goal success
+ok 4 - completed means engine ended, not goal success
+  ---
+  duration_ms: 0.528006
+  type: 'test'
+  ...
+# Subtest: tool failure has explicit label, independent of color
+ok 5 - tool failure has explicit label, independent of color
+  ---
+  duration_ms: 0.481018
+  type: 'test'
+  ...
+# Subtest: successful tool has a tool-specific label
+ok 6 - successful tool has a tool-specific label
+  ---
+  duration_ms: 0.456084
+  type: 'test'
+  ...
+# Subtest: unknown execution never inferred from model routing
+ok 7 - unknown execution never inferred from model routing
+  ---
+  duration_ms: 0.182992
+  type: 'test'
+  ...
+# Subtest: metadata cannot assert independent goal verification
+ok 8 - metadata cannot assert independent goal verification
+  ---
+  duration_ms: 0.088242
+  type: 'test'
+  ...
+# Subtest: scripted disclosure includes no general-browser promise
+ok 9 - scripted disclosure includes no general-browser promise
+  ---
+  duration_ms: 2.051143
+  type: 'test'
+  ...
+# Subtest: empty plan is not invented
+ok 10 - empty plan is not invented
+  ---
+  duration_ms: 1.022136
+  type: 'test'
+  ...
+# Subtest: failed step is named
+ok 11 - failed step is named
+  ---
+  duration_ms: 1.967688
+  type: 'test'
+  ...
+# Subtest: activity omits raw thought, arguments and output
+ok 12 - activity omits raw thought, arguments and output
+  ---
+  duration_ms: 1.324859
+  type: 'test'
+  ...
+# Subtest: tool error cannot render tool success
+ok 13 - tool error cannot render tool success
+  ---
+  duration_ms: 0.801569
+  type: 'test'
+  ...
+# Subtest: artifact route is actual encoded metadata path, not made-up download
+ok 14 - artifact route is actual encoded metadata path, not made-up download
+  ---
+  duration_ms: 2.2558
+  type: 'test'
+  ...
+# Subtest: no artifacts is explicitly empty
+ok 15 - no artifacts is explicitly empty
+  ---
+  duration_ms: 1.216839
+  type: 'test'
+  ...
+# Subtest: snapshot rejects wrong task and malformed structures
+ok 16 - snapshot rejects wrong task and malformed structures
+  ---
+  duration_ms: 0.508449
+  type: 'test'
+  ...
+# Subtest: sparse actual running snapshot stays valid and unknown
+ok 17 - sparse actual running snapshot stays valid and unknown
+  ---
+  duration_ms: 0.096939
+  type: 'test'
+  ...
+# Subtest: malformed SSE rejected; unknown typed events remain safe
+ok 18 - malformed SSE rejected; unknown typed events remain safe
+  ---
+  duration_ms: 0.116319
+  type: 'test'
+  ...
+# Subtest: prototype-like unknown status gets a safe label
+ok 19 - prototype-like unknown status gets a safe label
+  ---
+  duration_ms: 0.266321
+  type: 'test'
+  ...
+# Subtest: prototype-like event type is safe and not rendered as a function
+ok 20 - prototype-like event type is safe and not rendered as a function
+  ---
+  duration_ms: 0.709613
+  type: 'test'
+  ...
+1..20
+# tests 20
+# suites 0
+# pass 20
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 117.91788

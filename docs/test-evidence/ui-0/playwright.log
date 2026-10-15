@@ -1,0 +1,7 @@
+PASS [live]: reference executor is disclosed before any task
+PASS [live]: original ReAct request invokes demo tools, not a raw planner answer
+PASS [live]: flow and auto each bind the planner independently, then ReAct resets correctly
+PASS [live]: completed stream reconnect does not change completion or invent an error
+PASS [mocked-old-api]: missing runtime metadata remains unknown, not inferred from routing
+PASS [live]: document page states deterministic local processing without an AI model
+RESULT: PASS; 6 passed.

@@ -1,0 +1,6 @@
+{
+  "/": 200,
+  "/documents": 200,
+  "/api/backend/health": 200,
+  "/api/backend/runtime-info": 200
+}

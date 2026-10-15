@@ -24,6 +24,7 @@ from typing import Any
 from os_core.events import EventBus, EventType, replay_and_stream
 from os_core.hitl import ApprovalDecision, QueueApprover
 from os_core.ledger import RunLedger, resolve_ledger
+from os_core.models import describe_execution
 from os_core.state import RunState, RunStatus
 from os_orchestration.platform import Platform
 from os_tools.egress import EgressPolicy
@@ -170,6 +171,11 @@ class ApiRuntime:
     ) -> tuple[RunHandle, str]:
         run_id = f"run_{uuid.uuid4().hex[:10]}"
         run_platform = self.make_platform(mode, max_steps)
+        chosen_mode = run_platform.choose_mode(task)
+        if mode == "auto" and run_platform.config.mode == "auto":
+            # A mode-specific factory must get the resolved mode before its
+            # transcript/model and event bus are chosen. No task starts twice.
+            run_platform = self.make_platform(chosen_mode, max_steps)
         if run_platform.ledger is None:
             # A platform that already carries its own ledger keeps it; one that
             # does not inherits the runtime's so no run escapes the record.
@@ -186,7 +192,6 @@ class ApiRuntime:
                 self.store.save_artifact(run_id, event.data["filename"], event.data)
 
         bus.subscribe(_collect)
-        chosen_mode = run_platform.choose_mode(task)
         self.store.save_run_meta(
             RunMeta(run_id=run_id, mode=chosen_mode, target_url=target_url, status="running")
         )
@@ -242,6 +247,7 @@ class ApiRuntime:
         snap = {
             "run_id": run_id,
             "status": RunStatus.RUNNING.value,
+            "execution": describe_execution(handle.platform.model).model_dump(),
             "events": len(handle.bus.buffer),
             "pending_approvals": self._pending(handle.platform) or self._pending(self.platform),
         }

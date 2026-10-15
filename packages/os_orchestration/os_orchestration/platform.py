@@ -19,7 +19,7 @@ from os_core.events import Event, EventBus, EventType
 from os_core.guardrails import Guardrails
 from os_core.hitl import Approver, DenyApprover
 from os_core.ledger import LedgerError, RunLedger
-from os_core.models import ChatModel
+from os_core.models import ChatModel, describe_execution
 from os_core.router import ModelRouter, RouterConfig
 from os_core.state import RunState, RunStatus
 from os_tools.registry import ToolRegistry
@@ -91,7 +91,7 @@ class Platform(BaseModel):
         self, task: str, *, run_id: str | None = None, bus: EventBus | None = None
     ) -> RunState:
         mode = self.choose_mode(task)
-        state = RunState(task=task, mode=mode)
+        state = RunState(task=task, mode=mode, execution=describe_execution(self.model))
         if run_id:
             state.run_id = run_id
         stream = bus or self.make_bus(state.run_id)

@@ -1,0 +1,87 @@
+{
+  "tests": [
+    {
+      "name": "RTL idle layout 1440px without horizontal overflow",
+      "kind": "live-browser",
+      "status": "PASS"
+    },
+    {
+      "name": "RTL idle layout 1024px without horizontal overflow",
+      "kind": "live-browser",
+      "status": "PASS"
+    },
+    {
+      "name": "RTL idle layout 390px without horizontal overflow",
+      "kind": "live-browser",
+      "status": "PASS"
+    },
+    {
+      "name": "390px drawer traps focus, Escape closes it, RTL tabs use keyboard",
+      "kind": "live-browser",
+      "status": "PASS"
+    },
+    {
+      "name": "keyboard skip link and suggestion fill a request without executing it",
+      "kind": "live-browser",
+      "status": "PASS"
+    },
+    {
+      "name": "real ReAct SSE, failed-tool honesty, activity and new task reset",
+      "kind": "live-backend-scripted-model",
+      "status": "PASS"
+    },
+    {
+      "name": "real TXT upload, approval, Markdown download, hash and restore at 390px",
+      "kind": "live-local-deterministic",
+      "status": "PASS"
+    },
+    {
+      "name": "unreachable backend and invalid create response have friendly errors",
+      "kind": "mocked-api-faults",
+      "status": "PASS"
+    },
+    {
+      "name": "creating state and duplicate submits issue exactly one POST",
+      "kind": "mocked-api-delay",
+      "status": "PASS"
+    },
+    {
+      "name": "disconnected stream reconnects and EOF does not fabricate completion",
+      "kind": "mocked-sse-fault",
+      "status": "PASS"
+    },
+    {
+      "name": "malformed snapshot and SSE fail safely without raw diagnostics",
+      "kind": "mocked-invalid-contract",
+      "status": "PASS"
+    },
+    {
+      "name": "failed, cancelled and max_steps remain textual terminal states",
+      "kind": "mocked-terminal-states",
+      "status": "PASS"
+    },
+    {
+      "name": "SSE duplicates, CRLF frames and EOF tail preserve sequence without raw payload",
+      "kind": "mocked-sse-frames",
+      "status": "PASS"
+    },
+    {
+      "name": "document invalid status is rejected without raw error or fabricated report",
+      "kind": "mocked-document-contract",
+      "status": "PASS"
+    }
+  ],
+  "pageErrors": [],
+  "unexpectedHttpErrors": [],
+  "externalRequests": [],
+  "startedAt": "2026-10-15T03:55:33.923Z",
+  "overall": "PASS",
+  "browser": "153.0.8010.0",
+  "actualToolSummary": {
+    "recorded": 1,
+    "successful": 0,
+    "unsuccessful": 1
+  },
+  "physicalDeviceTested": false,
+  "finishedAt": "2026-10-15T03:55:40.423Z"
+}

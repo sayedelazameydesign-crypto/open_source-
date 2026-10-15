@@ -63,6 +63,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from os_core.events import EventType, replay_and_stream
 from os_core.hitl import ApprovalDecision
 from os_core.ledger import RunLedger
+from os_core.models import describe_execution
 from os_mcp.layer import MCPLayer, mcp_enabled, process_layer, register_mcp_tools
 from os_orchestration.platform import Platform
 from os_tools.egress import EgressPolicy
@@ -208,6 +209,9 @@ def create_app(
         version=PRODUCT_VERSION,
         lifespan=lifespan,
     )
+    from os_server.documents import document_router
+
+    app.include_router(document_router(rt.store, require_api_auth))
     cela_browser = CelaBrowser(runtime=rt)
     app.state.runtime = rt
     app.state.cela = cela_browser
@@ -216,6 +220,11 @@ def create_app(
     @app.get("/health")
     async def health() -> dict[str, Any]:
         return {"status": "ok"}
+
+    @app.get("/runtime-info", dependencies=[Depends(require_api_auth)])
+    async def runtime_info() -> dict[str, Any]:
+        # Reference configuration only. Each run carries its own executor info.
+        return {"execution": describe_execution(getattr(rt.platform, "model", None)).model_dump()}
 
     @app.post("/runs", status_code=202, dependencies=[Depends(require_api_auth)])
     async def start_run(req: StartRunRequest) -> dict[str, str]:
@@ -395,7 +404,7 @@ def create_app(
 
 
 def serve(
-    platform: Platform,
+    platform: Platform | PlatformFactory,
     *,
     host: str = "0.0.0.0",
     port: int = 8080,
