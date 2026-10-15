@@ -1,0 +1,38 @@
+name: Web CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "packages/web/**"
+      - "tests/web/**"
+      - ".github/workflows/web-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "packages/web/**"
+      - "tests/web/**"
+      - ".github/workflows/web-ci.yml"
+  workflow_dispatch:
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/web
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: packages/web/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run test:components
+      - run: npm run test:hooks
+      - run: npm run build
