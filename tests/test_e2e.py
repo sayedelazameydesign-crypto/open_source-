@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+
 from os_core.events import EventType
 from os_core.hitl import ApprovalDecision, QueueApprover
 from os_core.state import RunStatus
@@ -105,12 +107,37 @@ async def test_queue_approver_can_be_answered() -> None:
     approver = QueueApprover(timeout=5.0)
     call = ToolCall(name="publish", args={})
     task = asyncio.create_task(approver.request(call, RiskLevel.DANGEROUS, "publish"))
-    for _ in range(50):
-        if approver.pending:
-            break
-        await asyncio.sleep(0.01)
+    # Event-driven: the approver tells us when the prompt exists — no sleep loop.
+    assert await asyncio.wait_for(approver.wait_for_request(), 5.0) is call
     assert approver.answer(call.id, ApprovalDecision.APPROVED)
     assert (await task).value == "approved"
+
+
+async def test_queue_approver_wait_for_request_sees_an_already_pending_prompt() -> None:
+    import asyncio
+
+    from os_core.types import RiskLevel, ToolCall
+
+    approver = QueueApprover(timeout=5.0)
+    call = ToolCall(name="publish", args={})
+    task = asyncio.create_task(approver.request(call, RiskLevel.DANGEROUS, "publish"))
+    first = await asyncio.wait_for(approver.wait_for_request(), 5.0)
+    # A second waiter must not block on a prompt that is already on the queue.
+    assert await asyncio.wait_for(approver.wait_for_request(), 5.0) is first is call
+    # A waiter that gives up is forgotten, and the next prompt still reaches a live one.
+    gave_up = asyncio.create_task(approver.wait_for_request())
+    approver.answer(call.id, ApprovalDecision.DENIED)
+    assert (await task).value == "denied"
+    gave_up.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await gave_up
+    second = ToolCall(name="publish_again", args={})
+    waiter = asyncio.create_task(approver.wait_for_request())
+    await asyncio.sleep(0)  # let the waiter register before the prompt arrives
+    task2 = asyncio.create_task(approver.request(second, RiskLevel.DANGEROUS, "again"))
+    assert await asyncio.wait_for(waiter, 5.0) is second
+    approver.answer(second.id, ApprovalDecision.APPROVED)
+    assert (await task2).value == "approved"
 
 
 def test_registry_exposes_mcp_style_specs() -> None:

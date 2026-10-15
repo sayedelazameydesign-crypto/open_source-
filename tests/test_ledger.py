@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import time
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +28,8 @@ from os_orchestration.platform import Platform, PlatformConfig
 from os_server.app import create_app
 from os_server.cli import main
 from os_server.demo import build_demo_platform_for
+
+from conftest import wait_until
 
 
 def make_run(
@@ -409,13 +410,11 @@ def server_client(ledger_path: Path):
 
 
 def wait_for_status(client: TestClient, run_id: str) -> dict[str, Any]:
-    body: dict[str, Any] = {}
-    for _ in range(200):
+    def probe() -> dict[str, Any] | None:
         body = client.get(f"/runs/{run_id}").json()
-        if body.get("status") in {"completed", "failed"}:
-            return body
-        time.sleep(0.05)
-    raise AssertionError(f"run {run_id} never finished: {body}")
+        return body if body.get("status") in {"completed", "failed"} else None
+
+    return wait_until(probe, what=f"run {run_id} finishing")
 
 
 def test_a_run_started_over_http_lands_in_the_ledger(server_client: TestClient) -> None:
