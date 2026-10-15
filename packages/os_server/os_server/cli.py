@@ -960,7 +960,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "serve":
         from os_server.app import serve
-        from os_server.demo import build_demo_platform
+        from os_server.demo import build_demo_platform_for
         from os_server.runtime import resolve_private_token, resolve_token
 
         api_token = resolve_token()
@@ -976,10 +976,13 @@ def main(argv: list[str] | None = None) -> int:
             # The server resolves its ledger from the environment, so an
             # explicit --ledger (including 'off') is honoured by exporting it.
             os.environ["CELA_LEDGER_PATH"] = args.ledger
-        platform = build_demo_platform(mode="flow", interactive=True)
+
+        def platform_factory(mode: str, max_steps: int) -> Platform:
+            return build_demo_platform_for(mode, interactive=True, max_steps=max_steps)
+
         print(f"serving on http://{args.host}:{args.port}")
         serve(
-            platform,
+            platform_factory,
             host=args.host,
             port=args.port,
             api_token=api_token,

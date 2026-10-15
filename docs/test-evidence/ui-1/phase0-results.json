@@ -1,0 +1,47 @@
+{
+  "tests": [
+    {
+      "name": "reference executor is disclosed before any task",
+      "kind": "live",
+      "status": "PASS"
+    },
+    {
+      "name": "original ReAct request invokes demo tools, not a raw planner answer",
+      "kind": "live",
+      "status": "PASS"
+    },
+    {
+      "name": "flow and auto each bind the planner independently, then ReAct resets correctly",
+      "kind": "live",
+      "status": "PASS"
+    },
+    {
+      "name": "completed stream reconnect does not change completion or invent an error",
+      "kind": "live",
+      "status": "PASS"
+    },
+    {
+      "name": "missing runtime metadata remains unknown, not inferred from routing",
+      "kind": "mocked-old-api",
+      "status": "PASS"
+    },
+    {
+      "name": "document page states deterministic local processing without an AI model",
+      "kind": "live",
+      "status": "PASS"
+    }
+  ],
+  "pageErrors": [],
+  "unexpectedHttpErrors": [],
+  "externalRequests": [],
+  "startedAt": "2026-10-15T03:55:40.841Z",
+  "overall": "PASS",
+  "browser": "153.0.8010.0",
+  "reactToolResults": {
+    "recorded": 1,
+    "successful": 0,
+    "unsuccessful": 1
+  },
+  "goalVerification": "not_verified",
+  "finishedAt": "2026-10-15T03:55:43.926Z"
+}

@@ -1,0 +1,3 @@
+PASS [real-runtime-test-fixture]: actual QueueApprover approved via unchanged API + no-op test tool
+PASS [real-runtime-test-fixture]: actual QueueApprover denied via unchanged API + no-op test tool
+RESULT: PASS; 2 passed.

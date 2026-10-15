@@ -1,0 +1,15 @@
+PASS [live-browser]: RTL idle layout 1440px without horizontal overflow
+PASS [live-browser]: RTL idle layout 1024px without horizontal overflow
+PASS [live-browser]: RTL idle layout 390px without horizontal overflow
+PASS [live-browser]: 390px drawer traps focus, Escape closes it, RTL tabs use keyboard
+PASS [live-browser]: keyboard skip link and suggestion fill a request without executing it
+PASS [live-backend-scripted-model]: real ReAct SSE, failed-tool honesty, activity and new task reset
+PASS [live-local-deterministic]: real TXT upload, approval, Markdown download, hash and restore at 390px
+PASS [mocked-api-faults]: unreachable backend and invalid create response have friendly errors
+PASS [mocked-api-delay]: creating state and duplicate submits issue exactly one POST
+PASS [mocked-sse-fault]: disconnected stream reconnects and EOF does not fabricate completion
+PASS [mocked-invalid-contract]: malformed snapshot and SSE fail safely without raw diagnostics
+PASS [mocked-terminal-states]: failed, cancelled and max_steps remain textual terminal states
+PASS [mocked-sse-frames]: SSE duplicates, CRLF frames and EOF tail preserve sequence without raw payload
+PASS [mocked-document-contract]: document invalid status is rejected without raw error or fabricated report
+RESULT: PASS; 14 passed.

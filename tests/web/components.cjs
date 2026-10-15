@@ -1,0 +1,33 @@
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const path = require('node:path');
+const root = path.resolve(process.env.UI_COMPONENT_OUTPUT || '.cache/ui1-components');
+const React = require('react');
+const { renderToStaticMarkup: render } = require('react-dom/server');
+const ui = require(path.join(root, 'components/workspace/ui.js'));
+const panels = require(path.join(root, 'components/workspace/panels.js'));
+const disclosure = require(path.join(root, 'components/execution-disclosure.js'));
+const contracts = require(path.join(root, 'lib/contracts.js'));
+const view = (component, props) => render(React.createElement(component, props));
+
+test('empty state explains actual absence', () => assert.match(view(ui.EmptyState, { title: 'No files', children: 'No fake files' }), /No fake files/));
+test('loading is a named status, not an asserted success', () => assert.match(view(ui.LoadingState, { children: 'Loading' }), /role="status"/));
+test('error is textual and an alert', () => assert.match(view(ui.Notice, { children: 'Failure' }), /role="alert".*Failure/s));
+test('completed means engine ended, not goal success', () => { const html = view(ui.StatusPill, { status: 'completed' }); assert.match(html, /انتهت دورة المحرك/); assert.doesNotMatch(html, /تحقق الهدف/); });
+test('tool failure has explicit label, independent of color', () => assert.match(view(ui.StatusPill, { status: 'error' }), /فشلت الأداة/));
+test('successful tool has a tool-specific label', () => assert.match(view(ui.StatusPill, { status: 'success' }), /نجحت الأداة/));
+test('unknown execution never inferred from model routing', () => assert.equal(disclosure.parseExecution({ kind: 'invalid', model_name: 'real' }).kind, 'unknown'));
+test('metadata cannot assert independent goal verification', () => assert.equal(disclosure.parseExecution({ kind: 'provider_adapter', goal_verification: 'verified' }).goal_verification, 'not_verified'));
+test('scripted disclosure includes no general-browser promise', () => assert.match(view(disclosure.ExecutionDisclosure, { execution: disclosure.parseExecution({ kind: 'scripted', model_name: 'demo' }) }), /لا يضمن سلوكًا عامًا أو تصفحًا حقيقيًا/));
+test('empty plan is not invented', () => assert.match(view(panels.PlanPanel, { steps: [] }), /لم تصل خطة بعد/));
+test('failed step is named', () => assert.match(view(panels.StepCard, { step: { id: 's', title: 'Step', tool: null, status: 'failed' }, index: 0 }), /فشل التنفيذ/));
+test('activity omits raw thought, arguments and output', () => { const html = view(panels.ActivityPanel, { events: [{ seq: 1, type: 'thought', data: { text: 'PRIVATE_THOUGHT', args: { token: 'SECRET' }, output: 'RAW' } }] }); assert.doesNotMatch(html, /PRIVATE_THOUGHT|SECRET|RAW/); assert.match(html, /ليست دليل تحقق/); });
+test('tool error cannot render tool success', () => { const html = view(panels.ActivityPanel, { events: [{ seq: 1, type: 'tool_result', data: { status: 'error', name: 'python_execute' } }] }); assert.match(html, /فشلت الأداة/); assert.doesNotMatch(html, /نجحت الأداة/); });
+test('artifact route is actual encoded metadata path, not made-up download', () => { const html = view(panels.EvidencePanel, { runId: 'run_1', snapshot: { artifacts: [{ filename: 'a b.txt', mime_type: 'text/plain', kind: 'file' }] } }); assert.match(html, /\/api\/backend\/artifacts\/run_1\/a%20b.txt/); assert.match(html, /ليس رابط تنزيل مباشر/); });
+test('no artifacts is explicitly empty', () => assert.match(view(panels.EvidencePanel, { snapshot: null, runId: null }), /لم تُنشأ ملفات بعد/));
+test('snapshot rejects wrong task and malformed structures', () => { for (const value of [null, {}, { run_id: 'run_2', status: 'running' }, { run_id: 'run_1', status: 'alien' }, { run_id: 'run_1', status: 'running', steps: [null] }]) assert.throws(() => contracts.parseSnapshot(value, 'run_1')); });
+test('sparse actual running snapshot stays valid and unknown', () => assert.equal(contracts.parseSnapshot({ run_id: 'run_1', status: 'running', pending_approvals: [] }, 'run_1').execution.kind, 'unknown'));
+test('malformed SSE rejected; unknown typed events remain safe', () => { assert.throws(() => contracts.parseEvent({ type: 'tool_result', seq: '1', data: {} })); assert.equal(contracts.parseEvent({ type: 'future', seq: 1, data: {} }).type, 'future'); });
+
+test('prototype-like unknown status gets a safe label', () => assert.match(view(ui.StatusPill, { status: 'constructor' }), /حالة غير معروفة/));
+test('prototype-like event type is safe and not rendered as a function', () => assert.match(view(panels.ActivityPanel, { events: [{ seq: 1, type: 'constructor', data: {} }] }), /حدث من الخادم/));

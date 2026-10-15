@@ -32,6 +32,14 @@ DANGEROUS_ACTIONS: frozenset[str] = frozenset(
 )
 
 
+class ExecutionInfo(BaseModel):
+    """Executor identity, not a claim that routing invoked a particular model."""
+
+    kind: Literal["scripted", "provider_adapter", "unknown"] = "unknown"
+    model_name: str | None = None
+    goal_verification: Literal["not_verified"] = "not_verified"
+
+
 class Message(BaseModel):
     role: Role
     content: str = ""

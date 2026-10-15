@@ -1,0 +1,117 @@
+{
+  "startedAt": "2026-10-15T02:47:34.582Z",
+  "browser": "153.0.8010.0",
+  "tests": [
+    {
+      "name": "A: Arabic RTL, upload, visible plan, no automatic execution",
+      "status": "PASS"
+    },
+    {
+      "name": "A: explicit click, real download bytes and SHA-256",
+      "status": "PASS"
+    },
+    {
+      "name": "A: reload, restore, duplicate execute returns the same artifact",
+      "status": "PASS"
+    },
+    {
+      "name": "B: oversize upload is rejected visibly without starting a task",
+      "status": "PASS"
+    },
+    {
+      "name": "B: invalid UTF-8 and extension are rejected by the real backend",
+      "status": "PASS"
+    },
+    {
+      "name": "B: unauthenticated and missing-object requests fail safely",
+      "status": "PASS"
+    },
+    {
+      "name": "B: real report-creation fault shows failure, never success",
+      "status": "PASS"
+    },
+    {
+      "name": "C: 390x844 mobile emulation, keyboard controls, plan and download",
+      "status": "PASS"
+    },
+    {
+      "name": "C: mobile error remains visible and within viewport",
+      "status": "PASS"
+    },
+    {
+      "name": "A/B/C: no page errors, external requests or unexpected HTTP/console errors",
+      "status": "PASS"
+    }
+  ],
+  "downloads": [
+    {
+      "viewport": "desktop",
+      "filename": "report_64c5703d75de4902b9424d4a12b39bef.md",
+      "bytes": 494,
+      "sha256": "76d76335a1c82702d62ef22bdd5d8766a59ebabba5902185f5e127c697092fe8",
+      "contentVerified": true
+    },
+    {
+      "viewport": "mobile",
+      "filename": "report_642ca2961e0c4bcbb42c96be201e2bff.md",
+      "bytes": 494,
+      "sha256": "76717dfa177d9237ddbc3d2e1fdccf2550b7bcaa8f6cf3add86012b0211e155d",
+      "contentVerified": true
+    }
+  ],
+  "diagnostics": {
+    "pageErrors": [],
+    "console": [
+      {
+        "phase": "expected-negative",
+        "type": "error",
+        "networkFailure": true
+      },
+      {
+        "phase": "expected-negative",
+        "type": "error",
+        "networkFailure": true
+      }
+    ],
+    "httpErrors": [
+      {
+        "phase": "expected-negative",
+        "path": "/api/backend/document-runs",
+        "status": 422
+      },
+      {
+        "phase": "expected-negative",
+        "path": "/api/backend/document-runs",
+        "status": 415
+      }
+    ],
+    "externalRequests": [],
+    "requestFailures": []
+  },
+  "overall": "PASS",
+  "mobilePlanGeometry": {
+    "viewport": 390,
+    "width": 390,
+    "outside": 0,
+    "overlaps": []
+  },
+  "mobileSuccessGeometry": {
+    "viewport": 390,
+    "width": 390,
+    "outside": 0,
+    "overlaps": []
+  },
+  "finishedAt": "2026-10-15T02:47:36.503Z",
+  "serverLogScan": {
+    "status": "PASS",
+    "filesScanned": 2,
+    "tokenOrFixtureContentFound": false,
+    "scope": "Exact fixture text lines, failure marker and ephemeral token; not a general privacy audit"
+  },
+  "cleanup": {
+    "serversStopped": true,
+    "ports3000And8080Closed": true,
+    "temporaryDatabaseDownloadsLogsTokenAndToolDirectoryRemoved": true,
+    "retained": "Only sanitized screenshots, summaries and test stdout"
+  }
+}

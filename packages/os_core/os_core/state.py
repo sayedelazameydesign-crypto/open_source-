@@ -13,7 +13,15 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from os_core.types import Artifact, Message, ModelChoice, PlanStep, StepStatus, ToolResult
+from os_core.types import (
+    Artifact,
+    ExecutionInfo,
+    Message,
+    ModelChoice,
+    PlanStep,
+    StepStatus,
+    ToolResult,
+)
 
 
 class RunStatus(StrEnum):
@@ -47,6 +55,7 @@ class RunState(BaseModel):
     finished_at: str | None = None
     error: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    execution: ExecutionInfo = Field(default_factory=ExecutionInfo)
 
     # -- step access ----------------------------------------------------
     def get_step(self, step_id: str) -> PlanStep | None:
@@ -95,6 +104,13 @@ class RunState(BaseModel):
             "run_id": self.run_id,
             "status": self.status.value,
             "mode": self.mode,
+            "execution": self.execution.model_dump(),
+            "recorded_tool_results": len(self.results),
+            "tool_results_summary": {
+                "recorded": len(self.results),
+                "successful": sum(r.ok for r in self.results),
+                "unsuccessful": sum(not r.ok for r in self.results),
+            },
             "task": self.task,
             "steps_used": self.steps_used,
             "tokens_used": self.tokens_used,

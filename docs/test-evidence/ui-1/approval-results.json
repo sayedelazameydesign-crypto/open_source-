@@ -1,0 +1,21 @@
+{
+  "tests": [
+    {
+      "name": "actual QueueApprover approved via unchanged API + no-op test tool",
+      "kind": "real-runtime-test-fixture",
+      "status": "PASS"
+    },
+    {
+      "name": "actual QueueApprover denied via unchanged API + no-op test tool",
+      "kind": "real-runtime-test-fixture",
+      "status": "PASS"
+    }
+  ],
+  "pageErrors": [],
+  "unexpectedHttpErrors": [],
+  "externalRequests": [],
+  "startedAt": "2026-10-15T03:55:44.287Z",
+  "overall": "PASS",
+  "browser": "153.0.8010.0",
+  "finishedAt": "2026-10-15T03:55:45.223Z"
+}
