@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 
-> **665 اختبارًا ناجحًا · 0 فشل · دون مفاتيح API ودون شبكة.**
+> **835 اختبارًا ناجحًا · 0 فشل · دون مفاتيح API ودون شبكة.**
 
 ---
 
@@ -54,13 +54,16 @@ python -m os_server.cli serve --demo --host 0.0.0.0 --port 8080
 | **الذكاء المحلي** | `LocalAIEngine` على CPU (NLP عربي/إنجليزي، بحث دلالي هجين، تعلّم آلة، فحص صور، OCR مستندات، تحليل صوت WAV) |
 | **النقل** | FastAPI: REST + WebSocket (مع تذاكر أحادية الاستخدام) + SSE + `/api/*` + `/cela/v1` + `CelaBrowser` |
 | **سجل النتائج** | `RunLedger`: سطر JSONL دائم **لكل** تنفيذ (نجاح/فشل/ميزانية/انقطاع) + ملخّص إجمالي (معدّل النجاح، p50/p95)، عبر `/ledger` و`/cela/v1/ledger` |
+| **الذاكرة والمعرفة** | `os_memory` (بوابة كتابة تفحص الحقن والأسرار **قبل** التخزين + خصم موثوقية) و`os_know` (تقطيع حتمي + اقتباس مُتحقَّق منه بـ`sha256`) — محليّتان بالكامل، بلا تبعية جديدة، ومُفعَّلتان بالعنوان فقط |
 
 البنية الكاملة: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · الـ API الخاص: [`docs/CELA_API.md`](docs/CELA_API.md) ·
 القرارات: [`adr/`](adr) · ما تبقّى: [`docs/ROADMAP.md`](docs/ROADMAP.md)
 ربط Agent Mode بـ GitHub: [`docs/arena-github-integration.md`](docs/arena-github-integration.md)
 دمج ArtCraft Launcher (مضيف + محوّل): [`docs/CRAFT_LAUNCHER_PLAN.md`](docs/CRAFT_LAUNCHER_PLAN.md)
 توسيع القدرات (ذاكرة/معرفة/مهارات/مراقبة): [`docs/INTEGRATIONS_PLAN.md`](docs/INTEGRATIONS_PLAN.md) —
-**خطة غير مُنفَّذة** بمعايير خروج ومرشّحات فُحصت من مصدرها؛ القرار المقترح في مسودة `adr/0016`.
+المراحل ٠–٤ **مُنفَّذة بمعاييرها** (القرار مُعتمَد في `adr/0016`)، والمرحلتان ٥ و٦ **مؤجَّلتان بقرار مُعلَن**:
+محوّلات المزوّدين تحتاج خدمة جانبية، وقناة Graphify لا مستودع كود في CI يستدعيها.
+أرقام الاسترجاع المقيسة — ومنها **ما لا يُظهر تحسّنًا** — في §١٠-أ من نفس الملف.
 
 ## مصادقة API والـ API الخاص (`cela_use_browser`)
 
@@ -128,7 +131,7 @@ packages/
 ## الاختبار
 
 ```bash
-pytest -q          # 665 passed (2 اختبارات مُعلَّقة اختياريًا: playwright, psycopg)
+pytest -q          # 835 passed, 1 skipped (اختبار مخزن موزّع يتخطّى حين يكون psycopg مثبَّت)
 ruff check .       # All checks passed
 ruff format .      # تنسيق موحّد
 ```
@@ -216,6 +219,30 @@ cela reach run github_search "agents" --yes
 وأدوات `craft_list_apps`/`craft_latest_release`/`craft_check_updates` تُسجَّل يدويًا فقط.
 بناء شجرة Rust: `make launcher-test` (CI مستقل: `launcher-ci.yml`). التفاصيل والقرارات:
 [`docs/CRAFT_LAUNCHER_PLAN.md`](docs/CRAFT_LAUNCHER_PLAN.md) · [`adr/0015-craft-launcher-integration.md`](adr/0015-craft-launcher-integration.md).
+
+## طبقتا الذاكرة والمعرفة (`os_memory` · `os_know` — ADR-0016)
+
+المنصة تتذكّر بين الجلسات وتقتبس من مستودعاتك — **بلا خدمة خارجية وبلا تبعية جديدة**. الحزمتان
+اختياريتان في السلوك: بلا `CELA_MEMORY_STORE_URL`/`CELA_KNOW_STORE_URL` تبقى المنصة كما كانت.
+
+| الطبقة | ما تفعله | ما لا تدّعيه |
+|---|---|---|
+| `os_memory` | سجلات `MemoryRecord` (SQLite/Postgres/ذاكرة) + **بوابة كتابة** تفحص الحقن والأسرار قبل التخزين، واسترجاع بخصم ثقةٍ وقِدَم، وتوثيق كل حقن بـ`id` ومنشأ | ليست «ذاكرة محسّنة بالنموذج»: بلا مفتاح لا LLM — القطع مستخرجة بالأدوات ومطابقة مفاهيمية حتمية |
+| `os_know` | تقطيع هيكلي حتمي (1600 حرف سقفًا) + استرجاع مع **اقتباس مُتحقَّق منه** (`sha256` + نطاق أسطر) و`recall@k`/`MRR` على مجموعة ذهبية | **لم تُقَس فائدة ترتيب على متون طويلة** مقابل المستند الكامل؛ المكسب المقيس هو اقتصاد السياق (٥٫٣×) |
+
+```bash
+cela memory remember "أفضِل apt على npm" --key pkg.manager --provenance user
+cela memory recall "أي مدير حزم؟"          # يُحقن موسومًا <untrusted-memory>
+cela know index ./docs --corpus repo && cela know search "سياسة الخروج" --corpus repo
+cela telemetry export --out trace.json     # OTLP/JSON بلا مجموعة جمع؛ ‏--send يحتاج CELA_OTEL_ENDPOINT
+```
+
+**بوابة الكتابة ليست نصيحة:** نصّ من `os_reach` يحمل تعليمة حقن **يُرفض عند التخزين**، وما يمرّ يبقى
+`candidate` لا يُرقَّى تلقائيًا أبدًا. ‏`python_execute` لا يقرأ الذاكرة. والأخطاء في الطبقتين **لا تُفشل
+تشغيلًا** — تُسجَّل كتحوّط وتُمضَى الجلسة. التفاصيل: [الخطة وأرقامها](docs/INTEGRATIONS_PLAN.md) ·
+[القرار](adr/0016-memory-and-retrieval-layer.md).
+
+---
 
 ## حدود صادقة
 

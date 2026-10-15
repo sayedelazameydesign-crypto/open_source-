@@ -16,6 +16,7 @@ import argparse
 import asyncio
 import json
 import os
+import pathlib
 import sys
 import uuid
 from typing import Any
@@ -289,6 +290,270 @@ def _reach_run(channel: str, query: str, *, assume_yes: bool) -> int:
     return 0
 
 
+#: Where OTLP goes. Read at call time — the destination is operator configuration,
+#: never a model argument (see os_server.otel for why that distinction is load-bearing).
+ENV_OTEL = "CELA_OTEL_ENDPOINT"
+
+
+# ─────────────────────────── memory / know / telemetry (ADR-0016) ───────────────────────────
+def _store_url(flag: str | None, env: str, label: str) -> str | None:
+    """Flag first, environment second, and *nothing* if neither is set.
+
+    A default path would be convenient and wrong: durable state that silently
+    lands in a throwaway location is indistinguishable from durable state that
+    was lost, so the operator has to name the store at least once.
+    """
+    url = (flag or os.environ.get(env) or "").strip()
+    if not url:
+        print(
+            f"error: no {label} store — pass --store-url sqlite:///<path> or set {env}",
+            file=sys.stderr,
+        )
+        return None
+    return url
+
+
+def _memory_layer(store_url: str | None):
+    from os_tools.local_ai import LocalAIEngine
+
+    from os_memory import MemoryManager, memory_store_from_url
+
+    url = _store_url(store_url, "CELA_MEMORY_STORE_URL", "memory")
+    if url is None:
+        return None
+    return MemoryManager(memory_store_from_url(url), LocalAIEngine())
+
+
+def _know_layer(store_url: str | None):
+    from os_tools.local_ai import LocalAIEngine
+
+    from os_know import KnowRetriever, know_store_from_url
+
+    url = _store_url(store_url, "CELA_KNOW_STORE_URL", "knowledge")
+    if url is None:
+        return None
+    store = know_store_from_url(url)
+    return store, KnowRetriever(store, LocalAIEngine(), min_score=0.01)
+
+
+def _memory_stats(manager, *, as_json: bool) -> int:
+    report = manager.report()
+    print(
+        json.dumps(report, ensure_ascii=False, indent=2)
+        if as_json
+        else json.dumps(report["by_status"])
+    )
+    return 0
+
+
+def _memory_list(manager, *, as_json: bool) -> int:
+    records = manager.list_records()
+    if as_json:
+        print(
+            json.dumps(
+                [
+                    {
+                        "memory_id": r.memory_id,
+                        "status": r.status.value,
+                        "kind": r.kind.value,
+                        "provenance": r.provenance.value,
+                        "trust": r.trust.value,
+                        "key": r.key,
+                        "text": r.text,
+                    }
+                    for r in records
+                ],
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+    if not records:
+        print("memory: empty")
+        return 0
+    for record in records:
+        print(
+            f"{record.memory_id}  {record.status.value:<12} {record.provenance.value:<8} "
+            f"{record.trust.value:<9} {record.text[:80]}"
+        )
+    return 0
+
+
+def _memory_remember(manager, text: str, *, key: str, kind: str, provenance: str) -> int:
+    record, decision = manager.remember(text, key=key, kind=kind, provenance=provenance)
+    if record is None:
+        print(f"refused: {decision.reason}", file=sys.stderr)
+        return 1
+    print(
+        f"stored {record.memory_id} status={record.status.value}"
+        + (f" note={decision.reason}" if decision.reason else "")
+        + (f" (+{decision.dropped_chars} chars dropped)" if decision.dropped_chars else "")
+    )
+    return 0
+
+
+def _memory_recall(manager, query: str, *, top_k: int, as_json: bool) -> int:
+    hits = manager.recall(query, top_k=top_k)
+    if as_json:
+        print(
+            json.dumps(
+                [
+                    {
+                        "memory_id": h.record.memory_id,
+                        "score": h.score,
+                        "text": h.record.text,
+                        "provenance": h.record.provenance.value,
+                        "verified": h.record.trust.value == "verified",
+                    }
+                    for h in hits
+                ],
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+    for hit in hits:
+        record = hit.record
+        print(f"[{hit.score:.2f}] {record.provenance.value}/{record.trust.value}  {record.text}")
+    if not hits:
+        print("no matching memory")
+    return 0
+
+
+def _memory_forget(manager, memory_id: str, *, assume_yes: bool) -> int:
+    record = manager.store.get_record(memory_id)
+    if record is None:
+        print(f"nothing stored under {memory_id}", file=sys.stderr)
+        return 1
+    if not assume_yes:
+        print(
+            f"forget {memory_id}: {record.text[:60]!r}\n"
+            "this deletes it permanently (prefer `memory quarantine` for a trust "
+            "decision, which stays auditable). pass --yes to confirm",
+            file=sys.stderr,
+        )
+        return 2
+    print(f"{'forgotten' if manager.forget(memory_id) else 'not found'}: {memory_id}")
+    return 0
+
+
+def _know_index_file(store, path: str, *, corpus_id: str) -> int:
+    from os_know import DocumentInput
+
+    target = pathlib.Path(path)
+    if not target.is_file():
+        print(f"error: not a file: {path}", file=sys.stderr)
+        return 1
+    text = target.read_text(encoding="utf-8", errors="replace")
+    document = store.index_document(
+        DocumentInput(
+            text=text,
+            corpus_id=corpus_id,
+            title=target.stem,
+            source_uri=f"file://{target.resolve()}",
+            mime="text/markdown" if target.suffix in {".md", ".markdown"} else "text/plain",
+            language="python" if target.suffix == ".py" else "",
+        )
+    )
+    print(f"indexed {document.doc_id} in corpus={document.corpus_id} chunks={document.chunk_count}")
+    return 0
+
+
+def _know_search(retriever, query: str, *, corpus: str | None, top_k: int) -> int:
+    hits = retriever.query(query, corpus_ids=[corpus] if corpus else None, top_k=top_k)
+    for hit in hits:
+        flag = " [untrusted web]" if hit.chunk.untrusted else ""
+        print(f"[{hit.score:.2f}] {hit.chunk.citation()}{flag}\n{hit.chunk.text[:400]}\n")
+    if not hits:
+        print("no hits (an unscoped query only reads corpora open to agents)")
+        return 1
+    return 0
+
+
+def _know_eval(
+    store, retriever, golden_path: str, *, k: int, corpus: list[str] | None = None
+) -> int:
+    from os_know import evaluate
+
+    rows: list[dict[str, object]] = []
+    for line in pathlib.Path(golden_path).read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line:
+            rows.append(json.loads(line))
+    report = evaluate(retriever, rows, k=k, corpus_ids=corpus)
+    per_question = report.pop("per_question")
+    print(
+        json.dumps(
+            {**report, "worst": [q for q in per_question if q["recall"] < 1.0][:5]}, indent=2
+        )
+    )
+    return 0 if report["recall_at_k"] >= 0.8 else 1
+
+
+def _telemetry_export(args) -> int:
+    """Offline OTLP/JSON dump from the durable run store — no collector needed.
+
+    Deliberately *not* a live exporter in the CLI: `--send` would make a
+    diagnostic command depend on somebody's collector being up.
+    """
+    from os_server.otel import OtlpJsonExporter, payload_for_run
+    from os_server.storage import run_store_from_url
+
+    url = _store_url(args.store_url, "CELA_RUN_STORE_URL", "run")
+    if url is None:
+        return 2
+    store = run_store_from_url(url)
+    try:
+        run_ids = [args.run_id] if args.run_id else list(store.list_run_ids())[-5:]
+        payloads = []
+        for run_id in run_ids:
+            state = store.get_state(run_id)
+            if state is None:
+                print(f"error: no stored run {run_id!r}", file=sys.stderr)
+                return 1
+            payloads.append(payload_for_run(state, store.list_events(run_id)))
+        exporter_target = os.environ.get(ENV_OTEL)
+        if not payloads:
+            # Nothing stored is not "exported successfully". A diagnostic that
+            # reports success on an empty store teaches the operator to distrust it.
+            print(
+                f"no runs in this store — nothing to export ({len(run_ids)} run id(s))",
+                file=sys.stderr,
+            )
+            return 1
+        if args.send:
+            exporter = OtlpJsonExporter.from_env()
+            if exporter is None:
+                print(f"error: set {ENV_OTEL} to a collector URL first", file=sys.stderr)
+                return 2
+            for payload in payloads:
+                report = asyncio.run(exporter.export(payload))
+                print(f"export ok={report.ok} spans={report.spans} status={report.status_code}")
+                if not report.ok:
+                    return 1
+            return 0
+        merged = {"resourceSpans": [r for p in payloads for r in p["resourceSpans"]]}
+        text = json.dumps(merged, ensure_ascii=False, indent=2)
+        spans = [
+            span
+            for payload in payloads
+            for resource in payload["resourceSpans"]
+            for scope in resource["scopeSpans"]
+            for span in scope["spans"]
+        ]
+        where = f" · destination {exporter_target}" if exporter_target else " · not sent"
+        summary = f"{len(spans)} span(s) from {len(payloads)} run(s) · OTLP/JSON{where}"
+        if args.out:
+            pathlib.Path(args.out).write_text(text + "\n", encoding="utf-8")
+            print(f"wrote {args.out} ({len(text)} chars, {summary})")
+        else:
+            print(text)
+            print(f"# {summary}")
+        return 0
+    finally:
+        store.close()
+
+
 def main(argv: list[str] | None = None) -> int:
     from os_core.ledger import resolve_ledger
 
@@ -337,6 +602,69 @@ def main(argv: list[str] | None = None) -> int:
     reach_run.add_argument("query")
     reach_run.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
 
+    memory = sub.add_parser(
+        "memory", help="long-term memory: stats, list, remember, recall, forget (ADR-0016)"
+    )
+    memory_sub = memory.add_subparsers(dest="memory_command", required=True)
+    memory_store_flag = ["--store-url"]
+    for name in ("stats", "list"):
+        m = memory_sub.add_parser(name, help=f"{name} of the stored memories")
+        m.add_argument(
+            "--store-url", default=None, help="sqlite:///<path> or CELA_MEMORY_STORE_URL"
+        )
+        m.add_argument("--json", action="store_true")
+    m = memory_sub.add_parser("remember", help="store one fact (screened, redacted, capped)")
+    m.add_argument("text")
+    m.add_argument("--key", default="", help="stable subject id, e.g. deploy.target")
+    m.add_argument("--kind", default="fact", choices=["fact", "preference", "episode", "note"])
+    m.add_argument(
+        "--provenance", default="user", choices=["user", "run", "sandbox", "reach", "import"]
+    )
+    m.add_argument("--store-url", default=None, help="sqlite:///<path> or CELA_MEMORY_STORE_URL")
+    m = memory_sub.add_parser("recall", help="what would be injected for a task")
+    m.add_argument("query")
+    m.add_argument("--top-k", type=int, default=3)
+    m.add_argument("--json", action="store_true")
+    m.add_argument("--store-url", default=None, help="sqlite:///<path> or CELA_MEMORY_STORE_URL")
+    m = memory_sub.add_parser("forget", help="permanently delete one memory (needs --yes)")
+    m.add_argument("memory_id")
+    m.add_argument("--yes", action="store_true", help="confirm the deletion")
+    m.add_argument("--store-url", default=None, help="sqlite:///<path> or CELA_MEMORY_STORE_URL")
+    del memory_store_flag
+
+    know = sub.add_parser("know", help="document corpus: index, search, eval (ADR-0016)")
+    know_sub = know.add_subparsers(dest="know_command", required=True)
+    k = know_sub.add_parser("index", help="index one file into a corpus")
+    k.add_argument("path")
+    k.add_argument("--corpus", default="docs")
+    k.add_argument("--store-url", default=None, help="sqlite:///<path> or CELA_KNOW_STORE_URL")
+    k = know_sub.add_parser("search", help="query the corpus (citations included)")
+    k.add_argument("query")
+    k.add_argument("--corpus", default=None)
+    k.add_argument("--top-k", type=int, default=5)
+    k.add_argument("--store-url", default=None, help="sqlite:///<path> or CELA_KNOW_STORE_URL")
+    k = know_sub.add_parser("eval", help="recall@k / MRR against a golden JSONL set")
+    k.add_argument("--golden", required=True, help='JSONL: {"q": ..., "docs": [...]}')
+    k.add_argument("--corpus", default=None, help="restrict scoring to these corpora")
+    k.add_argument("--k", type=int, default=5)
+    k.add_argument("--store-url", default=None, help="sqlite:///<path> or CELA_KNOW_STORE_URL")
+
+    telemetry = sub.add_parser(
+        "telemetry", help="export stored runs as OTLP/JSON (Langfuse, Phoenix, Tempo, Jaeger)"
+    )
+    tel_sub = telemetry.add_subparsers(dest="export", required=True)
+    tel_export = tel_sub.add_parser("export", help="convert stored runs and send or write them")
+    tel_export.add_argument("--run-id", default=None, help="one run; default: the last five stored")
+    tel_export.add_argument("--out", default=None, help="write JSON here instead of stdout")
+    tel_export.add_argument(
+        "--send",
+        action="store_true",
+        help=f"POST to the collector in {ENV_OTEL} instead of printing",
+    )
+    tel_export.add_argument(
+        "--store-url", default=None, help="sqlite:///<path> or CELA_RUN_STORE_URL"
+    )
+
     args = parser.parse_args(argv)
 
     if args.command == "ledger":
@@ -360,6 +688,36 @@ def main(argv: list[str] | None = None) -> int:
         if args.reach_command == "enable":
             return _reach_enable(args.channel, assume_yes=args.yes, allow_auth=args.allow_auth)
         return _reach_run(args.channel, args.query, assume_yes=args.yes)
+
+    if args.command == "memory":
+        manager = _memory_layer(args.store_url)
+        if manager is None:
+            return 2
+        if args.memory_command == "stats":
+            return _memory_stats(manager, as_json=args.json)
+        if args.memory_command == "list":
+            return _memory_list(manager, as_json=args.json)
+        if args.memory_command == "remember":
+            return _memory_remember(
+                manager, args.text, key=args.key, kind=args.kind, provenance=args.provenance
+            )
+        if args.memory_command == "recall":
+            return _memory_recall(manager, args.query, top_k=args.top_k, as_json=args.json)
+        return _memory_forget(manager, args.memory_id, assume_yes=args.yes)
+
+    if args.command == "know":
+        layer = _know_layer(args.store_url)
+        if layer is None:
+            return 2
+        store, retriever = layer
+        if args.know_command == "index":
+            return _know_index_file(store, args.path, corpus_id=args.corpus)
+        if args.know_command == "search":
+            return _know_search(retriever, args.query, corpus=args.corpus, top_k=args.top_k)
+        return _know_eval(store, retriever, args.golden, k=args.k, corpus=args.corpus)
+
+    if args.command == "telemetry":
+        return _telemetry_export(args)
 
     if args.command == "serve":
         from os_server.app import serve

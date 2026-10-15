@@ -104,6 +104,20 @@ def build_registry(
         # build_reach_layer: with neither set the CLI half stays inert and this is
         # the native-only wiring as before.
         register_reach_tools(registry, reach=build_reach_layer())
+    # Memory and corpus tools are opt-in the same way the skill store is: the
+    # store URL's presence *is* the switch. Nothing sets it in CI, so the demo and
+    # every existing test stay hermetic — and no deployment gets a durable memory
+    # layer it did not ask for.
+    memory = demo_memory_manager(engine)
+    if memory is not None:
+        from os_memory import memory_tools
+
+        registry.extend(memory_tools(memory))
+    know = demo_know_layer(engine)
+    if know is not None:
+        from os_know import know_tools
+
+        registry.extend(know_tools(*know))
     return registry, guard, browser
 
 
@@ -184,6 +198,48 @@ def build_demo_platform_for(mode: str, *, interactive: bool = False) -> Platform
 _SKILL_MANAGER = None
 
 
+_MEMORY_MANAGER: Any = None
+_KNOW_LAYER: Any = None
+
+
+def demo_memory_manager(ai_engine: Any = None) -> Any:
+    """Process-wide memory manager when ``CELA_MEMORY_STORE_URL`` is set (ADR-0016).
+
+    Shared for the same reason as the skill manager: the server builds a platform
+    per run, and a manager per platform could never accumulate anything. Every
+    write still passes :class:`os_memory.MemoryGate`.
+    """
+    global _MEMORY_MANAGER
+    url = os.environ.get("CELA_MEMORY_STORE_URL")
+    if not url:
+        return None
+    if _MEMORY_MANAGER is None:
+        from os_tools.local_ai import LocalAIEngine
+
+        from os_memory import MemoryManager, memory_store_from_url
+
+        engine = ai_engine if ai_engine is not None else LocalAIEngine()
+        _MEMORY_MANAGER = MemoryManager(memory_store_from_url(url), engine)
+    return _MEMORY_MANAGER
+
+
+def demo_know_layer(ai_engine: Any = None) -> tuple[Any, Any] | None:
+    """``(store, retriever)`` for ``CELA_KNOW_STORE_URL``; ``None`` when unset."""
+    global _KNOW_LAYER
+    url = os.environ.get("CELA_KNOW_STORE_URL")
+    if not url:
+        return None
+    if _KNOW_LAYER is None:
+        from os_tools.local_ai import LocalAIEngine
+
+        from os_know import KnowRetriever, know_store_from_url
+
+        engine = ai_engine if ai_engine is not None else LocalAIEngine()
+        store = know_store_from_url(url)
+        _KNOW_LAYER = (store, KnowRetriever(store, engine))
+    return _KNOW_LAYER
+
+
 def demo_skill_manager():
     """One process-wide skill manager when ``CELA_SKILL_STORE_URL`` is set.
 
@@ -214,4 +270,5 @@ def build_demo_platform(*, mode: str = "auto", interactive: bool = False) -> Pla
         router=ModelRouter(config=RouterConfig(token_budget=50_000)),
         approver=QueueApprover(timeout=60.0) if interactive else QueueApprover(timeout=1.0),
         skill_manager=demo_skill_manager(),
+        memory_manager=demo_memory_manager(),
     )

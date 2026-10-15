@@ -37,10 +37,17 @@ User UI (Next.js split-view)  ← WebSockets / SSE
 | `os_agents` | حلقة ReAct، مخطط DAG، الميزانية، المراجع | `react.py`, `flow.py`, `dag.py`, `budget.py`, `reviewer.py` |
 | `os_tools` | تنفيذ الكود المعزول، المتصفح، حارس SSRF، سياسة الخروج، الذكاء المحلي، سجل الأدوات | `code_exec.py`, `browser.py`, `ssrf.py`, `egress.py`, `local_ai.py`, `registry.py`, `mcp.py` |
 | `os_orchestration` | واجهة المنصة واختيار الوضع | `platform.py` |
-| `os_server` | REST/WS/SSE + `/cela/v1` + `CelaBrowser` + CLI + حزمة العرض دون مفاتيح | `app.py`, `runtime.py`, `cela.py`, `cli.py`, `demo.py` |
+| `os_server` | REST/WS/SSE + `/cela/v1` + `CelaBrowser` + CLI + حزمة العرض دون مفاتيح + تصدير OTLP | `app.py`, `runtime.py`, `cela.py`, `cli.py`, `demo.py`, `otel.py` |
+| `os_memory` (ADR-0016) | ذاكرة دائمة **بوّابتُها أصدقُ من ذاكرتها**: `MemoryRecord` + مخزن (ذاكرة/SQLite/Postgres) + بوابة كتابة تفحص الحقن والأسرار قبل التخزين + استرجاع بخصم ثقة/قِدَم | `types.py`, `gate.py`, `store.py`, `retriever.py`, `manager.py`, `tools.py` |
+| `os_know` (ADR-0016) | مستودع مستندات: تقطيع هيكلي حتمي + استرجاع باقتباس **مُتحقَّق منه** (`sha256` + نطاق أسطر) + `recall@k`/`MRR` | `chunking.py`, `store.py`, `retrieve.py`, `metrics.py`, `tools.py` |
 
 لا يوجد تبعيات دائمة بين `os_tools` و `os_agents` — يلتقيان فقط عبر
 `ToolRegistry` و `ChatModel`، لذا يمكن استبدال أي طبقة وحدها.
+
+**الطبقتان الجديدتان لا تستوردهما المنصة ولا الخادم.** ‏`Platform` يستقبل `memory_manager` بـduck-typing
+(مثل `skill_manager`)، و`build_registry` يضيف أدواتهما **عند وجود عنوان مخزن فقط** — فلا استيراد متبادل،
+ولا شبكة عند غياب الإعداد، ولا سطر في `os_core` يعرف شيئًا عن الذاكرة. والقاعدة المقابلة مكتوبة في
+الاختبار: **خطأ في الذاكرة لا يُفشل تشغيلًا** (القراءة والكتابة داخل `try` مع تحذير مسجَّل).
 
 ### السطحان البرمزيان
 
