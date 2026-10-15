@@ -59,6 +59,10 @@ windows, not a rate limit on all snapshot requests.
 
 ## Hosted checks
 
-The replacement PR records Python CI, Web CI and a manually dispatched Launcher
-CI run on its own head. Hosted status must be read from those actual runs; the
-older successful run on PR #21's previous head is not evidence for this branch.
+The replacement PR records the actual Python CI and Web CI results. Manual
+Launcher CI dispatch was attempted for this branch, but GitHub returned **403:
+Resource not accessible by integration**. No Launcher CI success is claimed for
+this head, and the corresponding follow-up remains unchecked. A collaborator
+with Actions write permission must dispatch `launcher-ci.yml` on
+`arena/8b3f0531-open-source`. The older success on PR #21's previous head is not
+evidence for this branch.
