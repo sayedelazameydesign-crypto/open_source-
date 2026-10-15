@@ -84,7 +84,7 @@ async def generate_response(request: PromptRequest, api_key: str = Security(get_
 
 ## 5. الكود المصحح والمؤمن (Production-Ready Code)
 
-إليك النسخة المصححة من ملف `main.py` التي تصلح خطأ الاستيراد وتعتمد على متغيرات البيئة لمفتاح الـ API:
+إليك النسخة النهائية من ملف `main.py` بمبدأ الفشل المبكر (Fail-Fast): يتوقف الخادم عند بدء التشغيل إذا لم يُضبط متغير البيئة `CUSTOM_API_KEY`، ولا توجد قيمة افتراضية ثابتة للمفتاح:
 
 ```python
 import os
@@ -92,10 +92,13 @@ from fastapi import FastAPI, HTTPException, Security
 from fastapi.security.api_key import APIKeyHeader
 from pydantic import BaseModel
 
-app = FastAPI(title="Celia Custom AI API", version="1.0.1")
+app = FastAPI(title="Celia Custom AI API", version="1.0.2")
 
-# تحميل مفتاح API من متغيرات البيئة (Environment Variables) لأمان أعلى
-API_KEY = os.getenv("CUSTOM_API_KEY", "my_secure_custom_api_key_2026")
+# مبدأ الفشل المبكر (Fail-Fast): إيقاف التشغيل فوراً إذا كان مفتاح البيئة مفقوداً
+API_KEY = os.getenv("CUSTOM_API_KEY")
+if not API_KEY:
+    raise RuntimeError("CRITICAL SECURITY ERROR: CUSTOM_API_KEY environment variable is missing. Server startup aborted.")
+
 API_KEY_NAME = "X-API-Key"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
@@ -110,11 +113,10 @@ def get_api_key(api_key_val: str = Security(api_key_header)):
 
 @app.post("/v1/generate")
 async def generate_response(request: PromptRequest, api_key: str = Security(get_api_key)):
-    # هيكل استجابة قياسي جاهز للربط مع نموذج حقيقي أو Hugging Face Inference Client
     return {
         "status": "success",
         "model": "custom-edge-model-v1",
         "prompt_received": request.prompt,
-        "output": f"تمت المعالجة بنجاح عبر الـ API الخاص: {request.prompt}"
+        "output": f"تمت المعالجة بأمان تام عبر الـ API الخاص: {request.prompt}"
     }
 ```
