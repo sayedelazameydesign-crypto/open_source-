@@ -7,6 +7,8 @@ import time
 
 import pytest
 
+from conftest import await_until, wait_until
+
 fastapi_testclient = pytest.importorskip("fastapi.testclient")
 TestClient = fastapi_testclient.TestClient
 
@@ -52,13 +54,7 @@ def test_unknown_run_is_404(client: TestClient) -> None:
 
 def test_run_snapshot_after_completion(client: TestClient) -> None:
     run_id = client.post("/runs", json={"task": "Sum 0..100", "mode": "react"}).json()["run_id"]
-    for _ in range(100):
-        body = client.get(f"/runs/{run_id}").json()
-        if body.get("status") in {"completed", "failed"}:
-            break
-        import time
-
-        time.sleep(0.05)
+    body = _wait_for_terminal_snapshot(client, run_id)
     assert body["status"] == "completed", body
     assert "5050" in body["final_answer"]
     assert body["mode"] == "react"
@@ -87,13 +83,15 @@ def test_websocket_streams_events(client: TestClient) -> None:
     assert any("run_finished" in m for m in seen)
 
 
+def _terminal(snapshot: dict) -> dict | None:
+    return snapshot if snapshot.get("status") in {"completed", "failed"} else None
+
+
 def _wait_for_terminal_snapshot(client: TestClient, run_id: str) -> dict:
-    for _ in range(200):
-        body = client.get(f"/runs/{run_id}").json()
-        if body.get("status") in {"completed", "failed"}:
-            return body
-        time.sleep(0.05)
-    raise AssertionError(f"run never reached a terminal state: {body}")
+    return wait_until(
+        lambda: _terminal(client.get(f"/runs/{run_id}").json()),
+        what=f"run {run_id} reaching a terminal state",
+    )
 
 
 def _buffered_event_ids(client: TestClient, run_id: str) -> list[str]:
@@ -394,7 +392,6 @@ def test_ws_ticket_is_bound_to_its_run_id(anonymous_client: TestClient) -> None:
 
 
 def test_ws_ticket_expires_after_ttl(platform_factory) -> None:
-    import time
 
     from starlette.websockets import WebSocketDisconnect
 
@@ -536,11 +533,7 @@ async def test_real_socket_e2e_bearer_and_ws_ticket(platform_factory) -> None:
 
     serve_task = asyncio.create_task(server.serve(sockets=[sock]))
     try:
-        for _ in range(200):
-            if server.started:
-                break
-            await asyncio.sleep(0.01)
-        assert server.started
+        await await_until(lambda: server.started, what="uvicorn accepting connections")
 
         base_http = f"http://127.0.0.1:{port}"
         base_ws = f"ws://127.0.0.1:{port}"

@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import await_until
+
 fastapi_testclient = pytest.importorskip("fastapi.testclient")
 TestClient = fastapi_testclient.TestClient
 
@@ -622,11 +624,10 @@ async def test_interactive_hitl_approval_through_facade() -> None:
     started = await browser.browse("https://example.org/search", "Run dangerous step")
     run_id = started["run_id"]
 
-    for _ in range(100):
-        snap = browser.get_run(run_id)
-        if snap.get("pending_approvals"):
-            break
-        await asyncio.sleep(0.01)
+    # Event-driven: wait for the prompt itself, then check the facade shows it.
+    prompt = await asyncio.wait_for(plat.approver.wait_for_request(), 5.0)
+    assert prompt.id == "call_hitl_1"
+    assert browser.get_run(run_id).get("pending_approvals")
 
     delivered = browser.approve(run_id, "call_hitl_1", "approved")
     assert delivered == {"delivered": True}
@@ -815,11 +816,7 @@ async def test_real_socket_e2e_dual_surface_and_dual_tokens(platform_factory) ->
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
     serve_task = asyncio.create_task(server.serve(sockets=[sock]))
     try:
-        for _ in range(200):
-            if server.started:
-                break
-            await asyncio.sleep(0.01)
-        assert server.started
+        await await_until(lambda: server.started, what="uvicorn accepting connections")
 
         p_headers = {"Authorization": f"Bearer {PLATFORM_TOKEN}"}
         c_headers = {"Authorization": f"Bearer {PRIVATE_TOKEN}"}

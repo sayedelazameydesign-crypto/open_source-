@@ -118,6 +118,7 @@ class QueueApprover(BaseApprover):
     default_on_timeout: ApprovalDecision = ApprovalDecision.DENIED
     _pending: dict[str, asyncio.Future[ApprovalDecision]] = PrivateAttr(default_factory=dict)
     _prompts: list[ToolCall] = PrivateAttr(default_factory=list)
+    _arrivals: list[asyncio.Future[ToolCall]] = PrivateAttr(default_factory=list)
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -125,11 +126,39 @@ class QueueApprover(BaseApprover):
     def pending(self) -> list[ToolCall]:
         return list(self._prompts)
 
+    async def wait_for_request(self) -> ToolCall:
+        """Block until a prompt is pending and return it.
+
+        The event-driven counterpart of polling :attr:`pending`: a UI (or a test)
+        that wants the *next* approval prompt awaits this instead of sleeping in
+        a loop. An already-pending prompt is returned immediately, so there is
+        no window between "the agent asked" and "the waiter started listening".
+        The caller owns the deadline (``asyncio.timeout`` / ``wait_for``); a
+        cancelled waiter is simply forgotten.
+        """
+        if self._prompts:
+            return self._prompts[0]
+        loop = asyncio.get_running_loop()
+        waiter: asyncio.Future[ToolCall] = loop.create_future()
+        self._arrivals.append(waiter)
+        try:
+            return await waiter
+        finally:
+            if waiter in self._arrivals:
+                self._arrivals.remove(waiter)
+
+    def _announce(self, call: ToolCall) -> None:
+        waiters, self._arrivals = self._arrivals, []
+        for waiter in waiters:
+            if not waiter.done():
+                waiter.set_result(call)
+
     async def request(self, call: ToolCall, risk: RiskLevel, reason: str) -> ApprovalDecision:
         loop = asyncio.get_running_loop()
         future: asyncio.Future[ApprovalDecision] = loop.create_future()
         self._pending[call.id] = future
         self._prompts.append(call)
+        self._announce(call)
         try:
             decision = await asyncio.wait_for(future, timeout=self.timeout)
         except TimeoutError:

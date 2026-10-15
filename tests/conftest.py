@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
+from collections.abc import Awaitable, Callable
+from typing import TypeVar
+
 import pytest
 from os_core.events import EventBus
 from os_core.ledger import LEDGER_ENV_VAR
@@ -12,6 +17,60 @@ from os_tools.browser import BrowserTool, FakeBrowser, PageSnapshot, RetryPolicy
 from os_tools.code_exec import LocalSubprocessBackend, python_execute_tool
 from os_tools.registry import ToolRegistry
 from os_tools.ssrf import SSRFGuard
+
+T = TypeVar("T")
+
+#: One ceiling for every bounded wait in the suite. Generous on purpose: a wait
+#: is a *ceiling*, never the thing under test — a slow CI runner may take longer
+#: than a laptop, and the assertion must not be "the machine was fast enough".
+WAIT_CEILING = 10.0
+
+
+def wait_until(
+    probe: Callable[[], T],
+    *,
+    what: str,
+    ceiling: float = WAIT_CEILING,
+    interval: float = 0.02,
+) -> T:
+    """Poll ``probe`` until it returns a truthy value; fail with the ceiling named.
+
+    For synchronous surfaces (``TestClient``). Prefer an event-driven wait when
+    the component offers one (``QueueApprover.wait_for_request``, futures,
+    ``server.started`` …); use this only where the only signal is a snapshot.
+    """
+    deadline = time.monotonic() + ceiling
+    value = probe()
+    while not value:
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                f"{what}: not reached within the {ceiling:.0f}s ceiling ({value!r})"
+            )
+        time.sleep(interval)
+        value = probe()
+    return value
+
+
+async def await_until(
+    probe: Callable[[], T | Awaitable[T]],
+    *,
+    what: str,
+    ceiling: float = WAIT_CEILING,
+    interval: float = 0.01,
+) -> T:
+    """Async twin of :func:`wait_until`; ``probe`` may be sync or async."""
+    deadline = time.monotonic() + ceiling
+    while True:
+        value = probe()
+        if asyncio.iscoroutine(value) or isinstance(value, asyncio.Future):
+            value = await value  # type: ignore[assignment]
+        if value:
+            return value  # type: ignore[return-value]
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                f"{what}: not reached within the {ceiling:.0f}s ceiling ({value!r})"
+            )
+        await asyncio.sleep(interval)
 
 
 @pytest.fixture(autouse=True)
