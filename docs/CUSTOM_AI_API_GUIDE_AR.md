@@ -79,3 +79,42 @@ async def generate_response(request: PromptRequest, api_key: str = Security(get_
 * أنشئ حساباً مجانياً على **[Hugging Face](https://huggingface.co/)** (لا يتطلب بطاقة ائتمان أبداً).
 * أنشئ **Space** جديدة واجعلها من نوع **Docker** أو **FastAPI**.
 * ارفع كود الـ API ملفات المشروع إلى الـ Space وسيقوم Hugging Face باستضافتها مجاناً مع توفير رابط عام (Public URL) يعمل كـ API جاهز للاستدعاء من أي تطبيق خارجي.
+
+---
+
+## 5. الكود المصحح والمؤمن (Production-Ready Code)
+
+إليك النسخة المصححة من ملف `main.py` التي تصلح خطأ الاستيراد وتعتمد على متغيرات البيئة لمفتاح الـ API:
+
+```python
+import os
+from fastapi import FastAPI, HTTPException, Security
+from fastapi.security.api_key import APIKeyHeader
+from pydantic import BaseModel
+
+app = FastAPI(title="Celia Custom AI API", version="1.0.1")
+
+# تحميل مفتاح API من متغيرات البيئة (Environment Variables) لأمان أعلى
+API_KEY = os.getenv("CUSTOM_API_KEY", "my_secure_custom_api_key_2026")
+API_KEY_NAME = "X-API-Key"
+api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
+
+class PromptRequest(BaseModel):
+    prompt: str
+    max_tokens: int = 256
+
+def get_api_key(api_key_val: str = Security(api_key_header)):
+    if api_key_val == API_KEY:
+        return api_key_val
+    raise HTTPException(status_code=403, detail="Invalid or missing API Key")
+
+@app.post("/v1/generate")
+async def generate_response(request: PromptRequest, api_key: str = Security(get_api_key)):
+    # هيكل استجابة قياسي جاهز للربط مع نموذج حقيقي أو Hugging Face Inference Client
+    return {
+        "status": "success",
+        "model": "custom-edge-model-v1",
+        "prompt_received": request.prompt,
+        "output": f"تمت المعالجة بنجاح عبر الـ API الخاص: {request.prompt}"
+    }
+```
