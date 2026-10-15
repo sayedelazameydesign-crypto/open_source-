@@ -1,7 +1,8 @@
 """os_launcher — the Craft App Suite (ArtCraft Launcher) adapter for the platform.
 
 Adopted from `storytold/craft-launcher <https://github.com/storytold/craft-launcher>`_
-(MIT OR Apache-2.0), vendored at ``packages/craft-launcher`` (see ``VENDORED.md``).
+(MIT OR Apache-2.0), vendored at ``packages/craft-launcher`` — see
+``docs/VENDORED-craft-launcher.md`` for the hosting terms and the integrity manifest.
 Following the platform's adapter precedent (ADR-0013 for Agent-Reach, ADR-0015
 for this): the *contract* and the *policy* live here, the Rust workspace stays
 upstream-shaped, and nothing is fetched without an

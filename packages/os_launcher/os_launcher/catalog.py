@@ -6,7 +6,7 @@ copy; this module is the platform's built-in copy of the same data, so an agent
 can answer "what is in the suite?" without compiling Rust.
 
 Nothing here touches the network. Keep the mirror in step with the vendored
-``catalog.rs`` when updating ``packages/craft-launcher`` (see ``VENDORED.md``):
+``catalog.rs`` when updating ``packages/craft-launcher`` (see ``docs/VENDORED-craft-launcher.md``):
 the tests assert the structural invariants (13 apps, ``repo == storytold/<id>``,
 PdfCraft's former ``printcraft`` identity) that the Rust ``SUITE`` test asserts.
 """

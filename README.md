@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 
-> **916 اختبارًا ناجحًا · 0 فشل · دون مفاتيح API ودون شبكة.**
+> **934 اختبارًا ناجحًا · 0 فشل · دون مفاتيح API ودون شبكة.**
 
 ---
 
@@ -132,7 +132,7 @@ packages/
 ## الاختبار
 
 ```bash
-pytest -q          # 916 passed, 1 skipped (اختبار مخزن موزّع يتخطّى حين يكون psycopg مثبَّت)
+pytest -q          # 934 passed, 1 skipped (اختبار مخزن موزّع يتخطّى حين يكون psycopg مثبَّت)
 ruff check .       # All checks passed
 ruff format .      # تنسيق موحّد
 ```
@@ -273,7 +273,7 @@ cela mcp serve --demo                    # الاتجاه الآخر: المنص
 ## ArtCraft Launcher — استضافة + محوّل قراءة فقط
 
 شجرة Rust طبق الأصل من [`storytold/craft-launcher`](https://github.com/storytold/craft-launcher)
-تُستضاف في `packages/craft-launcher/` ([`VENDORED.md`](packages/craft-launcher/VENDORED.md))،
+تُستضاف في `packages/craft-launcher/` ([شروط الاستضافة](docs/VENDORED-craft-launcher.md))،
 وحزمة `os_launcher` تقرأ **كتالوج Craft App Suite وإصداراته** فقط (قراءة — لا تنزيل
 ولا تثبيت) عبر `EgressPolicy` بأربعة مضيفين مسموحين فوق أرضية SSRF. الأسطح
 (`GET /api/launcher/catalog`، `GET /api/launcher/apps/{id}/release`، `POST /api/launcher/check`
@@ -281,6 +281,13 @@ cela mcp serve --demo                    # الاتجاه الآخر: المنص
 وأدوات `craft_list_apps`/`craft_latest_release`/`craft_check_updates` تُسجَّل يدويًا فقط.
 بناء شجرة Rust: `make launcher-test` (CI مستقل: `launcher-ci.yml`). التفاصيل والقرارات:
 [`docs/CRAFT_LAUNCHER_PLAN.md`](docs/CRAFT_LAUNCHER_PLAN.md) · [`adr/0015-craft-launcher-integration.md`](adr/0015-craft-launcher-integration.md).
+
+> **لا تعدّل شيئًا داخل `packages/craft-launcher/` — ولا ملفًا واحدًا.** «طبق الأصل»
+> ليست وصفًا بل **خاصية مُختبَرة**: كل ملف من الـ198 مُسجَّل ببصمة `sha256` في
+> [`docs/vendored/craft-launcher.sha256`](docs/vendored/craft-launcher.sha256)، وأي
+> إضافة أو حذف أو تعديل يُفشل `make check`. السبب ليس تنظيميًا: إذن استعمال شعارات
+> ArtCraft يغطي الشجرة **ما دامت نسخة غير معدَّلة**، ويسقط تلقائيًا لو لم تكن.
+> التغيير يُقترح أعلى أولًا، ثم `make vendored-write COMMIT=<sha>`.
 
 ## طبقتا الذاكرة والمعرفة (`os_memory` · `os_know` — ADR-0016)
 
@@ -342,6 +349,43 @@ cela telemetry export --out trace.json     # OTLP/JSON بلا مجموعة جم�
   (لا `resources`/`prompts`/`sampling`/OAuth)، وقائمة الأدوات تُثبَّت عند الإقلاع — التحديث الساخن
   مؤجَّل صراحة (ADR-0017).
 
-## الترخيص
+## الترخيص وطرف ثالث
 
-[MIT](LICENSE) — راجع [`CONTRIBUTING.md`](CONTRIBUTING.md) قبل المساهمة.
+**[MIT](LICENSE)** — للكود المكتوب هنا. راجع [`CONTRIBUTING.md`](CONTRIBUTING.md) قبل المساهمة.
+
+رخصة الجذر **لا تغطي كل ما في هذا الـcheckout**. النطاق الكامل، مادةً بمادة:
+**[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)**.
+
+| ما هنا | الرخصة | ملاحظة |
+|---|---|---|
+| `packages/os_*`, `tests/`, `docs/`, `scripts/` | **MIT** | كودنا |
+| `packages/craft-launcher/` | **MIT OR Apache-2.0** | نسخة طبق الأصل من [`storytold/craft-launcher`](https://github.com/storytold/craft-launcher) @ `0f295d4b` — مُتحقَّق منها ببصمة `sha256` لكل ملف. [شروط الاستضافة](docs/VENDORED-craft-launcher.md) |
+| الشعارات داخلها (`docs/brand/`, `assets/app-icon/`) | **ليست مفتوحة المصدر** | علامة ArtCraft التجارية — موجودة هنا لأن نسختنا **غير معدَّلة**. أي fork يُعدِّل الشجرة **يجب أن يزيلها**: `make defork-launcher ARGS="--i-am-forking --dry-run"` |
+| `psycopg` (extra `distributed` الاختياري) | **LGPL-3.0-only** | التبعية غير المتساهلة الوحيدة — مستورَدة كمكتبة، لا تُنسخ ولا تُدمَج |
+
+**هذه الشجرة لا تُوزَّع منا:** مستبعدة صراحةً من الـ`sdist` وغير مُدرجة في الـ`wheel`،
+فلا شيء منشور باسم `cela-use-browser` يحتويها.
+
+### الامتثال مُنفَّذ بفحوصات، لا بفقرات
+
+القاعدة التي لا يفشل شيء عند كسرها ليست قاعدة، إنها تمنّى. القواعد الثمانية
+(T-1…T-8) في **[`docs/THIRD_PARTY_POLICY.md`](docs/THIRD_PARTY_POLICY.md)** — بتصنيفات
+أربعة، وشجرة قرار، وأعلام حمراء، وأمثلة **وقعت فعلًا في هذا المستودع**. القرار
+المعماري: [ADR-0018](adr/0018-third-party-ip-governance.md).
+
+```bash
+make check                     # lint + الاختبارات + فحوصات الامتثال (بلا شبكة)
+make vendored-verify           # الشجرة مقابل البصمة المسجَّلة
+make vendored-verify-upstream  # + إعادة اشتقاق البصمة من النسخة الأصلية (شبكة)
+```
+
+```
+docs/vendored/craft-launcher.sha256
+  files   198
+  digest  sha256:8e008dc770754f3765d0c8e545d9a16dc1224aa9bc6faff21b205719e1470039
+          ← مطابق لـdigest النسخة الأصلية عند 0f295d4b
+```
+
+قبل إضافة أي كود أو أصل أو تبعية من طرف ثالث: **صنِّفه أولًا** (شجرة القرار في
+السياسة)، واذكر المالك والرخصة في وصف الـPR، وأضِف الإشعار في نفس الـPR.
+`«مفتوح المصدر» ليست رخصة` — الشعارات أعلاه تعيش في مستودع مفتوح المصدر وهي ليست مفتوحة المصدر.
