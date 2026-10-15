@@ -23,6 +23,7 @@ from __future__ import annotations
 import os
 import re
 
+from os_core.redact import scrub_credentials as _scrub_credentials
 from os_tools.egress import EgressPolicy, EgressRule
 from os_tools.ssrf import SSRFGuard
 
@@ -41,9 +42,13 @@ def scrub_credentials(text: str) -> str:
 
     Applied at every output boundary (health messages, errors, reports) because
     upstream tooling echoes the URL it was configured with.
+
+    The canonical implementation moved to :mod:`os_core.redact` when memory and
+    knowledge layers needed the same guarantee; this re-export keeps every
+    ``from os_reach.security import scrub_credentials`` call site working, and
+    the two regexes stay here because reach tests pin their exact behaviour.
     """
-    cleaned = _USERINFO_RE.sub(r"\1REDACTED@", str(text))
-    return _SECRET_QUERY_RE.sub(r"\1REDACTED", cleaned)
+    return _scrub_credentials(text)
 
 
 def truncate(text: str, limit: int, *, note: str = "\n[... truncated]") -> str:

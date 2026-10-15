@@ -38,6 +38,10 @@ server = [
     "uvicorn>=0.30",
     "websockets>=13.0",
 ]
+# os_memory and os_know (ADR-0016) deliberately add **no** extra: they are
+# pydantic + httpx only, so `pip install -e ".[dev,server]"` still runs the whole
+# durable-memory corpus offline. A provider that needs its own SDK arrives behind
+# [memory-<provider>] when such an adapter is actually written — not before.
 browser = [
     "playwright>=1.47",
 ]
@@ -88,6 +92,8 @@ packages = [
     "packages/os_skills/os_skills",
     "packages/os_reach/os_reach",
     "packages/os_launcher/os_launcher",
+    "packages/os_memory/os_memory",
+    "packages/os_know/os_know",
     "packages/os_mcp/os_mcp",
 ]
 
@@ -108,6 +114,8 @@ pythonpath = [
     "packages/os_skills",
     "packages/os_reach",
     "packages/os_launcher",
+    "packages/os_memory",
+    "packages/os_know",
     "packages/os_mcp",
     "packages/legacy/src",
 ]
@@ -119,7 +127,7 @@ filterwarnings = ["error::RuntimeWarning"]
 
 [tool.coverage.run]
 branch = true
-source = ["os_core", "os_agents", "os_tools", "os_orchestration", "os_server", "os_evals", "os_skills", "os_reach", "os_launcher", "os_mcp"]
+source = ["os_core", "os_agents", "os_tools", "os_orchestration", "os_server", "os_evals", "os_skills", "os_reach", "os_launcher", "os_memory", "os_know", "os_mcp"]
 
 [tool.ruff]
 line-length = 100

@@ -1,10 +1,14 @@
 # خطة توسيع القدرات: الذاكرة · الاسترجاع · أطر التنفيذ · المهارات · المراقبة
 
-**التاريخ:** 2026-10-14 · **الحالة:** **خطة للاعتماد — لم يُنفَّذ أي سطر كود في هذه الجولة.**
+**التاريخ:** 2026-10-14 · **الحالة (محدَّثة 2026-10-14 بعد التنفيذ):** **المراحل ٠–٤ مُنفَّذة** —
+‏`os_memory` + `os_know` + `SKILL.md` + تصدير OTLP + واجهة سطر أوامر؛ **المرحلتان ٥ و٦ مؤجَّلتان بقرار
+مُعلَن** (لا بطاقة/توثيق عند المشغِّل، ولا مستودع كود في CI). الأرقام المقيسة في **§١٠-أ** أسفل هذا
+الملف — منها رقم **لا** يُظهر تحسّنًا، ومكتوب كما هو.
 **النطاق:** ما يُضاف **إلى جانب** مسار البحث/الوصول (`os_reach` — [ADR-0013](../adr/0013-reach-channels.md))
 والذي يقرأ الإنترنت العام اليوم. الفئة المفقودة فعلًا في منصتنا هي **الذاكرة الدائمة** و**الاسترجاع من
 مجموعات مستندات**، لا «مزيد من الوكلاء».
-**المرجع المقترح:** [ADR-0016](../adr/0016-memory-and-retrieval-layer.md) (مسودة — غير معتمدة بعد).
+**المرجع:** [ADR-0016](../adr/0016-memory-and-retrieval-layer.md) — **معتمَد**، والبند ٥ (مزوّدو
+الخدمة) مُعلَّق فيه صراحة.
 
 > هذه الخطة مبنية على **فحص كل مستودع ذكرته القائمة من مصدره** (GitHub API + PyPI metadata) بتاريخ
 > 2026-10-14، لا على الوصف المتداول. الفرق ظهر في **٧ أخطاء واقعية** في القائمة (القسم ١.ب).
@@ -345,14 +349,60 @@ os_skills/skill_md.py     # parse/format: SKILL.md ↔ Skill
 
 | المرحلة | النطاق | الملفات | معيار الخروج (دليل، لا نيّة) |
 |---|---|---|---|
-| **٠ — اعتماد** | لا كود. إقرار الأحكام + أسئلة المالك (القسم ١٢) | `docs/INTEGRATIONS_PLAN.md`, `adr/0016-*.md`, `docs/ROADMAP.md` | ADR مُعتمد أو مرفوض صراحةً؛ لا تبعية مضافة |
-| **١ — `os_memory` محلية** | العقد + بوابة الكتابة + `distiller` + recall؛ بدون أي provider | `packages/os_memory/{types,store,gate,distiller,retriever,manager,tools}.py` + `tests/test_memory.py` | +~٤٠ اختبارًا offline؛ **اختبار هزيمة**: نص حقن من `provenance=reach` → لا يُخزَّن `active`، والحقن داخل السياق موسوم `untrusted`؛ حقن `memory_manager` في `Platform.run` بلا استيراد متبادل |
-| **٢ — `os_know` T0/T1** | مستودع مستندات دائم + تقطيع + `recall@k`/`MRR` | `packages/os_know/*` + `tests/test_know.py` + `tests/fixtures/golden.jsonl` | رقم منشور: **recall@5 ≥ خط أساس TF-IDF الخام** على مجموعة ذهبية ≥٢٠ سؤالًا، وإلا يُعلَن «بلا تحسّن» في ROADMAP |
-| **٣ — مهارة `SKILL.md`** | `skill_md.parse/format` + `license` إلزامي + حالة `candidate` | `packages/os_skills/os_skills/skill_md.py`, `tests/test_skills_skillmd.py` | ذهاب-إياب (round-trip) نص↔بطاقة؛ **رفض** مهارة بلا ترخيص؛ **رفض** تنفيذ `allowed-tools` كمنحة؛ `os_evals --ab-skills` يقيس التوكنز قبل/بعد |
-| **٤ — تصدير OTLP** | `os_server/otel.py` ‏opt-in؛ spans من `EventBus` + `LedgerEntry` | `packages/os_server/os_server/otel.py`, `tests/test_otel.py` | بلا نقطة نهاية = **صفر** مقابلات شبكة (يُثبَت بمراقبة httpx)؛ لا أسرار في أي span (فحص بـ`scrub_credentials` vectors) |
-| **٥ — محوّل Graphify** | قناة T2/CLI فوق `os_reach` + خادم MCP إن طُلب | `packages/os_know/os_know/channels/graphify.py`, `[know]` ‏extra مثبَّت بـSHA | يعمل **بلا الحزمة** ⇒ `off` بسبب؛ argv فقط (لا shell)؛ سقف ٢٥٦ KiB/٦٤ KiB؛ تدقيق لكل نداء؛ **مرفوض داخل الصندوق** |
-| **٦ — محوّلات الخدمة** | `adapters/{mem0,letta,graphiti}.py` خلف `CELA_MEMORY_PROVIDER` | ك above + `docs/MEMORY_PROVIDERS.md` | **كل** محوّل بـ`MockTransport` عقودًا؛ استثناء loopback ضيّق ومُختبَر (منفذ واحد، أداة واحدة)؛ **انحدار** إلى T0 عند تعذّر الوصول بلا فقدان حالة |
-| **٧ — ما لا نفعله** | لا Crawl4AI، لا LiteLLM، لا Parea، لا إطار تنسيق، لا CrewAI/AutoGen | — | يُثبَّت رفضُه بسطر في `docs/ROADMAP.md` لا بصمت |
+| ✅ **٠ — اعتماد** | لا كود. إقرار الأحكام + أسئلة المالك (القسم ١٢) | `docs/INTEGRATIONS_PLAN.md`, `adr/0016-*.md`, `docs/ROADMAP.md` | ADR مُعتمد أو مرفوض صراحةً؛ لا تبعية مضافة |
+| ✅ **١ — `os_memory` محلية** | العقد + بوابة الكتابة + `distiller` + recall؛ بدون أي provider | `packages/os_memory/{types,store,gate,distiller,retriever,manager,tools}.py` + `tests/test_memory.py` | +~٤٠ اختبارًا offline؛ **اختبار هزيمة**: نص حقن من `provenance=reach` → لا يُخزَّن `active`، والحقن داخل السياق موسوم `untrusted`؛ حقن `memory_manager` في `Platform.run` بلا استيراد متبادل |
+| ✅ **٢ — `os_know` T0/T1** | مستودع مستندات دائم + تقطيع + `recall@k`/`MRR` | `packages/os_know/*` + `tests/test_know.py` + `tests/fixtures/golden.jsonl` | رقم منشور: **recall@5 ≥ خط أساس TF-IDF الخام** على مجموعة ذهبية ≥٢٠ سؤالًا، وإلا يُعلَن «بلا تحسّن» في ROADMAP |
+| ✅ **٣ — مهارة `SKILL.md`** | `skill_md.parse/format` + `license` إلزامي + حالة `candidate` | `packages/os_skills/os_skills/skill_md.py`, `tests/test_skills_skillmd.py` | ذهاب-إياب (round-trip) نص↔بطاقة؛ **رفض** مهارة بلا ترخيص؛ **رفض** تنفيذ `allowed-tools` كمنحة؛ `os_evals --ab-skills` يقيس التوكنز قبل/بعد |
+| ✅ **٤ — تصدير OTLP** | `os_server/otel.py` ‏opt-in؛ spans من `EventBus` + `LedgerEntry` | `packages/os_server/os_server/otel.py`, `tests/test_otel.py` | بلا نقطة نهاية = **صفر** مقابلات شبكة (يُثبَت بمراقبة httpx)؛ لا أسرار في أي span (فحص بـ`scrub_credentials` vectors) |
+| ⏸ **٥ — محوّل Graphify** (مؤجَّل بقرار) | قناة T2/CLI فوق `os_reach` + خادم MCP إن طُلب | `packages/os_know/os_know/channels/graphify.py`, `[know]` ‏extra مثبَّت بـSHA | يعمل **بلا الحزمة** ⇒ `off` بسبب؛ argv فقط (لا shell)؛ سقف ٢٥٦ KiB/٦٤ KiB؛ تدقيق لكل نداء؛ **مرفوض داخل الصندوق** |
+| ⏸ **٦ — محوّلات الخدمة** (مؤجَّل بقيد المشغِّل) | `adapters/{mem0,letta,graphiti}.py` خلف `CELA_MEMORY_PROVIDER` | ك above + `docs/MEMORY_PROVIDERS.md` | **كل** محوّل بـ`MockTransport` عقودًا؛ استثناء loopback ضيّق ومُختبَر (منفذ واحد، أداة واحدة)؛ **انحدار** إلى T0 عند تعذّر الوصول بلا فقدان حالة |
+| ✅ **٧ — ما لا نفعله** | لا Crawl4AI، لا LiteLLM، لا Parea، لا إطار تنسيق، لا CrewAI/AutoGen | — | يُثبَّت رفضُه بسطر في `docs/ROADMAP.md` لا بصمت |
+
+---
+
+## ١٠-أ) ما قيس فعلًا (2026-10-14) — لا نيّات هنا، أرقام
+
+**الحجم:** ‏`pytest -q` → **٨٣٥ ناجحًا، ١ متخطًّى** (كان ٧١٣ قبل هذه الطبقات؛ ‏+١٢٢ اختبارًا).
+التوزيع: `test_memory.py` ٣٨ · `test_know.py` ٢٥ · `test_memory_platform.py` ١١ ·
+`test_skills_skillmd` (`test_skills_skill_md.py`) ٢٢ · `test_otel.py` ١٧ ·
+`test_cli_memory_know_telemetry.py` ٩. كله **offline بلا مفاتيح**، و`ruff check` +
+`ruff format --check` نظيفان، و`pip install -e ".[dev,server]"` ينجح **بلا تبعية جديدة**.
+
+**معيار خروج المرحلة ٢ — كما خرج، لا كما أُعيد كتابته:**
+
+| مجموعة ذهبية | recall@5 | MRR | empty | مقابل خط الأساس |
+|---|---|---|---|---|
+| ٢١ سؤالًا / ٦ مستندات ماركداون | **1.0** | **0.976** | 0.0 | مذكور أدناه |
+| ٣٠ سؤالًا / متْن طويل متقاطع الأطوال | **1.0** (مقطَّع) | — | — | **1.0** للمستند الكامل ⇒ **لا تحسّن ترتيب** |
+
+الفرق المقيس الحقيقي في المجموعة الثانية هو **اقتصاد السياق**: ‏**28,293** حرفًا حقنًا مقابل
+**148,720** للتقطيع بالمستند الكامل — **٥٫٣× أقل** عند نفس recall. لذلك ثبَّت الاختبار معيارين:
+سقف ترتيب لا يُكسر (‏`recall ≥ 0.8`، `MRR ≥ 0.6`) ومعيار اقتصاد قابل للفشل (‏`≥ 3×`).
+**لو قُرئت هذه الفقرة بعد قراءة «التقطيع يحسّن الاسترجاع» فهي قراءة خاطئة:** لم يحسّنه هُنا.
+
+**بوابة التسميم (المرحلة ١) — السلوك المُختبَر، لا الموصوف:** رفض عند الكتابة (‏`scan_text` +
+`contains_secret` على **النص الخام قبل** التنقية، لأن `scrub_credentials` يستبدل لا يحذف) ·
+سقف ٢٠٠٠ حرف · `sanitize_boundaries` · `provenance ∈ {reach, import}` ⇒ `candidate` أبديّ لا يُرقَّى
+تلقائيًا · رفض وجه تسريب (`169.254.169.254`, `localhost`, `::1`, `*.internal`) للنص غير الموثوق فقط ·
+الحقن داخل `<untrusted-memory>` مع `id=mem_…` ومنشأ · **خطأ الذاكرة لا يُفشل تشغيلًا** (قراءة وكتابة
+محميّتان، والقراءة تُسجَّل كتحذير `EventType.LOG` لا كحدث صامت).
+
+**الواجهة (لا شيء كان موجودًا قبلها):**
+
+```bash
+cela memory remember "…" --key deploy.target --provenance user   # ← يُطبع status=candidate دائمًا
+cela memory recall "أي نظام تشغيل نستخدم؟" [--json] · cela memory list · stats · forget <id> --yes
+cela know index ./docs --corpus repo · cela know search "…" --corpus repo · cela know eval --golden g.jsonl
+cela telemetry export [--run-id …] [--out trace.json] [--send]  # ‏--send يستلزم CELA_OTEL_ENDPOINT
+```
+
+**رموز الخروج مقصودة:** ‏**0** نجح · **1** رُفض أو لا شيء للعمل عليه · **2** خطأ إعداد (لا مخزن/لا
+نقطة نهاية). الفرق بين ١ و٢ هو ما يجعل `cela telemetry export --send` في خط إنتاج لا يخلط «لم نُرسل»
+عن «لا يوجد ما نُرسل إليه».
+
+**ما لم يُنفَّذ (بلا تجميل):** محوّل Mem0/Letta/Graphiti (‏§٦) — مؤجَّل لأن قَيْد المشغِّل «بلا بطاقة
+ائتمان» يسقط السحابة، ولم تُكتب استثناءات `EgressRule` لـloopback؛ وقناة Graphify (‏§٥) — لا مستودع
+كود في CI يستدعيها. الاثنتان **خياريتان** ولا تُعلَّق عليهما أي قدرة مُعلَنة.
 
 **تقدير الجهد:** ١ ≈ ٣–٥ أيام · ٢ ≈ ٣–٤ · ٣ ≈ ٢ · ٤ ≈ ٢ · ٥ ≈ ١–٢ · ٦ ≈ ٤–٦ لكل مزوّد.
 المرحلتان ١+٣ وحدهما تُغلقان أكبر فجوة («لا ذاكرة عبر الجلسات») بأصغر سطح تعرّض.
@@ -374,7 +424,18 @@ os_skills/skill_md.py     # parse/format: SKILL.md ↔ Skill
 
 ---
 
-## ١٢) قرارات مطلوبة منك (قبل سطر كود واحد)
+## ١٢) قرارات المالك — مُجاب عنها (2026-10-14)
+
+**الإجابة الحاسمة التي غيّرت الجدول:** «كل شيء، للنظام بالكامل عام 2027» + **قيد نشر صريح**: ما يعمل
+محليًا/ self-host **بلا بطاقة ائتمان أو توثيق دفع**. لذلك: النوى المحلية (١–٤) نُفِّذت كلها، وكل ما
+يتطلب SaaS أو خدمة جانبية مدفوعة (Mem0 Platform، Letta cloud، RAGFlow-hosted) خرج من البناء الأول
+وبقي **محوّلات اختيارية** موثَّقة في §٦ لا تُعلَّق عليها قدرة مُعلَنة.
+
+**ما استقرّ عليه القرار:** الأسئلة الخمسة أُجيب عنها **بالتوصية نفسها** حرفيًا — (١) الذاكرة أولًا ثم
+الاسترجاع، و(٢) نطاق لكل فضاء/مستخدم **بعزل صريح** (الذاكرة المشتركة أسرع ناقل تسريب)، و(٣) مكتبات +
+حاويات نظريًا لكن **القيد المادي أرجأ الحاويات**، و(٤) استيراد بمراجعة بشرية لا تلقائي، و(٥)
+`MemoryStore` عندنا لا توسيع `os_skills` ولا مخزن متجهات في النواة. الجدول أدناه يبقى كما كُتب وقت
+السؤال (لا نُعيد كتابة التاريخ):
 
 | # | السؤال | الخيارات | توصيتي |
 |---|---|---|---|

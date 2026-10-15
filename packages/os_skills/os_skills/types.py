@@ -68,6 +68,15 @@ class Skill(BaseModel):
     uses: int = 0
     total_tokens: int = 0
     total_seconds: float = 0.0
+    # --- imported skills: SKILL.md content (ADR-0016) ---------------------
+    # Additive and defaulted, so every stored card from before this change still
+    # loads. ``license`` is empty for unknown provenance and the importer treats
+    # unknown as "not executable", which is the safe reading of a silent field.
+    guidance: str = ""
+    origin: str = "learned"  # learned | import | composed
+    license: str = ""
+    source_uri: str = ""
+    content_sha256: str = ""
 
     @property
     def signature(self) -> str:
