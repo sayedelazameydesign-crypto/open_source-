@@ -23,7 +23,7 @@ ArtCraft Launcher تطبيق **Rust خالص** (egui/eframe + نسخة WASM) ي�
 
 > **استضافة (Hosting) + محوّل (Adapter):**
 > 1. شجرة Rust تُستضاف **طبق الأصل** في `packages/craft-launcher/` (التزام مثبَّت +
->    `VENDORED.md`)، تُبنى وتُختبر بمسار CI خاص بها مستقل عن Python.
+>    `docs/VENDORED-craft-launcher.md`)، تُبنى وتُختبر بمسار CI خاص بها مستقل عن Python.
 > 2. حزمة `packages/os_launcher/` — محوّل **قراءة فقط** على غرار `os_reach` (ADR-0013):
 >    يملك العقد والسياسة، يقرأ الكتالوج والإصدارات عبر `EgressPolicy` + `SSRFGuard`،
 >    ويكشف قدرات كأدوات `ToolRegistry` و/أو أسطح HTTP خلف `CELA_LAUNCHER_ENABLE=1`.
@@ -33,7 +33,7 @@ ArtCraft Launcher تطبيق **Rust خالص** (egui/eframe + نسخة WASM) ي�
 
 | السؤال | القرار | لماذا |
 |---|---|---|
-| موقع الكود المضاف | `packages/craft-launcher/` نسخة snapshot مثبَّتة (لا submodule) | المونوريبو يعتمد `packages/`، والـsnapshot يبقى قابلًا للبناء دون `.gitmodules`، مع `VENDORED.md` يوثّق الالتزام وطريقة التحديث |
+| موقع الكود المضاف | `packages/craft-launcher/` نسخة snapshot مثبَّتة (لا submodule) | المونوريبو يعتمد `packages/`، والـsnapshot يبقى قابلًا للبناء دون `.gitmodules`، مع `docs/VENDORED-craft-launcher.md` يوثّق الالتزام وطريقة التحديث |
 | أين يعيش العقد | `packages/os_launcher/` حزمة مستقلة (فصل مسؤوليات كـ`os_reach`) | عزل تبعيات؛ `os_tools` لا تعرف شيئًا عن ArtCraft؛ إمكانية استبدال أي طبقة |
 | ماذا يقرأ المحوّل | الكتالوج (مرآة `catalog.rs`) + إصدارات GitHub + الفيد | هذا كل ما تلمسه المنصة فعليًا من اللانشر؛ التثبيت مسؤولية تطبيق سطح مكتب لا منصة خادم |
 | التفعيل | `CELA_LAUNCHER_ENABLE=1` (opt-in)، والتسجيل في `ToolRegistry` يدوي فقط | نفس فلسفة `os_reach`: أداة شبكة لا تظهر لمجرد استيراد الحزمة |
@@ -47,7 +47,7 @@ ArtCraft Launcher تطبيق **Rust خالص** (egui/eframe + نسخة WASM) ي�
 ### المرحلة 0 — الاستضافة (Hosting)
 * `packages/craft-launcher/` — نسخة طبق الأصل من التزام `0f295d4b` (‏4.6MB، 198 ملفًا)،
   تشمل `crates/` و`apps/` و`xtask/` و`packaging/` و`assets/` وكل ملفات الرخصة والإشعارات.
-* `packages/craft-launcher/VENDORED.md` — المصدر، الالتزام، الرخصة، حدود العلامة التجارية،
+* `docs/VENDORED-craft-launcher.md` — المصدر، الالتزام، الرخصة، حدود العلامة التجارية،
   «ماذا يبقى كما هو»، وإجراء التحديث الكامل.
 * استثناء المجلد من `ruff` في `pyproject.toml` (مثل `legacy`/`web`): كود مضاف لا نلمسه.
 
@@ -156,10 +156,17 @@ make launcher-test                   # cargo test --workspace --locked
 ```
 
 **تحديث النسخة المضافة:** الإجراء الكامل في
-[`packages/craft-launcher/VENDORED.md`](../packages/craft-launcher/VENDORED.md) —
-استبدال snapshot + تحديث الالتزام هنا وفي `VENDORED.md` + مزامنة `catalog.py`
+[`docs/VENDORED-craft-launcher.md`](VENDORED-craft-launcher.md) —
+استبدال snapshot + تحديث الالتزام هنا وفي ذلك الملف + إعادة توليد بصمة النزاهة
+(`make vendored-write COMMIT=<sha>`) + مزامنة `catalog.py`
 مع `catalog.rs` إن تغيّر الكتالوج + `make test && make launcher-test`.
 فحص diffs في ملفات الرخصة أولًا؛ تغيّرت الشروط = إعادة تقييم الدمج كله.
+
+> **لماذا لم يعد هذا الملف داخل الشجرة؟** كان `VENDORED.md` موضوعًا في
+> `packages/craft-launcher/`، وهو ملف أضفناه نحن — أي أن الشجرة لم تكن نسخة
+> مطابقة للأصل حرفيًا. وإذن العلامة التجارية يغطي «نسخ من هذا المستودع» فقط.
+> نُقل التوثيق كله إلى `docs/` وصار التطابق **مُثبَتًا آليًا** ببصمة `sha256`
+> لكل ملف. التفاصيل: [`THIRD_PARTY_POLICY.md`](THIRD_PARTY_POLICY.md) القاعدة T-3.
 
 ## 8) ما تبقّى (خارطة الطريق)
 
@@ -173,11 +180,11 @@ make launcher-test                   # cargo test --workspace --locked
 
 | الخطر | التخفيف |
 |---|---|
-| تشتت النسخة عن upstream (snapshot جامد) | `VENDORED.md` بإجراء تحديث مكتوب، وقاعدة «لا ابتكارات محلية»، وقاعدة مزامنة `catalog.py`↔`catalog.rs` مُختبَرة |
+| تشتت النسخة عن upstream (snapshot جامد) | `docs/VENDORED-craft-launcher.md` بإجراء تحديث مكتوب، وقاعدة «لا ابتكارات محلية»، وقاعدة مزامنة `catalog.py`↔`catalog.rs` مُختبَرة |
 | تغيّر GitHub API أو الفيد | التحليل لينينسي ومُختبَر على مدخلات عدائية؛ الفادئ المقيس هو 502 الصريح لا الانهيار |
 | استهلاك حد GitHub (60 طلب/ساعة بلا توكن) | الفيد أولًا (طلب واحد يغطي 13 تطبيقًا)، وأدوات `craft_latest_release` مفردة الطلب؛ يبقى سقف عملي للوكيل — يمكن لاحقًا ربط توكن عبر البيئة بحسب عقد ADR-0011 |
 | إساءة قراءة الكتالوج على أنها «تثبيت» | الوصف صريح «Read-only: never downloads or installs» في كل أداة ونقطة نهاية ووثيقة |
-| رخصة العلامة التجارية | القسم 6 + تذكير في `VENDORED.md`؛ أي fork مُوزَّع يزيل الشعارات |
+| رخصة العلامة التجارية | القسم 6 + تذكير في `docs/VENDORED-craft-launcher.md`؛ أي fork مُوزَّع يزيل الشعارات |
 
 **السؤال المفتوح الوحيد:** هل نحتاج يومًا «تشغيل» تطبيقات Craft من المنصة؟
 الافتراض الحالي: **لا** — المنصة تشغّل وكيلاء ومهام، وتطبيقات Craft سطح مكتب للمستخدم

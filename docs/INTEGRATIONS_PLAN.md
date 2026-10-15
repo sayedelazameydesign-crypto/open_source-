@@ -334,7 +334,9 @@ os_skills/skill_md.py     # parse/format: SKILL.md ↔ Skill
 3. **تلّمتر خفيّ:** `posthog` في Mem0، و«phone home» في محرّكات RAG → منعها سبب كافي لاختيار HTTP بدل
    الاستيراد؛ وإن استُوردت مكتبة، `CELA_*` يُمرَّر عبر `env` قائمة سماح لا وارثة.
 4. **سلسلة التوريد:** فخّ `graphify`/`graphifyy`؛ وكل `[extra]` خارج PyPI **مثبَّت بـSHA** (نفس
-   `[reach]` اليوم) مع `sha256` في `VENDORED`-style memo.
+   `[reach]` اليوم) مع `sha256` في مذكرة بأسلوب `VENDORED` — والآلية صارت منفَّذة فعليًا في
+   `scripts/vendored_manifest.py` + `docs/vendored/craft-launcher.sha256`
+   (انظر [`THIRD_PARTY_POLICY.md`](THIRD_PARTY_POLICY.md) T-3).
 5. **الترخيص الملوَّث:** استيراد **نصوص** من `anthropics/skills` (بلا ترخيص) أو محتوى `ai-workspace-archive`
    (بلا ترخيص) إلى مستودع **MIT** ⇒ رفض، أو مصدر+ترخيص لكل ملف.
 6. **ادّعاء قدرة غير موجودة:** قاعدة ADR-0013 تبقى: قناة بلا خلفيتها → `off` بسبب مكتوب، لا «نجاح وهمي».

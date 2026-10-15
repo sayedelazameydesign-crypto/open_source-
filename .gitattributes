@@ -1,0 +1,44 @@
+# Repository-wide git attributes.
+#
+# The point of this file is honesty about provenance: GitHub's language bar, its
+# diffs and its "generated" badge are how a reader decides what in here is
+# *ours*. Without these lines the vendored ArtCraft Launcher snapshot (ADR-0015)
+# is credited to this project — 100% of the Rust, Shell, PowerShell and Nix in
+# this repository lives under packages/craft-launcher and none of it was written
+# here. See docs/THIRD_PARTY_POLICY.md rule T-5.
+#
+# Deliberately absent: global `text eol=lf` rules. Line-ending normalisation
+# rewrites bytes on checkout, and a vendored snapshot must stay byte-identical
+# to upstream or the trademark permission covering it lapses. `-text` below
+# guarantees git never touches those files.
+
+# --- Vendored third-party snapshot ------------------------------------------
+# linguist-vendored : excluded from GitHub's language statistics and collapsed
+#                     by default in pull-request diffs. It stays in the checkout
+#                     and still builds — this only changes how GitHub describes it.
+# -text             : no EOL conversion ever, so what upstream published is what
+#                     lands on disk. Verified byte-for-byte against the pinned
+#                     commit by tests/test_vendored_integrity.py.
+packages/craft-launcher/** linguist-vendored -text
+
+# --- Machine-generated files -------------------------------------------------
+# Not hand-written source; marked so review attention goes where it belongs.
+packages/craft-launcher/Cargo.lock linguist-generated -text
+packages/web/package-lock.json linguist-generated
+
+# --- Binary assets -----------------------------------------------------------
+# Every binary in this repository currently lives under the vendored tree.
+# `binary` is the -diff -merge -text macro: no textual diffs and no EOL
+# normalisation. Normalising line endings inside an .icns or .png would corrupt
+# the file — and would also break the integrity manifest in docs/vendored/.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.icns  binary
+*.tiff  binary
+*.ttf   binary
+*.otf   binary
+*.woff  binary
+*.woff2 binary

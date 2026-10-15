@@ -81,6 +81,16 @@ Issues = "https://github.com/sayedelazameydesign-crypto/open_source-/issues"
 [tool.hatch.metadata]
 allow-direct-references = true
 
+[tool.hatch.build.targets.sdist]
+# The vendored ArtCraft Launcher snapshot (ADR-0015) must never be redistributed
+# by us. Hatchling's sdist defaults to every git-tracked file, which would ship
+# 4.6 MB of third-party code — including the ArtCraft marks, which are NOT open
+# source (packages/craft-launcher/docs/brand/LICENSE-brand.txt) — to a package
+# index carrying *our* MIT metadata. The wheel target below already lists only
+# the first-party os_* packages; the sdist must match that scope.
+# See docs/THIRD_PARTY_POLICY.md rule T-4 and tests/test_vendored_integrity.py.
+exclude = ["packages/craft-launcher"]
+
 [tool.hatch.build.targets.wheel]
 packages = [
     "packages/os_core/os_core",

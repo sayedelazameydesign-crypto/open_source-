@@ -1,19 +1,39 @@
 name: Launcher CI
 
-# Rust checks for the vendored ArtCraft Launcher workspace (packages/craft-launcher,
-# ADR-0015). Path-filtered so the Python CI stays fast: this workflow only runs
-# when the vendored workspace (or this file) changes. The workspace is a
-# snapshot of storytold/craft-launcher; failures here are upstream-shaped.
+# Rust checks and provenance checks for the vendored ArtCraft Launcher workspace
+# (packages/craft-launcher, ADR-0015 / ADR-0018). Path-filtered so the Python CI
+# stays fast: this workflow only runs when the vendored workspace, its integrity
+# manifest, or the tooling around either changes. The workspace is a snapshot of
+# storytold/craft-launcher; cargo failures here are upstream-shaped, but
+# provenance failures are ours and are never acceptable.
+#
+# Two layers of provenance checking, deliberately separated:
+#
+#   * offline  — tests/test_vendored_integrity.py compares the working tree with
+#     the recorded manifest. This runs in the main CI on *every* PR (no network,
+#     three Python versions), so a stray edit fails fast and everywhere.
+#   * upstream — the `provenance` job below re-derives the manifest from the
+#     upstream tarball at the pinned commit, proving the record itself is honest.
+#     That needs network and a fetch, so it lives here and only runs when the
+#     tree or the manifest moved.
 on:
   push:
     branches: [main]
     paths:
       - "packages/craft-launcher/**"
+      - "docs/vendored/**"
+      - "scripts/vendored_manifest.py"
+      - "scripts/defork_launcher.sh"
+      - "tests/test_vendored_integrity.py"
       - ".github/workflows/launcher-ci.yml"
   pull_request:
     branches: [main]
     paths:
       - "packages/craft-launcher/**"
+      - "docs/vendored/**"
+      - "scripts/vendored_manifest.py"
+      - "scripts/defork_launcher.sh"
+      - "tests/test_vendored_integrity.py"
       - ".github/workflows/launcher-ci.yml"
   workflow_dispatch:
 
@@ -26,8 +46,56 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Provenance: is the tree still the byte-identical snapshot we claim to host?
+  # Cheap (stdlib only, no pip install, no Rust toolchain) and it gates the
+  # expensive cargo job below — there is no point building a tree we are not
+  # allowed to distribute. See docs/THIRD_PARTY_POLICY.md rule T-3.
+  provenance:
+    name: vendored snapshot integrity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Offline first: the tree vs the recorded manifest. Fails on any added,
+      # removed or modified file, and names what to do about it.
+      - name: Verify against the recorded manifest (offline)
+        run: python scripts/vendored_manifest.py verify
+
+      # Then the stronger claim: re-derive the manifest from the upstream tarball
+      # at the pinned commit and compare. This is what proves "unmodified copy"
+      # rather than merely "unmodified since we last looked".
+      - name: Re-derive from upstream at the pinned commit
+        run: python scripts/vendored_manifest.py verify --upstream
+
+      # The sdist is how a licence breach would actually leave this repository, so
+      # assert the exclusion rather than trusting pyproject.toml to stay correct.
+      - name: Confirm the tree is not redistributable
+        run: |
+          python - <<'PY'
+          import tomllib, pathlib
+          data = tomllib.loads(pathlib.Path("pyproject.toml").read_text(encoding="utf-8"))
+          targets = data["tool"]["hatch"]["build"]["targets"]
+          excluded = targets.get("sdist", {}).get("exclude", [])
+          wheel = targets.get("wheel", {}).get("packages", [])
+          assert "packages/craft-launcher" in excluded, f"sdist exclude lost: {excluded}"
+          assert not any("craft-launcher" in p for p in wheel), f"wheel gained it: {wheel}"
+          print("OK  sdist excludes the vendored tree; wheel ships first-party packages only")
+          PY
+
+      - name: Confirm GitHub is told the tree is vendored
+        run: |
+          grep -qE '^packages/craft-launcher/\*\* .*linguist-vendored' .gitattributes \
+            || { echo "::error title=provenance::.gitattributes lost linguist-vendored for packages/craft-launcher/**"; exit 1; }
+          echo "OK  .gitattributes marks the tree vendored"
+
   test:
     name: cargo test (core)
+    needs: provenance
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
