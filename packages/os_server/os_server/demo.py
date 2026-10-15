@@ -211,12 +211,22 @@ _MEMORY_MANAGER: Any = None
 _KNOW_LAYER: Any = None
 
 
+ENV_MEMORY_NAMESPACE = "CELA_MEMORY_NAMESPACE"
+
+
 def demo_memory_manager(ai_engine: Any = None) -> Any:
     """Process-wide memory manager when ``CELA_MEMORY_STORE_URL`` is set (ADR-0016).
 
     Shared for the same reason as the skill manager: the server builds a platform
     per run, and a manager per platform could never accumulate anything. Every
     write still passes :class:`os_memory.MemoryGate`.
+
+    The manager is bound to **one** namespace, ``CELA_MEMORY_NAMESPACE``
+    (default ``default``). That is the honest granularity for this API: it
+    authenticates callers with a single shared bearer token, so every caller is
+    the same principal and there is no identity a per-request namespace could be
+    derived from. When the API grows principals, ``manager.scoped(ns)`` is the
+    one-line binding point; until then the operator names the space.
     """
     global _MEMORY_MANAGER
     url = os.environ.get("CELA_MEMORY_STORE_URL")
@@ -225,10 +235,14 @@ def demo_memory_manager(ai_engine: Any = None) -> Any:
     if _MEMORY_MANAGER is None:
         from os_tools.local_ai import LocalAIEngine
 
-        from os_memory import MemoryManager, memory_store_from_url
+        from os_memory import MemoryManager, memory_store_from_url, normalize_namespace
 
         engine = ai_engine if ai_engine is not None else LocalAIEngine()
-        _MEMORY_MANAGER = MemoryManager(memory_store_from_url(url), engine)
+        _MEMORY_MANAGER = MemoryManager(
+            memory_store_from_url(url),
+            engine,
+            namespace=normalize_namespace(os.environ.get(ENV_MEMORY_NAMESPACE)),
+        )
     return _MEMORY_MANAGER
 
 

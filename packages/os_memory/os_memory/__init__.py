@@ -22,6 +22,7 @@ from os_memory.store import (
 )
 from os_memory.tools import memory_tools
 from os_memory.types import (
+    DEFAULT_NAMESPACE,
     MEMORY_BOUNDARY,
     MemoryHit,
     MemoryKind,
@@ -29,9 +30,11 @@ from os_memory.types import (
     MemoryStatus,
     Provenance,
     Trust,
+    normalize_namespace,
 )
 
 __all__ = [
+    "DEFAULT_NAMESPACE",
     "MEMORY_BOUNDARY",
     "GateDecision",
     "InMemoryMemoryStore",
@@ -50,5 +53,6 @@ __all__ = [
     "distill_run",
     "memory_store_from_url",
     "memory_tools",
+    "normalize_namespace",
     "tool_trace",
 ]

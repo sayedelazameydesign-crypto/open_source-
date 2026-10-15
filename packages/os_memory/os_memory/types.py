@@ -62,6 +62,31 @@ def normalise(text: str) -> str:
     return _WHITESPACE_RE.sub(" ", str(text)).strip().lower()
 
 
+#: What a namespace may look like. Short, printable, no whitespace or slashes:
+#: it is a label that ends up in SQL filters, CLI output and audit lines.
+_NAMESPACE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
+DEFAULT_NAMESPACE = "default"
+
+
+def normalize_namespace(value: object) -> str:
+    """Return a valid namespace label or raise ``ValueError``.
+
+    Empty/``None`` means :data:`DEFAULT_NAMESPACE`. Anything else must match
+    ``_NAMESPACE_RE`` — an invalid label is *refused*, never silently mapped to
+    ``default``, because that mapping would quietly merge two spaces that the
+    operator meant to keep apart.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return DEFAULT_NAMESPACE
+    if not _NAMESPACE_RE.match(text):
+        raise ValueError(
+            f"invalid memory namespace {text!r}: use 1-64 chars of [A-Za-z0-9._:-], "
+            "starting with a letter or digit"
+        )
+    return text
+
+
 class MemoryRecord(BaseModel):
     """One durable statement, and the metadata that decides if it may be reused."""
 
@@ -69,6 +94,10 @@ class MemoryRecord(BaseModel):
     kind: MemoryKind = MemoryKind.FACT
     text: str
     key: str = ""  # identity of the *subject*: "timezone", "deploy.target"
+    # Isolation boundary. Dedup, supersede and recall never cross it; the
+    # *caller* binds it (server/CLI), never the model — no tool exposes it.
+    namespace: str = DEFAULT_NAMESPACE
+    agent_id: str | None = None  # who wrote it — provenance for audit, not a filter
     tags: list[str] = Field(default_factory=list)
     provenance: Provenance = Provenance.USER
     trust: Trust = Trust.ASSERTED

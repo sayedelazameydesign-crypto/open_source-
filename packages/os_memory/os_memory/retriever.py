@@ -30,11 +30,23 @@ class MemoryRetriever:
         #: Which lifecycle states may be read back. Quarantined/expired are out.
         self.statuses = statuses
 
-    def candidates(self) -> list[MemoryRecord]:
-        return self.store.list_records(statuses=self.statuses)
+    def candidates(self, *, namespace: str | None = None) -> list[MemoryRecord]:
+        return self.store.list_records(statuses=self.statuses, namespace=namespace)
 
-    def find(self, query: str, *, top_k: int = 3, now: float | None = None) -> list[MemoryHit]:
-        records = [r for r in self.candidates() if not r.is_expired(now)]
+    def find(
+        self,
+        query: str,
+        *,
+        top_k: int = 3,
+        now: float | None = None,
+        namespace: str | None = None,
+    ) -> list[MemoryHit]:
+        """Rank what *this namespace* may say about ``query``.
+
+        ``namespace=None`` searches every space and exists for tests and
+        operator tooling; the manager always passes a concrete one.
+        """
+        records = [r for r in self.candidates(namespace=namespace) if not r.is_expired(now)]
         if not records or not str(query).strip():
             return []
         docs = [

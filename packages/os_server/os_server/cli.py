@@ -495,15 +495,21 @@ def _store_url(flag: str | None, env: str, label: str) -> str | None:
     return url
 
 
-def _memory_layer(store_url: str | None):
+def _memory_layer(store_url: str | None, namespace: str | None = None):
     from os_tools.local_ai import LocalAIEngine
 
-    from os_memory import MemoryManager, memory_store_from_url
+    from os_memory import MemoryManager, memory_store_from_url, normalize_namespace
+    from os_server.demo import ENV_MEMORY_NAMESPACE
 
     url = _store_url(store_url, "CELA_MEMORY_STORE_URL", "memory")
     if url is None:
         return None
-    return MemoryManager(memory_store_from_url(url), LocalAIEngine())
+    try:
+        space = normalize_namespace(namespace or os.environ.get(ENV_MEMORY_NAMESPACE))
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return None
+    return MemoryManager(memory_store_from_url(url), LocalAIEngine(), namespace=space)
 
 
 def _know_layer(store_url: str | None):
@@ -520,22 +526,27 @@ def _know_layer(store_url: str | None):
 
 def _memory_stats(manager, *, as_json: bool) -> int:
     report = manager.report()
-    print(
-        json.dumps(report, ensure_ascii=False, indent=2)
-        if as_json
-        else json.dumps(report["by_status"])
-    )
+    if as_json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        print(json.dumps(report["by_status"]))
+        if len(report["by_namespace"]) > 1:
+            print(f"namespaces: {json.dumps(report['by_namespace'], ensure_ascii=False)}")
     return 0
 
 
-def _memory_list(manager, *, as_json: bool) -> int:
-    records = manager.list_records()
+def _memory_list(manager, *, as_json: bool, all_namespaces: bool) -> int:
+    # Operator view by request only: without --all the list is the bound space,
+    # the same space `remember`/`recall` act on, so what you see is what runs get.
+    records = manager.list_records(namespace=None if all_namespaces else manager.namespace)
     if as_json:
         print(
             json.dumps(
                 [
                     {
                         "memory_id": r.memory_id,
+                        "namespace": r.namespace,
+                        "agent_id": r.agent_id,
                         "status": r.status.value,
                         "kind": r.kind.value,
                         "provenance": r.provenance.value,
@@ -551,11 +562,12 @@ def _memory_list(manager, *, as_json: bool) -> int:
         )
         return 0
     if not records:
-        print("memory: empty")
+        print(f"memory: empty (namespace {manager.namespace!r})")
         return 0
     for record in records:
+        space = f" @{record.namespace}" if all_namespaces else ""
         print(
-            f"{record.memory_id}  {record.status.value:<12} {record.provenance.value:<8} "
+            f"{record.memory_id}{space}  {record.status.value:<12} {record.provenance.value:<8} "
             f"{record.trust.value:<9} {record.text[:80]}"
         )
     return 0
@@ -812,12 +824,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     memory_sub = memory.add_subparsers(dest="memory_command", required=True)
     memory_store_flag = ["--store-url"]
+    namespace_help = "memory space to act on (default: $CELA_MEMORY_NAMESPACE or 'default')"
     for name in ("stats", "list"):
         m = memory_sub.add_parser(name, help=f"{name} of the stored memories")
         m.add_argument(
             "--store-url", default=None, help="sqlite:///<path> or CELA_MEMORY_STORE_URL"
         )
+        m.add_argument("--namespace", default=None, help=namespace_help)
         m.add_argument("--json", action="store_true")
+        if name == "list":
+            m.add_argument(
+                "--all", action="store_true", help="every namespace, not only the bound one"
+            )
     m = memory_sub.add_parser("remember", help="store one fact (screened, redacted, capped)")
     m.add_argument("text")
     m.add_argument("--key", default="", help="stable subject id, e.g. deploy.target")
@@ -826,15 +844,18 @@ def main(argv: list[str] | None = None) -> int:
         "--provenance", default="user", choices=["user", "run", "sandbox", "reach", "import"]
     )
     m.add_argument("--store-url", default=None, help="sqlite:///<path> or CELA_MEMORY_STORE_URL")
+    m.add_argument("--namespace", default=None, help=namespace_help)
     m = memory_sub.add_parser("recall", help="what would be injected for a task")
     m.add_argument("query")
     m.add_argument("--top-k", type=int, default=3)
     m.add_argument("--json", action="store_true")
     m.add_argument("--store-url", default=None, help="sqlite:///<path> or CELA_MEMORY_STORE_URL")
+    m.add_argument("--namespace", default=None, help=namespace_help)
     m = memory_sub.add_parser("forget", help="permanently delete one memory (needs --yes)")
     m.add_argument("memory_id")
     m.add_argument("--yes", action="store_true", help="confirm the deletion")
     m.add_argument("--store-url", default=None, help="sqlite:///<path> or CELA_MEMORY_STORE_URL")
+    m.add_argument("--namespace", default=None, help=namespace_help)
     del memory_store_flag
 
     know = sub.add_parser("know", help="document corpus: index, search, eval (ADR-0016)")
@@ -908,13 +929,13 @@ def main(argv: list[str] | None = None) -> int:
         return _reach_run(args.channel, args.query, assume_yes=args.yes)
 
     if args.command == "memory":
-        manager = _memory_layer(args.store_url)
+        manager = _memory_layer(args.store_url, args.namespace)
         if manager is None:
             return 2
         if args.memory_command == "stats":
             return _memory_stats(manager, as_json=args.json)
         if args.memory_command == "list":
-            return _memory_list(manager, as_json=args.json)
+            return _memory_list(manager, as_json=args.json, all_namespaces=args.all)
         if args.memory_command == "remember":
             return _memory_remember(
                 manager, args.text, key=args.key, kind=args.kind, provenance=args.provenance

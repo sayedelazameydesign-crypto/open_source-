@@ -34,6 +34,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 import httpx
+from os_core.redact import scrub_credentials, truncate
 from os_core.types import ToolResult, ToolStatus
 from os_tools.egress import EgressPolicy, EgressPolicyError, parse_http_target
 
@@ -65,7 +66,6 @@ from os_mcp.protocol import (
     parse_sse,
     parse_tool_result,
 )
-from os_mcp.security import scrub_credentials, truncate
 
 SANDBOX_MARKER_ENV = "CELA_SANDBOXED"
 

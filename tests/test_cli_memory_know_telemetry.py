@@ -166,3 +166,62 @@ def test_telemetry_dry_run_explains_the_endpoint(tmp_path, monkeypatch, capsys):
     assert main(["telemetry", "export", "--store-url", url]) == 0
     out = capsys.readouterr().out
     assert "OTLP/JSON" in out and "127.0.0.1:4318" in out
+
+
+# ------------------------------------------------------------- namespaces --
+def test_namespace_flag_isolates_remember_and_recall(tmp_path, capsys):
+    store = _memory_store(tmp_path)
+    fact = "deploy target is debian 12"
+    assert main(["memory", "remember", fact, "--store-url", store, "--namespace", "team-a"]) == 0
+    assert main(["memory", "remember", fact, "--store-url", store, "--namespace", "team-b"]) == 0
+    capsys.readouterr()
+    # team-b sees its own copy, the default space sees nothing.
+    assert main(["memory", "recall", "debian", "--store-url", store, "--namespace", "team-b"]) == 0
+    assert "debian 12" in capsys.readouterr().out
+    assert main(["memory", "recall", "debian", "--store-url", store]) == 0
+    assert "debian 12" not in capsys.readouterr().out
+    # `list` is the bound space unless --all asks for the operator view.
+    assert main(["memory", "list", "--store-url", store, "--namespace", "team-a", "--json"]) == 0
+    listed = json.loads(capsys.readouterr().out)
+    assert [r["namespace"] for r in listed] == ["team-a"]
+    assert main(["memory", "list", "--store-url", store, "--all"]) == 0
+    out = capsys.readouterr().out
+    assert "@team-a" in out and "@team-b" in out
+    assert main(["memory", "stats", "--store-url", store, "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["by_namespace"] == {"team-a": 1, "team-b": 1}
+
+
+def test_namespace_comes_from_the_environment_when_no_flag(tmp_path, monkeypatch, capsys):
+    store = _memory_store(tmp_path)
+    monkeypatch.setenv("CELA_MEMORY_NAMESPACE", "from-env")
+    assert main(["memory", "remember", "the bus is redis", "--store-url", store]) == 0
+    capsys.readouterr()
+    assert main(["memory", "list", "--store-url", store, "--json"]) == 0
+    assert [r["namespace"] for r in json.loads(capsys.readouterr().out)] == ["from-env"]
+
+
+def test_invalid_namespace_is_a_configuration_error_not_default(tmp_path, capsys):
+    store = _memory_store(tmp_path)
+    code = main(["memory", "remember", "x", "--store-url", store, "--namespace", "a space/here"])
+    assert code == 2
+    assert "invalid memory namespace" in capsys.readouterr().err
+    assert main(["memory", "list", "--store-url", store, "--all"]) == 0
+    assert "empty" in capsys.readouterr().out  # nothing landed in 'default' by accident
+
+
+def test_server_singleton_is_bound_to_the_env_namespace(tmp_path, monkeypatch):
+    import os_server.demo as demo
+
+    monkeypatch.setenv("CELA_MEMORY_STORE_URL", str(tmp_path / "mem.sqlite"))
+    monkeypatch.setenv("CELA_MEMORY_NAMESPACE", "svc-1")
+    demo._MEMORY_MANAGER = None
+    try:
+        manager = demo.demo_memory_manager()
+        assert manager is not None and manager.namespace == "svc-1"
+        record, _ = manager.remember("bound through the environment")
+        assert record.namespace == "svc-1"
+        # The same process keeps one binding — a later env change does not fork the space.
+        monkeypatch.setenv("CELA_MEMORY_NAMESPACE", "svc-2")
+        assert demo.demo_memory_manager() is manager
+    finally:
+        demo._MEMORY_MANAGER = None

@@ -70,7 +70,7 @@
 | `os_mcp/client.py` | `StdioMCPClient` (مهلة إقلاع، مهلة لكل نداء، سقف طول السطر، تجاهل الضجيج على stdout، قتل عند الإغلاق، ذيل stderr) و`HttpMCPClient` (جلسة `Mcp-Session-Id`، إعادة التهيئة عند 404، سقف جسم، `EgressPolicy`) |
 | `os_mcp/bridge.py` | أدوات `ToolRegistry` من مواصفات الخادم مع الحجر والتصنيف وتقرير `BridgeReport` |
 | `os_mcp/layer.py` | `MCPLayer`: اكتشاف الخوادم المُفعَّلة **متسلسلًا بترتيب الإعداد**، صحة لكل خادم (`ok/off/error`)، تقرير `stale` عند إعلان خادم تغيّر قائمته، `register_mcp_tools` (لا يكتب فوق شيء)، `process_layer()` المُغلَق افتراضيًا |
-| `os_mcp/security.py` | `scrub_credentials`/`truncate` نسخة الطبقة (نفس عقد `os_reach`/`os_launcher`) كي لا يعتمد `os_mcp` إلا على `os_core`+`os_tools` — واختبار إغلاق الاستيراد يثبت ذلك |
+| (لا `security.py`) | `scrub_credentials`/`truncate` تأتيان من **`os_core.redact`** — المُنقِّي القياسي الذي أدخله ADR-0016 (يغطي بيانات اعتماد URL، ومعاملات الاستعلام، والأسرار المكتوبة نصًّا، وأشكال مفاتيح المزوّدين)؛ فتبقى تبعية `os_mcp` = `os_core`+`os_tools` فقط، واختبار إغلاق الاستيراد يثبت ذلك |
 | `os_mcp/server.py` | `MCPRegistryServer`: `initialize`/`ping`/`tools/list`/`tools/call` فوق السجل بالحواجز وHITL وعدّادات `calls/denied` |
 | `os_server` | `cela mcp list/doctor/call/serve`، تسجيل الأدوات في دورة حياة التطبيق، `GET /api/mcp/servers` و`/cela/v1/mcp/servers` |
 

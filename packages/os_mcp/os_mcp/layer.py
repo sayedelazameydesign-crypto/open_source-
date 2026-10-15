@@ -19,6 +19,7 @@ from enum import StrEnum
 from typing import Any
 
 from os_core.guardrails import Guardrails
+from os_core.redact import scrub_credentials
 from os_tools.egress import EgressPolicy
 from os_tools.registry import Tool, ToolRegistry
 from pydantic import BaseModel, Field
@@ -34,7 +35,6 @@ from os_mcp.config import (
     load_mcp_config,
 )
 from os_mcp.protocol import MCPError
-from os_mcp.security import scrub_credentials
 
 ClientFactory = Callable[[MCPServerConfig], BaseMCPClient]
 
