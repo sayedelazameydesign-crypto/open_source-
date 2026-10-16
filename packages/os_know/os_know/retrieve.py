@@ -118,7 +118,14 @@ class KnowRetriever:
         lines = [f"<retrieved-corpus count={len(hits)}>"]
         for hit in hits:
             safe = scrub_credentials(truncate(hit.chunk.text, self.max_snippet_chars))
-            origin = "untrusted-web" if hit.chunk.untrusted else "local"
+            scheme = (hit.chunk.source_uri or "").partition(":")[0].lower()
+            origin = (
+                "local"
+                if not hit.chunk.untrusted
+                else "untrusted-import"
+                if scheme == "import"
+                else "untrusted-web"
+            )
             lines.append(f"[{origin} {hit.chunk.citation()} score={hit.score:.2f}]")
             lines.append(safe)
         lines.append("</retrieved-corpus>")

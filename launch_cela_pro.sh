@@ -9,6 +9,10 @@ if ! python -c "import gradio" 2>/dev/null; then
     echo "[*] تثبيت Gradio..."
     pip install --quiet --upgrade gradio httpx
 fi
+if ! python -c "import pypdf" 2>/dev/null; then
+    echo "[*] تثبيت قارئ PDF الاختياري..."
+    pip install --quiet --upgrade pypdf
+fi
 
 # 2) متغيرات اختيارية
 export KIMI_API_KEY="${KIMI_API_KEY:-}"

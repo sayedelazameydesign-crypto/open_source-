@@ -46,6 +46,9 @@ _UNSAFE_KEY_RE = re.compile(r"^(?:tools|permission_grants|status|success_count|f
 #: advertised — or, the other way round, an unrestricted one.
 _KNOWN_KEYS = {"name", "description", "license", "allowed-tools", "allowed_tools", "version"}
 UNLICENSED = "unlicensed"
+MAX_SKILL_BODY_CHARS = 24_000
+MAX_SKILL_FILE_CHARS = 32_768
+MAX_SKILL_FILE_BYTES = 128 * 1024
 #: Placeholder for an in-memory import with no file behind it (a string posted to the API).
 INLINE_ORIGIN = "inline"
 
@@ -118,6 +121,9 @@ def parse_skill_md(
 ) -> SkillMdReport:
     """Turn one ``SKILL.md`` body into a :class:`Skill` — or say why not."""
     report = SkillMdReport(path=path, sha256=hashlib.sha256(text.encode("utf-8")).hexdigest()[:16])
+    if len(text) > MAX_SKILL_FILE_CHARS:
+        report.errors.append(f"file-longer-than-{MAX_SKILL_FILE_CHARS}-chars")
+        return report
     data, body, warnings = _split_frontmatter(text)
     # "no frontmatter at all" is not a soft failure: without it the file is prose,
     # and importing prose as a skill is precisely the accident this module exists
@@ -139,6 +145,8 @@ def parse_skill_md(
         report.errors.append("description-longer-than-1024-chars")
     if not body:
         report.errors.append("empty-body")
+    elif len(body) > MAX_SKILL_BODY_CHARS:
+        report.errors.append(f"body-longer-than-{MAX_SKILL_BODY_CHARS}-chars")
 
     unknown = sorted(set(data) - _KNOWN_KEYS)
     if unknown:
@@ -274,8 +282,15 @@ def import_skill_dir(
         return [SkillMdReport(path=str(base), errors=["not-a-directory"])]
     for path in sorted(base.glob("*/SKILL.md"))[: max(max_skills, 0)]:
         try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError as exc:
+            if path.stat().st_size > MAX_SKILL_FILE_BYTES:
+                reports.append(
+                    SkillMdReport(
+                        path=str(path), errors=[f"file-larger-than-{MAX_SKILL_FILE_BYTES}-bytes"]
+                    )
+                )
+                continue
+            text = path.read_text(encoding="utf-8", errors="strict")
+        except (OSError, UnicodeDecodeError) as exc:
             reports.append(
                 SkillMdReport(path=str(path), errors=[f"unreadable:{type(exc).__name__}"])
             )
@@ -285,6 +300,9 @@ def import_skill_dir(
 
 
 __all__ = [
+    "MAX_SKILL_BODY_CHARS",
+    "MAX_SKILL_FILE_BYTES",
+    "MAX_SKILL_FILE_CHARS",
     "UNLICENSED",
     "SkillMdReport",
     "format_skill_md",

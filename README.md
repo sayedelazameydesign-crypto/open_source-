@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 
-> **967 اختبارًا ناجحًا · 1 متخطّى اختياريًا · 0 فشل · دون مفاتيح API ودون شبكة.**
+> **1007 اختبارًا ناجحًا · 1 متخطّى اختياريًا · 0 فشل · دون مفاتيح API ودون شبكة.**
 
 ---
 
@@ -132,7 +132,7 @@ packages/
 ## الاختبار
 
 ```bash
-pytest -q          # 967 passed, 1 skipped (اختبار مخزن موزّع يتخطّى حين يكون psycopg مثبَّت)
+pytest -q          # 1007 passed, 1 skipped (اختبار مخزن موزّع يتخطّى حين يكون psycopg مثبَّت)
 ruff check .       # All checks passed
 ruff format .      # تنسيق موحّد
 ```
@@ -302,7 +302,7 @@ cela mcp serve --demo                    # الاتجاه الآخر: المنص
 ```bash
 cela memory remember "أفضِل apt على npm" --key pkg.manager --provenance user
 cela memory recall "أي مدير حزم؟"          # يُحقن موسومًا <untrusted-memory>
-cela know index ./docs --corpus repo && cela know search "سياسة الخروج" --corpus repo
+cela know index ./docs/ARCHITECTURE.md --corpus repo && cela know search "سياسة الخروج" --corpus repo
 cela telemetry export --out trace.json     # OTLP/JSON بلا مجموعة جمع؛ ‏--send يحتاج CELA_OTEL_ENDPOINT
 ```
 
@@ -310,6 +310,30 @@ cela telemetry export --out trace.json     # OTLP/JSON بلا مجموعة جم�
 `candidate` لا يُرقَّى تلقائيًا أبدًا. ‏`python_execute` لا يقرأ الذاكرة. والأخطاء في الطبقتين **لا تُفشل
 تشغيلًا** — تُسجَّل كتحوّط وتُمضَى الجلسة. التفاصيل: [الخطة وأرقامها](docs/INTEGRATIONS_PLAN.md) ·
 [القرار](adr/0016-memory-and-retrieval-layer.md).
+
+### جمع الأبحاث والمهارات بطريقة مراجَعة
+
+يمكن للمشغّل بناء مكتبة محلية من أوراق البحث والمهارات دون زاحف غير مقيّد:
+
+```bash
+export CELA_KNOW_STORE_URL=sqlite:///./data/knowledge.sqlite
+export CELA_SKILL_STORE_URL=sqlite:///./data/skills.sqlite
+
+# ورقة PDF/Markdown/TXT واحدة؛ PDF يحتاج `pip install -e ".[papers]"`
+python -m os_server.cli know index ./papers/study.pdf --paper --title "Study title" --author "A. Researcher" --year 2025 --doi 10.1234/example --license CC-BY-4.0
+python -m os_server.cli know search "what did the study find?" --corpus research-papers
+
+# استيراد SKILL.md واحد فقط؛ الترخيص إلزامي والبطاقة تبدأ candidate
+python -m os_server.cli skills import ./skills/summarize/SKILL.md
+python -m os_server.cli skills list
+```
+
+الأبحاث تُفهرس محليًا مع DOI/المؤلفين/السنة والترخيص، وتُسترجع كمقتطفات **غير موثوقة مع استشهاد**؛
+لا تنزيل تلقائيًا ولا تدريب لأوزان النموذج. ملفات PDF الممسوحة تُرفض بلا OCR ضمني. المهارات
+المستوردة لا تحمل صلاحيات أدوات؛ `allowed-tools` تقييد لا منحة، ولا يُفعّل المحتوى غير المرخّص.
+واجهة CELA.PRO تستعمل المخازن نفسها، لكنها تحتاج `CELA_PRO_ADMIN_TOKEN` لعمليات الكتابة؛ وعند
+تعيينه يتطلب رابط Gradio تسجيل الدخول باسم `operator` وكلمة مرور هي القيمة نفسها. لا تستورد أرشيف
+مهارات جماعيًا غير مُراجع.
 
 **فضاءات الذاكرة (`namespace`):** كل سجل يحمل فضاءً، والدمج (التأكيد/التجاوز) والاسترجاع **لا يعبران
 الفضاء أبدًا** — الجملة نفسها في فضاءين سجلان مستقلان. الخادم يربط ذاكرته كلّها بفضاء واحد يسمّيه

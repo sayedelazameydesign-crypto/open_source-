@@ -45,6 +45,9 @@ server = [
 browser = [
     "playwright>=1.47",
 ]
+papers = [
+    "pypdf>=5.0",
+]
 sandbox = [
     "e2b-code-interpreter>=1.5",
 ]
