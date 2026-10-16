@@ -33,6 +33,11 @@ _PROVIDER_ENV_KEYS = (
     "OLLAMA_API_KEY",
     "OLLAMA_MODEL",
     "OLLAMA_BASE_URL",
+    "GROQ_REQUEST_EXTRA_JSON",
+    "GEMINI_REQUEST_EXTRA_JSON",
+    "OPENROUTER_REQUEST_EXTRA_JSON",
+    "KIMI_REQUEST_EXTRA_JSON",
+    "OLLAMA_REQUEST_EXTRA_JSON",
     "GRADIO_USERNAME",
     "GRADIO_PASSWORD",
 )
@@ -420,3 +425,51 @@ def test_colab_notebook_syncs_source_before_smoke_and_launch() -> None:
     missing = sorted(env for env in required_env if f'"{env}"' not in secrets_cell)
     assert not missing, f"متغيرات بيئة ناقصة في خلية أسرار Colab: {missing}"
     assert "TOKEN_ID.TOKEN_SECRET" in secrets_cell  # توثيق صيغة مفتاح وسيط Modal
+
+
+def test_provider_extra_body_is_optional_and_cannot_hijack_the_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """10) وسائط الطلب الإضافية: اختيارية، تُدمج في الحمولة، ولا تغيّر النموذج أو الرسائل."""
+    calls = _install_scripted_client(
+        monkeypatch,
+        ["رد أول", "رد ثانٍ", cela_pro_app.SMOKE_VERIFICATION_PHRASE],
+    )
+    monkeypatch.setenv("KIMI_API_KEY", "wk-token-id.token-secret")
+
+    # بدون المتغير: الحمولة تبقى كما كانت تمامًا (توافق خلفي)
+    cela_pro_app.chat_fn("مرحبًا", history=[], provider="Kimi")
+    assert set(calls[0]["json"]) == {"model", "messages", "temperature"}
+
+    # مع المتغير: تُدمج الوسائط، لكن النموذج والرسائل يبقى مصدرهما التطبيق
+    monkeypatch.setenv(
+        "KIMI_REQUEST_EXTRA_JSON",
+        '{"reasoning_effort": "none", "top_p": 0.9, "model": "hijacked", '
+        '"messages": [{"role": "user", "content": "hijacked"}]}',
+    )
+    cela_pro_app.chat_fn("مرحبًا", history=[], provider="Kimi")
+    payload = calls[1]["json"]
+    assert payload["reasoning_effort"] == "none"
+    assert payload["top_p"] == 0.9
+    assert payload["model"] == "moonshot-v1-8k"
+    assert payload["messages"][-1] == {"role": "user", "content": "مرحبًا"}
+
+    # الفحص الدقيق يعرض الوسائط المرسلة ويظل PASS
+    report = cela_pro_app.smoke_test_provider("Kimi")
+    assert "`PASS`" in report
+    assert "وسائط طلب إضافية" in report
+    assert "KIMI_REQUEST_EXTRA_JSON" in report
+
+    # قيمة غير صالحة: رسالة واضحة دون إرسال أي طلب
+    monkeypatch.setenv("KIMI_REQUEST_EXTRA_JSON", "{هذا ليس JSON}")
+    broken = cela_pro_app.chat_fn("مرحبًا", history=[], provider="Kimi")
+    assert broken.startswith("❌")
+    assert "KIMI_REQUEST_EXTRA_JSON" in broken
+    assert len(calls) == 3
+
+    # قائمة بدل كائن: مرفوضة أيضًا
+    monkeypatch.setenv("KIMI_REQUEST_EXTRA_JSON", '["reasoning_effort"]')
+    not_object = cela_pro_app.chat_fn("مرحبًا", history=[], provider="Kimi")
+    assert not_object.startswith("❌")
+    assert "كائن JSON" in not_object
+    assert len(calls) == 3

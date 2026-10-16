@@ -77,7 +77,10 @@
 | `KIMI_BASE_URL` | عنوان النقطة منتهيًا بـ `/v1` (التطبيق يضيف `/chat/completions`)، مثل `https://<workspace>--ep-<endpoint>.<region>.modal.direct/v1` |
 | `KIMI_MODEL` | اسم النموذج كما تعلنه النقطة، مثل `moonshotai/Kimi-K3` |
 | `KIMI_API_KEY` | الصيغة المركّبة التي يقبلها الوسيط: `TOKEN_ID.TOKEN_SECRET` |
+| `KIMI_REQUEST_EXTRA_JSON` | اختياري: كائن JSON يُدمج في جسم الطلب لوسائط الوسيط أو النموذج، مثل `{"reasoning_effort": "none"}` |
 | `CELA_DEFAULT_PROVIDER` | `Kimi` |
+
+> كل مزوّد يقرأ المتغيرات الأربعة نفسها باسمه (`GROQ_*` / `GEMINI_*` / `OPENROUTER_*` / `KIMI_*` / `OLLAMA_*`)، ومتغير `*_REQUEST_EXTRA_JSON` اختياري تمامًا: إن تُرك فارغًا تبقى حمولة الطلب كما هي (`model` + `messages` + `temperature`). ولا يمكن للحقول الإضافية استبدال `model` أو `messages` — فهما يأتيان دائمًا من إعداد المزوّد ومن المحادثة. والقيمة غير الصالحة تُنتج رسالة `❌` واضحة **دون إرسال أي طلب**. قالب فارغ لكل المتغيرات متاح في `.env.example`.
 
 محليًا:
 
@@ -86,11 +89,12 @@
 export KIMI_BASE_URL="https://<workspace>--ep-<endpoint>.<region>.modal.direct/v1"
 export KIMI_MODEL="moonshotai/Kimi-K3"
 export KIMI_API_KEY="<TOKEN_ID>.<TOKEN_SECRET>"
+export KIMI_REQUEST_EXTRA_JSON='{"reasoning_effort": "none"}'   # اختياري
 export CELA_DEFAULT_PROVIDER="Kimi"
 bash launch_cela_pro.sh
 ```
 
-وعلى Colab أضف `KIMI_API_KEY` و`KIMI_BASE_URL` و`KIMI_MODEL` في قسم **Secrets (🔑)**؛ خلية الأسرار في الدفتر تقرأ كل متغيرات المزوّدين (`*_API_KEY` و`*_MODEL` و`*_BASE_URL`) وتطبع **أسماء** ما حُمّل فقط دون القيم.
+وعلى Colab أضف `KIMI_API_KEY` و`KIMI_BASE_URL` و`KIMI_MODEL` (و`KIMI_REQUEST_EXTRA_JSON` إن لزم) في قسم **Secrets (🔑)**؛ خلية الأسرار في الدفتر تقرأ كل متغيرات المزوّدين (`*_API_KEY` و`*_MODEL` و`*_BASE_URL` و`*_REQUEST_EXTRA_JSON`) وتطبع **أسماء** ما حُمّل فقط دون القيم.
 
 ### قراءة نتيجة الفحص ضد نقطة وسيطة
 
@@ -98,7 +102,7 @@ bash launch_cela_pro.sh
 |---|---|
 | `PASS` | النقطة قبلت المفتاح وردّت بعبارة «اختبار الاتصال ناجح» |
 | `FAIL` | رفض الوسيط للمفتاح (`401`)، أو تعذّر الوصول إلى العنوان، أو ردّ فارغ |
-| `INCONCLUSIVE` | وصل رد حقيقي بصياغة أخرى — سلوك متوقّع من نماذج الاستدلال/التفكير ما لم يُضبط مجهود التفكير (مثل `reasoning_effort`) |
+| `INCONCLUSIVE` | وصل رد حقيقي بصياغة أخرى — سلوك متوقّع من نماذج الاستدلال/التفكير؛ اضبط `KIMI_REQUEST_EXTRA_JSON='{"reasoning_effort": "none"}'` ثم أعد الفحص |
 | `BLOCKED` | `KIMI_API_KEY` غير مُعيّن أصلًا، ولم يُرسل أي طلب |
 
 > ⚠️ لا تلصق قيمة `TOKEN_SECRET` في تعليق على issue أو في مخرجات اختبار أو في الدفتر؛ التطبيق يحجبها `[REDACTED]` في كل ما يعرضه، لكنه لا يستطيع حجبها مما تكتبه أنت يدويًا. وإن تسرّبت يومًا، أنشئ توكن جديدًا من إعدادات مساحة العمل وألغِ القديم.

@@ -80,6 +80,7 @@ PROVIDER_SPECS: dict[str, dict[str, Any]] = {
         "api_key_env": "GROQ_API_KEY",
         "model_env": "GROQ_MODEL",
         "base_url_env": "GROQ_BASE_URL",
+        "extra_body_env": "GROQ_REQUEST_EXTRA_JSON",
         "requires_key": True,
     },
     "Gemini": {
@@ -88,6 +89,7 @@ PROVIDER_SPECS: dict[str, dict[str, Any]] = {
         "api_key_env": "GEMINI_API_KEY",
         "model_env": "GEMINI_MODEL",
         "base_url_env": "GEMINI_BASE_URL",
+        "extra_body_env": "GEMINI_REQUEST_EXTRA_JSON",
         "requires_key": True,
     },
     "OpenRouter": {
@@ -96,6 +98,7 @@ PROVIDER_SPECS: dict[str, dict[str, Any]] = {
         "api_key_env": "OPENROUTER_API_KEY",
         "model_env": "OPENROUTER_MODEL",
         "base_url_env": "OPENROUTER_BASE_URL",
+        "extra_body_env": "OPENROUTER_REQUEST_EXTRA_JSON",
         "requires_key": True,
     },
     "Kimi": {
@@ -104,6 +107,7 @@ PROVIDER_SPECS: dict[str, dict[str, Any]] = {
         "api_key_env": "KIMI_API_KEY",
         "model_env": "KIMI_MODEL",
         "base_url_env": "KIMI_BASE_URL",
+        "extra_body_env": "KIMI_REQUEST_EXTRA_JSON",
         "requires_key": True,
     },
     "Ollama": {
@@ -113,6 +117,7 @@ PROVIDER_SPECS: dict[str, dict[str, Any]] = {
         "optional_key_env": "OLLAMA_API_KEY",
         "model_env": "OLLAMA_MODEL",
         "base_url_env": "OLLAMA_BASE_URL",
+        "extra_body_env": "OLLAMA_REQUEST_EXTRA_JSON",
         "requires_key": False,
     },
 }
@@ -170,6 +175,7 @@ def get_provider_config(provider: str | None = None) -> dict[str, Any]:
         "api_key_env": api_key_env,
         "model_env": spec["model_env"],
         "base_url_env": spec["base_url_env"],
+        "extra_body_env": spec["extra_body_env"],
         "requires_key": requires_key,
         "configured": configured,
         "api_key": api_key,
@@ -247,6 +253,31 @@ def redact_secret(text: Any, secret: str | None) -> str:
     return cleaned
 
 
+def get_provider_extra_body(cfg: dict[str, Any]) -> dict[str, Any]:
+    """قراءة وسائط الطلب الإضافية الاختيارية من ``<PROVIDER>_REQUEST_EXTRA_JSON``.
+
+    تُدمج في حمولة الطلب لضبط وسائط خاصة بمزوّد أو بنقطة وسيطة — مثل
+    ``{"reasoning_effort": "none"}`` لنماذج الاستدلال خلف وسيط Modal — دون أي تعديل
+    في الكود. المتغير اختياري تمامًا: إن كان فارغًا أو غير مُعيّن تبقى الحمولة كما كانت.
+
+    يرفع ``ValueError`` إذا لم تكن القيمة كائن JSON صالحًا، ليتولّى المستدعي عرض رسالة
+    واضحة بدل إرسال طلب ناقص.
+    """
+    env_name = str(cfg.get("extra_body_env") or "")
+    raw = os.getenv(env_name, "").strip()
+    if not env_name or not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except ValueError as exc:
+        raise ValueError(f"قيمة `{env_name}` ليست JSON صالحًا ({exc})") from exc
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"قيمة `{env_name}` يجب أن تكون كائن JSON (قاموسًا) لا {type(data).__name__}"
+        )
+    return data
+
+
 def call_provider_chat(messages: list[dict[str, str]], provider: str | None = None) -> str:
     """استدعاء المزوّد المحدد فقط دون تبديل تلقائي عند غياب المفتاح أو الفشل."""
     try:
@@ -265,17 +296,32 @@ def call_provider_chat(messages: list[dict[str, str]], provider: str | None = No
     if cfg["api_key"]:
         headers["Authorization"] = f"Bearer {cfg['api_key']}"
 
+    try:
+        extra_body = get_provider_extra_body(cfg)
+    except ValueError as exc:
+        return (
+            f"❌ {exc}.\n"
+            f"الصيغة المتوقعة لـ `{cfg['extra_body_env']}`: كائن JSON مثل "
+            '{"reasoning_effort": "none"} — أو اتركه فارغًا.'
+        )
+
+    payload: dict[str, Any] = {
+        "model": cfg["model"],
+        "messages": messages,
+        "temperature": 0.7,
+    }
+    payload.update(extra_body)
+    # هوية الطلب لا تُشترى من متغير إضافي: النموذج من إعداد المزوّد، والرسائل من المحادثة.
+    payload["model"] = cfg["model"]
+    payload["messages"] = messages
+
     endpoint = f"{cfg['base_url']}/chat/completions"
     try:
         with httpx.Client(timeout=60.0) as client:
             response = client.post(
                 endpoint,
                 headers=headers,
-                json={
-                    "model": cfg["model"],
-                    "messages": messages,
-                    "temperature": 0.7,
-                },
+                json=payload,
             )
             response.raise_for_status()
             data = response.json()
@@ -359,6 +405,8 @@ def run_smoke_test(provider: str | None = None) -> dict[str, Any]:
             "model": "",
             "base_url": "",
             "api_key_env": None,
+            "extra_body_env": None,
+            "extra_body": {},
             "reply": "",
             "detail": str(exc),
         }
@@ -369,6 +417,8 @@ def run_smoke_test(provider: str | None = None) -> dict[str, Any]:
         "model": cfg["model"],
         "base_url": cfg["base_url"],
         "api_key_env": cfg["api_key_env"],
+        "extra_body_env": cfg["extra_body_env"],
+        "extra_body": {},
         "reply": "",
         "detail": "",
     }
@@ -380,6 +430,11 @@ def run_smoke_test(provider: str | None = None) -> dict[str, Any]:
             f"({cfg['name']} يتطلب مفتاحًا)، لذلك لم يُرسل أي طلب إلى المزوّد."
         )
         return result
+
+    try:
+        result["extra_body"] = get_provider_extra_body(cfg)
+    except ValueError:
+        result["extra_body"] = {}  # رسالة الخطأ ستصل عبر رد المزوّد وتصنَّف FAIL
 
     reply = redact_secret(
         call_provider_chat(SMOKE_TEST_MESSAGES, provider=cfg["name"]),
@@ -417,6 +472,10 @@ def format_smoke_result(result: dict[str, Any]) -> str:
         lines.append(f"- **العنوان:** `{result['base_url']}`")
     if result.get("api_key_env"):
         lines.append(f"- **المفتاح:** `{result['api_key_env']}` = `{REDACTED}` (القيمة محجوبة)")
+    extra = result.get("extra_body") or {}
+    if extra:
+        rendered = ", ".join(f"`{key}`" for key in sorted(extra))
+        lines.append(f"- **وسائط طلب إضافية:** {rendered} (من `{result.get('extra_body_env')}`)")
     lines.append(f"- **عبارة التحقق المطلوبة:** «{SMOKE_VERIFICATION_PHRASE}»")
     if result.get("detail"):
         lines.append(f"- **التفصيل:** {result['detail']}")
