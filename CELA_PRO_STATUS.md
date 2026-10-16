@@ -1,65 +1,66 @@
-# CELA.PRO — تقرير الحالة
+# CELA.PRO — تقرير الحالة ودليل الإعداد
 
 **النظام:** Sovereign AI OS v2026 — الواجهة العربية (CELA.PRO)
-**الإصدار:** ما بعد إصلاح `SyntaxError` (الألوان بصيغة HEX)
-**التاريخ:** 2026-10-15
+**الإصدار:** متعدّد مزوّدي الذكاء الاصطناعي (Groq / Gemini / OpenRouter / Kimi / Ollama) + ألوان HEX
+**التاريخ:** 2026-10-16
 
 ## ما تم إنجازه
 
-1. `cela_pro_app.py` — تطبيق Gradio بالواجهة العربية (RTL)، ألوان HEX فقط (`#0b0f19` …)،
-   عدّى فحص الترجمة (`compile`) بدون أخطاء ✅
-2. `launch_cela_pro.sh` — سكريبت تشغيل (يثبّت Gradio تلقائيًا، `share=True`) ✅
-3. `CELA_PRO_STATUS.md` — هذا التقرير ✅
+1. `cela_pro_app.py` — تطبيق Gradio بالواجهة العربية (RTL)، يضيف قائمة لاختيار مزوّد الذكاء الاصطناعي من داخل الواجهة، مع الحفاظ على محرك المهارات (`SkillEngine`) و`OrionAgent` والمحادثة الحالية وألوان HEX فقط ✅
+2. `CELA_PRO_COLAB.ipynb` — دفتر Colab محدّث يقرأ المفاتيح وبيانات حماية الرابط العام من Colab Secrets ✅
+3. `launch_cela_pro.sh` — سكريبت تشغيل يدعم جميع المزوّدين الخمسة وينبّه عند غياب حماية الرابط العام ✅
+4. `tests/test_cela_pro_app.py` — أربعة اختبارات تحقق محلية شاملة دون استدعاء APIs حقيقية ✅
+5. `CELA_PRO_STATUS.md` — دليل الإعداد وتقرير الحالة هذا ✅
 
-## الميزات
+## قائمة مزوّدي الذكاء الاصطناعي (LLM Providers)
 
-- محادثة (ChatInterface) بالعربية/الإنجليزية
-- ربط Kimi API عبر `KIMI_API_KEY` (OpenAI-compatible، Moonshot)
-- وضع تجريبي (demo) عند غياب المفتاح
-- محرك مهارات (Skill Engine): تعلّم/عرض/استرجاع
-- OrionAgent: تنفيذ مهام مع عرض المهارات المتاحة
-- ألوان HEX فقط (لا `rgb()`) — لا SyntaxError
+تتضمن القائمة في الواجهة خمسة خيارات:
 
-## خطوات التشغيل
+| المزوّد | النموذج الافتراضي | متغير المفتاح | متغير النموذج | متغير العنوان (Base URL) | العنوان الافتراضي |
+|---|---|---|---|---|---|
+| **Groq** | `openai/gpt-oss-20b` | `GROQ_API_KEY` | `GROQ_MODEL` | `GROQ_BASE_URL` | `https://api.groq.com/openai/v1` |
+| **Gemini** | `gemini-2.5-flash` | `GEMINI_API_KEY` | `GEMINI_MODEL` | `GEMINI_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta/openai` |
+| **OpenRouter** | `openrouter/free` | `OPENROUTER_API_KEY` | `OPENROUTER_MODEL` | `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` |
+| **Kimi** | `moonshot-v1-8k` | `KIMI_API_KEY` | `KIMI_MODEL` | `KIMI_BASE_URL` | `https://api.moonshot.cn/v1` |
+| **Ollama** | `llama3.2:latest` | لا يحتاج مفتاحًا محليًا (`OLLAMA_API_KEY` اختياري) | `OLLAMA_MODEL` | `OLLAMA_BASE_URL` | `http://localhost:11434/v1` |
+
+### قواعد الأمان والتوجيه
+- **عدم كشف المفاتيح:** اختيار المزوّد يعرض حالة الإعداد فقط (`مُعيّن` / `غير مُعيّن`) ولا يرسل قيم المفاتيح السرية إلى الواجهة.
+- **عدم التبديل التلقائي (No Silent Fallback):** عند غياب مفتاح المزوّد المختار أو فشل الاتصال به، يعرض التطبيق رسالة واضحة خاصة بهذا المزوّد ولا ينتقل تلقائيًا إلى مزوّد آخر.
+- **تحديث نموذج Groq الافتراضي:** تم اعتماد `openai/gpt-oss-20b` بديلًا عن `llama-3.3-70b-versatile` المتوقف في الخطة المجانية اعتبارًا من 16 أغسطس 2026.
+
+## حماية الرابط العام في Gradio
+
+لأن التطبيق يعمل برابط عام (`share=True`)، يُنصح بتعيين متغيري المصادقة لحماية حصص API الخاصة بك:
+
+| المتغير | الغرض |
+|---|---|
+| `GRADIO_USERNAME` | اسم المستخدم لحماية واجهة Gradio العامة |
+| `GRADIO_PASSWORD` | كلمة المرور لحماية واجهة Gradio العامة |
+| `CELA_DEFAULT_PROVIDER` | المزوّد الافتراضي عند بدء التشغيل (الافتراضي: `Groq`) |
+
+في حال عدم تعيين `GRADIO_USERNAME` و`GRADIO_PASSWORD`، يُصدر التطبيق تحذيرًا واضحًا بأن مستخدمين آخرين قد يستهلكون حصص API عبر الرابط العام.
+
+## خطوات التشغيل المحلي
 
 ```bash
-# (اختياري) تعيين مفتاح Kimi
-export KIMI_API_KEY="sk-..."
+# مثال: تشغيل باستخدام Groq مع تفعيل حماية Gradio
+export GROQ_API_KEY="gsk_..."
+export GRADIO_USERNAME="admin"
+export GRADIO_PASSWORD="strong-password"
 
-# تشغيل
 bash launch_cela_pro.sh
 # أو
 python cela_pro_app.py
 ```
 
-الرابط العام (share=True) يُطبع في الطرفية.
+## خطوات التشغيل على Google Colab
 
-## متغيرات البيئة
+1. افتح `CELA_PRO_COLAB.ipynb` في Google Colab.
+2. أضف الأسرار المطلوبة في قسم **Secrets (🔑)** بالأسماء المطابقة (`GROQ_API_KEY`، `GEMINI_API_KEY`، `OPENROUTER_API_KEY`، `KIMI_API_KEY`، بالإضافة إلى `GRADIO_USERNAME` و`GRADIO_PASSWORD`).
+3. شغّل الخلايا بالترتيب (يستنسخ الدفتر المستودع تلقائيًا أو يطلب رفع `cela_pro_app.py` إن لم يكن موجودًا).
 
-| المتغير | الافتراضي | الوصف |
-|---|---|---|
-| `KIMI_API_KEY` | `` | مفتاح Kimi (Moonshot) |
-| `KIMI_BASE_URL` | `https://api.moonshot.cn/v1` | نقطة النهاية |
-| `KIMI_MODEL` | `moonshot-v1-8k` | النموذج |
+## نقاط الانتباه
 
-## المهام التالية (مقترحة)
-
-- 🔗 ربط Kimi API مرة تانية عبر `KIMI_API_KEY` ( verifying end-to-end )
-- ⚙️ إعادة توصيل وحدات النظام (Skill Engine / OrionAgent) — استبدال الـ stubs بتنفيذ حقيقي
-- 🚀 رفع النسخة الكاملة Sovereign AI OS v2026 على Colab Cluster
-- 🎨 لوحة Artifacts (HTML/React/markdown/صور) + معاينة مباشرة
-- 🔐 إضافة HITL (موافقة بشرية) قبل تنفيذ مهام OrionAgent
-
-## ملاحظات
-
-- الـ stubs (SkillEngine/OrionAgent) مُصمَّمة للتوسيع: استبدل `run()`/`learn()` بمنطق حقيقي.
-- لا تستخدم `rgb()` في سلاسل Python — استخدم HEX (`#rrggbb`) لتجنّب SyntaxError.
-
-## تحديث (جلسة Fortsetzung)
-
-- ✅ مهارات محفوظة في `cela_pro_skills.json` (استمرارية بين التشغيلات)
-- ✅ HITL: checkbox «أوافق» قبل تنفيذ OrionAgent
-- ✅ تصدير/مسح المهارات (JSON)
-- ✅ حالة وحدات النظام (os_skills/os_memory/os_know/os_core) في الواجهة
-- ✅ دفتر Colab: `CELA_PRO_COLAB.ipynb`
-- ⚠️ os_* modules تُكتشف تلقائيًا (✅ إن كانت مثبّتة، ❌ وإلا وضع مستقل)
+- الخطط المجانية وحدود الطلبات قابلة للتغيير (على سبيل المثال: خطة OpenRouter المجانية تفرض حدًا يوميًا للطلبات، وواجهة Gemini المتوافقة مع OpenAI تخضع لقيود وسياسة بيانات المستوى المجاني).
+- ألوان الواجهة بصيغة HEX فقط (`#0b0f19` …) لتجنّب `SyntaxError`.

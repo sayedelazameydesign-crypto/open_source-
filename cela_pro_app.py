@@ -1,15 +1,63 @@
 """CELA.PRO — الواجهة العربية لنظام Sovereign AI OS v2026.
 
 تطبيق Gradio (RTL) مع:
-- محادثة عبر Kimi API (KIMI_API_KEY)
-- محرك مهارات (Skill Engine) + OrionAgent (stubs قابلة للتوسيع)
-- ألوان HEX فقط (لا rgb()) لتجنّب SyntaxError في Python
+- قائمة اختيار مزوّد الذكاء الاصطناعي (Groq, Gemini, OpenRouter, Kimi, Ollama)
+- محادثة متوافقة مع OpenAI Chat Completions دون تسريب المفاتيح للواجهة أو التبديل التلقائي
+- محرك مهارات (Skill Engine) + OrionAgent مع موافقة بشرية (HITL)
+- ألوان HEX فقط لتجنّب SyntaxError في Python
 """
 
-import os
+from __future__ import annotations
+
+import contextlib
 import json
+import os
+import pathlib
+import sys
+from typing import Any
+
 import httpx
-import gradio as gr
+
+try:
+    import gradio as gr
+except ModuleNotFoundError:  # pragma: no cover - fallback for headless CI without gradio
+
+    class _DummyComponent:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.args = args
+            self.kwargs = kwargs
+            self.choices = kwargs.get("choices", [])
+            self.value = kwargs.get("value")
+            self.label = kwargs.get("label")
+
+        def click(self, *args: Any, **kwargs: Any) -> None:
+            return None
+
+        def change(self, *args: Any, **kwargs: Any) -> None:
+            return None
+
+    class _DummyBlocks(_DummyComponent):
+        def __enter__(self) -> _DummyBlocks:
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            return None
+
+        def launch(self, *args: Any, **kwargs: Any) -> None:
+            return None
+
+    class _DummyGradio:
+        Blocks = _DummyBlocks
+        Row = _DummyBlocks
+        Column = _DummyBlocks
+        Markdown = _DummyComponent
+        Dropdown = _DummyComponent
+        ChatInterface = _DummyComponent
+        Textbox = _DummyComponent
+        Button = _DummyComponent
+        Checkbox = _DummyComponent
+
+    gr = _DummyGradio()  # type: ignore[assignment]
 
 # ---------- الألوان (HEX فقط) ----------
 BG = "#0b0f19"
@@ -22,87 +70,243 @@ SUCCESS = "#34d399"
 WARN = "#fbbf24"
 DANGER = "#f87171"
 
-# ---------- إعدادات Kimi ----------
+# ---------- إعدادات المزوّدين ----------
+PROVIDER_SPECS: dict[str, dict[str, Any]] = {
+    "Groq": {
+        "default_model": "openai/gpt-oss-20b",
+        "default_base_url": "https://api.groq.com/openai/v1",
+        "api_key_env": "GROQ_API_KEY",
+        "model_env": "GROQ_MODEL",
+        "base_url_env": "GROQ_BASE_URL",
+        "requires_key": True,
+    },
+    "Gemini": {
+        "default_model": "gemini-2.5-flash",
+        "default_base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+        "api_key_env": "GEMINI_API_KEY",
+        "model_env": "GEMINI_MODEL",
+        "base_url_env": "GEMINI_BASE_URL",
+        "requires_key": True,
+    },
+    "OpenRouter": {
+        "default_model": "openrouter/free",
+        "default_base_url": "https://openrouter.ai/api/v1",
+        "api_key_env": "OPENROUTER_API_KEY",
+        "model_env": "OPENROUTER_MODEL",
+        "base_url_env": "OPENROUTER_BASE_URL",
+        "requires_key": True,
+    },
+    "Kimi": {
+        "default_model": "moonshot-v1-8k",
+        "default_base_url": "https://api.moonshot.cn/v1",
+        "api_key_env": "KIMI_API_KEY",
+        "model_env": "KIMI_MODEL",
+        "base_url_env": "KIMI_BASE_URL",
+        "requires_key": True,
+    },
+    "Ollama": {
+        "default_model": "llama3.2:latest",
+        "default_base_url": "http://localhost:11434/v1",
+        "api_key_env": None,
+        "optional_key_env": "OLLAMA_API_KEY",
+        "model_env": "OLLAMA_MODEL",
+        "base_url_env": "OLLAMA_BASE_URL",
+        "requires_key": False,
+    },
+}
+
+PROVIDER_CHOICES: list[str] = list(PROVIDER_SPECS.keys())
+_PROVIDER_LOOKUP: dict[str, str] = {name.lower(): name for name in PROVIDER_CHOICES}
+
+# توافق خلفي مع الإصدار السابق
 KIMI_API_KEY = os.getenv("KIMI_API_KEY", "")
 KIMI_BASE_URL = os.getenv("KIMI_BASE_URL", "https://api.moonshot.cn/v1")
 KIMI_MODEL = os.getenv("KIMI_MODEL", "moonshot-v1-8k")
 
 
-def kimi_chat(messages):
-    """استدعاء Kimi (OpenAI-compatible). يعود بوضع تجريبي إن لم يوجد مفتاح."""
-    if not KIMI_API_KEY:
-        return (
-            "⚠️ KIMI_API_KEY غير مُعيّن — وضع تجريبي.\n"
-            "أضف المفتاح: export KIMI_API_KEY=sk-..."
+def resolve_provider_name(provider: str | None = None) -> str:
+    """تطبيع اسم المزوّد والتحقق من صحته."""
+    raw = (provider or os.getenv("CELA_DEFAULT_PROVIDER", "Groq")).strip()
+    if not raw:
+        return "Groq"
+    canonical = _PROVIDER_LOOKUP.get(raw.lower())
+    if canonical is None:
+        supported = ", ".join(PROVIDER_CHOICES)
+        raise ValueError(f"مزوّد غير مدعوم: {raw}. الخيارات المتاحة: {supported}")
+    return canonical
+
+
+def get_default_provider() -> str:
+    """إرجاع المزوّد الافتراضي المعتمد للواجهة."""
+    try:
+        return resolve_provider_name(os.getenv("CELA_DEFAULT_PROVIDER", "Groq"))
+    except ValueError:
+        return "Groq"
+
+
+def get_provider_config(provider: str | None = None) -> dict[str, Any]:
+    """قراءة إعدادات المزوّد ديناميكيًا من متغيرات البيئة."""
+    name = resolve_provider_name(provider)
+    spec = PROVIDER_SPECS[name]
+    model = os.getenv(spec["model_env"], "").strip() or spec["default_model"]
+    base_url = (
+        os.getenv(spec["base_url_env"], "").strip().rstrip("/")
+        or spec["default_base_url"]
+    )
+    api_key_env: str | None = spec["api_key_env"]
+    requires_key: bool = bool(spec["requires_key"])
+    if api_key_env:
+        api_key = os.getenv(api_key_env, "").strip()
+    else:
+        optional_env = spec.get("optional_key_env", "OLLAMA_API_KEY")
+        api_key = os.getenv(optional_env, "").strip()
+    configured = (not requires_key) or bool(api_key)
+    return {
+        "name": name,
+        "model": model,
+        "base_url": base_url,
+        "api_key_env": api_key_env,
+        "model_env": spec["model_env"],
+        "base_url_env": spec["base_url_env"],
+        "requires_key": requires_key,
+        "configured": configured,
+        "api_key": api_key,
+    }
+
+
+def format_provider_status(provider: str | None = None) -> str:
+    """تنسيق حالة إعداد المزوّد للعرض في الواجهة دون كشف أي مفاتيح سرية."""
+    try:
+        cfg = get_provider_config(provider)
+    except ValueError as exc:
+        return f"<span class='status-err'>●</span> {exc}"
+
+    if not cfg["requires_key"]:
+        key_state = "<span class='status-ok'>●</span> جاهز محليًا (لا يحتاج مفتاحًا محليًا)"
+    elif cfg["configured"]:
+        key_state = (
+            f"<span class='status-ok'>●</span> متصل "
+            f"(المفتاح `{cfg['api_key_env']}` مُعيّن)"
         )
+    else:
+        key_state = (
+            f"<span class='status-warn'>●</span> غير مُعيّن — "
+            f"عيّن `{cfg['api_key_env']}` لتفعيل {cfg['name']}"
+        )
+
+    return (
+        f"**المزوّد الحالي:** `{cfg['name']}`  |  "
+        f"**الحالة:** {key_state}  |  "
+        f"**النموذج:** `{cfg['model']}` (`{cfg['model_env']}`)  |  "
+        f"**العنوان:** `{cfg['base_url']}`"
+    )
+
+
+def format_all_providers_summary() -> str:
+    """ملخص حالة جميع المزوّدين الخمسة دون إظهار قيم المفاتيح."""
+    lines = ["### 🌐 حالة مزوّدي الذكاء الاصطناعي"]
+    for name in PROVIDER_CHOICES:
+        cfg = get_provider_config(name)
+        if not cfg["requires_key"]:
+            badge = "🟢 محلي (بدون مفتاح)"
+        elif cfg["configured"]:
+            badge = f"✅ `{cfg['api_key_env']}` مُعيّن"
+        else:
+            badge = f"⚠️ ينقصه `{cfg['api_key_env']}`"
+        lines.append(f"- **{name}** (`{cfg['model']}`): {badge}")
+    return "\n".join(lines)
+
+
+def call_provider_chat(messages: list[dict[str, str]], provider: str | None = None) -> str:
+    """استدعاء المزوّد المحدد فقط دون تبديل تلقائي عند غياب المفتاح أو الفشل."""
+    try:
+        cfg = get_provider_config(provider)
+    except ValueError as exc:
+        return f"❌ {exc}"
+
+    if cfg["requires_key"] and not cfg["configured"]:
+        return (
+            f"⚠️ مفتاح {cfg['name']} غير مُعيّن (`{cfg['api_key_env']}`) — وضع تجريبي.\n"
+            f"أضف المتغير `{cfg['api_key_env']}` في البيئة أو Colab Secrets ثم أعد المحاولة.\n"
+            "ملاحظة: لا يتم الانتقال تلقائيًا إلى مزوّد آخر."
+        )
+
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if cfg["api_key"]:
+        headers["Authorization"] = f"Bearer {cfg['api_key']}"
+
+    endpoint = f"{cfg['base_url']}/chat/completions"
     try:
         with httpx.Client(timeout=60.0) as client:
             response = client.post(
-                f"{KIMI_BASE_URL}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {KIMI_API_KEY}",
-                    "Content-Type": "application/json",
-                },
+                endpoint,
+                headers=headers,
                 json={
-                    "model": KIMI_MODEL,
+                    "model": cfg["model"],
                     "messages": messages,
                     "temperature": 0.7,
                 },
             )
             response.raise_for_status()
             data = response.json()
-            return data["choices"][0]["message"]["content"]
-    except Exception as exc:  # noqa: BLE001 - واجهة مستخدم
-        return f"❌ خطأ Kimi: {exc}"
+            return str(data["choices"][0]["message"]["content"])
+    except Exception as exc:
+        return (
+            f"❌ فشل الاتصال بمزوّد {cfg['name']} "
+            f"(النموذج `{cfg['model']}` على `{cfg['base_url']}`): {exc}"
+        )
 
 
-import pathlib as _pathlib
+def kimi_chat(messages: list[dict[str, str]]) -> str:
+    """دالة توافقية لاستدعاء Kimi مباشرة."""
+    return call_provider_chat(messages, provider="Kimi")
 
-_SKILLS_FILE = _pathlib.Path("cela_pro_skills.json")
+
+_SKILLS_FILE = pathlib.Path("cela_pro_skills.json")
 
 
-def _load_skills():
-    try:
+def _load_skills() -> dict[str, Any]:
+    with contextlib.suppress(Exception):
         if _SKILLS_FILE.exists():
-            return json.loads(_SKILLS_FILE.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001
-        pass
+            data = json.loads(_SKILLS_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
     return {}
 
 
-def _save_skills(skills):
-    try:
+def _save_skills(skills: dict[str, Any]) -> None:
+    with contextlib.suppress(Exception):
         _SKILLS_FILE.write_text(
-            json.dumps(skills, ensure_ascii=False, indent=2), encoding="utf-8"
+            json.dumps(skills, ensure_ascii=False, indent=2),
+            encoding="utf-8",
         )
-    except Exception:  # noqa: BLE001
-        pass
 
 
 # ---------- محرك المهارات (Skill Engine) ----------
 class SkillEngine:
-    def __init__(self):
-        self.skills = _load_skills()
+    def __init__(self) -> None:
+        self.skills: dict[str, Any] = _load_skills()
 
-    def learn(self, name, payload):
-        if not name.strip():
+    def learn(self, name: str, payload: str) -> str:
+        if not name or not name.strip():
             return "⚠️ أدخل اسم المهارة."
-        self.skills[name.strip()] = payload
+        clean_name = name.strip()
+        self.skills[clean_name] = payload
         _save_skills(self.skills)
-        return f"✅ تم تعلّم المهارة: {name.strip()} (الإجمالي: {len(self.skills)})"
+        return f"✅ تم تعلّم المهارة: {clean_name} (الإجمالي: {len(self.skills)})"
 
-    def list_skills(self):
+    def list_skills(self) -> list[str]:
         if not self.skills:
             return ["(لا توجد مهارات بعد)"]
         return list(self.skills.keys())
 
-    def get(self, name):
+    def get(self, name: str) -> Any:
         return self.skills.get(name, "(غير موجودة)")
 
-    def export_json(self):
+    def export_json(self) -> str:
         return json.dumps(self.skills, ensure_ascii=False, indent=2)
 
-    def clear(self):
+    def clear(self) -> str:
         self.skills = {}
         _save_skills(self.skills)
         return "🗑️ تم مسح جميع المهارات."
@@ -110,12 +314,12 @@ class SkillEngine:
 
 # ---------- OrionAgent ----------
 class OrionAgent:
-    def __init__(self):
+    def __init__(self) -> None:
         self.engine = SkillEngine()
-        self.history = []
+        self.history: list[str] = []
 
-    def run(self, task, approved=False):
-        if not task.strip():
+    def run(self, task: str, approved: bool = False) -> str:
+        if not task or not task.strip():
             return "⚠️ أدخل مهمة."
         if not approved:
             return (
@@ -129,19 +333,19 @@ class OrionAgent:
             f"[OrionAgent] تنفيذ المهمة: {task}\n"
             f"• المهارات المتاحة: {', '.join(skills)}\n"
             f"• عدد المهارات: {len(self.engine.skills)}\n"
-            f"• (وضع: محرك محلي — اربط Kimi للذكاء الكامل)"
+            "• (وضع: محرك محلي — اختر المزوّد من القائمة للمحادثة الذكية)"
         )
 
 
 ORION = OrionAgent()
 
 # ---------- توفر وحدات Sovereign AI OS (اختياري) ----------
-_MODULE_STATUS = {}
+_MODULE_STATUS: dict[str, bool] = {}
 for _mod in ("os_skills", "os_memory", "os_know", "os_core"):
     try:
         __import__(_mod)
         _MODULE_STATUS[_mod] = True
-    except Exception:  # noqa: BLE001
+    except Exception:
         _MODULE_STATUS[_mod] = False
 
 
@@ -169,28 +373,92 @@ button.primary {{
 .status-err {{ color: {DANGER}; }}
 """
 
+SYSTEM_PROMPT = "أنت CELA.PRO، مساعد ذكي بالعربية لنظام Sovereign AI OS v2026."
 
-def chat_fn(message, history):
-    """معالج المحادثة."""
-    messages = [{"role": "system", "content": "أنت CELA.PRO، مساعد ذكي بالعربية لنظام Sovereign AI OS v2026."}]
-    for pair in (history or []):
-        if isinstance(pair, (list, tuple)) and len(pair) >= 2:
-            messages.append({"role": "user", "content": str(pair[0])})
-            messages.append({"role": "assistant", "content": str(pair[1])})
-    messages.append({"role": "user", "content": message})
-    return kimi_chat(messages)
+
+def chat_fn(
+    message: str,
+    history: list[Any] | None = None,
+    provider: str | None = None,
+) -> str:
+    """معالج المحادثة مع توجيه الطلب إلى المزوّد المختار من القائمة."""
+    messages: list[dict[str, str]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    for item in history or []:
+        if isinstance(item, dict) and "role" in item and "content" in item:
+            messages.append(
+                {"role": str(item["role"]), "content": str(item["content"])}
+            )
+        elif isinstance(item, (list, tuple)) and len(item) >= 2:
+            if item[0] is not None:
+                messages.append({"role": "user", "content": str(item[0])})
+            if item[1] is not None:
+                messages.append({"role": "assistant", "content": str(item[1])})
+    messages.append({"role": "user", "content": str(message)})
+    selected_provider = provider or get_default_provider()
+    return call_provider_chat(messages, provider=selected_provider)
+
+
+def get_launch_auth() -> tuple[str, str] | None:
+    """إرجاع بيانات مصادقة Gradio عند ضبط GRADIO_USERNAME وGRADIO_PASSWORD."""
+    username = os.getenv("GRADIO_USERNAME", "").strip()
+    password = os.getenv("GRADIO_PASSWORD", "").strip()
+    if username and password:
+        return (username, password)
+    return None
+
+
+def get_security_notice() -> str:
+    """رسالة تنبيه أمان الرابط العام في حال عدم تفعيل مصادقة Gradio."""
+    if get_launch_auth() is not None:
+        return (
+            "<span class='status-ok'>🔒 حماية الرابط العام مفعّلة "
+            "(`GRADIO_USERNAME` / `GRADIO_PASSWORD`).</span>"
+        )
+    return (
+        "<span class='status-warn'>⚠️ تنبيه أمان: لم يتم ضبط `GRADIO_USERNAME` و"
+        "`GRADIO_PASSWORD`؛ عند تفعيل رابط Gradio العام (`share=True`) قد يتمكن "
+        "آخرون من استهلاك حصص API الخاصة بك.</span>"
+    )
+
+
+def _refresh_provider_ui(provider: str) -> tuple[str, str]:
+    """تحديث شريط حالة المزوّد وملخص المزوّدين عند تغيير الاختيار."""
+    return format_provider_status(provider), format_all_providers_summary()
 
 
 # ---------- الواجهة ----------
 with gr.Blocks(title="CELA.PRO") as demo:
     gr.Markdown("# 🧠 CELA.PRO — الواجهة العربية لـ Sovereign AI OS v2026")
-    gr.Markdown(
-        f"<span class='status-ok'>●</span> Kimi: "
-        f"{'متصل' if KIMI_API_KEY else 'غير متصل (وضع تجريبي)'}  |  "
-        f"Model: {KIMI_MODEL}"
+    security_md = gr.Markdown(get_security_notice())
+    provider_status_md = gr.Markdown(format_provider_status(get_default_provider()))
+
+    with gr.Row():
+        provider_dropdown = gr.Dropdown(
+            choices=PROVIDER_CHOICES,
+            value=get_default_provider(),
+            label="مزوّد الذكاء الاصطناعي (LLM Provider)",
+            info=(
+                "اختر المزوّد (Groq / Gemini / OpenRouter / Kimi / Ollama) "
+                "دون إرسال المفاتيح للواجهة"
+            ),
+        )
+        refresh_status_btn = gr.Button("تحديث حالة المزوّدين")
+
+    providers_summary_md = gr.Markdown(format_all_providers_summary())
+    provider_dropdown.change(
+        fn=_refresh_provider_ui,
+        inputs=[provider_dropdown],
+        outputs=[provider_status_md, providers_summary_md],
     )
+    refresh_status_btn.click(
+        fn=_refresh_provider_ui,
+        inputs=[provider_dropdown],
+        outputs=[provider_status_md, providers_summary_md],
+    )
+
     gr.Markdown(
-        "### 🔌 وحدات النظام\n" + "\n".join(
+        "### 🔌 وحدات النظام\n"
+        + "\n".join(
             f"- {m}: {'✅' if ok else '❌'}" for m, ok in _MODULE_STATUS.items()
         )
     )
@@ -199,8 +467,12 @@ with gr.Blocks(title="CELA.PRO") as demo:
         with gr.Column(scale=3):
             gr.ChatInterface(
                 fn=chat_fn,
+                additional_inputs=[provider_dropdown],
                 title="محادثة",
-                description="تحدث بالعربية أو الإنجليزية.",
+                description=(
+                    "تحدث بالعربية أو الإنجليزية باستخدام المزوّد المحدد أعلاه "
+                    "(لا يتم التبديل التلقائي بين المزوّدين عند الفشل)."
+                ),
             )
         with gr.Column(scale=1):
             gr.Markdown("### 🧩 محرك المهارات (Skill Engine)")
@@ -219,7 +491,11 @@ with gr.Blocks(title="CELA.PRO") as demo:
             approved = gr.Checkbox(label="أوافق (HITL)", value=False)
             run_btn = gr.Button("تنفيذ", variant="primary")
             run_out = gr.Textbox(label="الناتج", lines=6, interactive=False)
-            run_btn.click(lambda t, a: ORION.run(t, approved=a), inputs=[task, approved], outputs=run_out)
+            run_btn.click(
+                lambda t, a: ORION.run(t, approved=a),
+                inputs=[task, approved],
+                outputs=run_out,
+            )
 
             gr.Markdown("### 📤 تصدير/مسح")
             export_btn = gr.Button("تصدير JSON")
@@ -232,8 +508,24 @@ with gr.Blocks(title="CELA.PRO") as demo:
             gr.Markdown("### 📋 المهارات")
             list_btn = gr.Button("عرض")
             list_out = gr.Textbox(label="القائمة", interactive=False)
-            list_btn.click(lambda: "\n".join(ORION.engine.list_skills()), outputs=list_out)
+            list_btn.click(
+                lambda: "\n".join(ORION.engine.list_skills()),
+                outputs=list_out,
+            )
 
 
 if __name__ == "__main__":
-    demo.launch(share=True, server_name="0.0.0.0", server_port=7860, css=CSS)
+    _auth = get_launch_auth()
+    if _auth is None:
+        print(
+            "⚠️ تحذير: GRADIO_USERNAME و GRADIO_PASSWORD غير مُعيّنين. "
+            "الرابط العام (share=True) سيكون متاحًا بدون كلمة مرور وقد يستهلك حصص API.",
+            file=sys.stderr,
+        )
+    demo.launch(
+        share=True,
+        server_name="0.0.0.0",
+        server_port=7860,
+        auth=_auth,
+        css=CSS,
+    )
