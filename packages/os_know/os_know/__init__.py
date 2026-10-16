@@ -13,6 +13,13 @@ retriever`` as four swappable stages), not 52k stars of surface area.
 
 from os_know.chunking import chunk_code, chunk_for, chunk_markdown, chunk_python, chunk_text
 from os_know.metrics import evaluate, mrr, recall_at_k
+from os_know.papers import (
+    DEFAULT_PAPER_CORPUS,
+    index_research_paper,
+    index_research_paper_file,
+    normalize_doi,
+    read_research_paper,
+)
 from os_know.retrieve import KnowRetriever
 from os_know.store import (
     InMemoryKnowStore,
@@ -24,6 +31,7 @@ from os_know.tools import know_tools
 from os_know.types import Chunk, Corpus, Document, DocumentInput, KnowHit
 
 __all__ = [
+    "DEFAULT_PAPER_CORPUS",
     "Chunk",
     "Corpus",
     "Document",
@@ -39,8 +47,12 @@ __all__ = [
     "chunk_python",
     "chunk_text",
     "evaluate",
+    "index_research_paper",
+    "index_research_paper_file",
     "know_store_from_url",
     "know_tools",
     "mrr",
+    "normalize_doi",
+    "read_research_paper",
     "recall_at_k",
 ]

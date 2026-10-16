@@ -24,7 +24,7 @@
 | سجل نتائج دائم لكل تشغيل (JSONL + ملخّص + `/ledger`) | ✅ | `test_ledger.py` |
 | حوكمة طرف ثالث: نزاهة الشجرة المُضافة + نطاق النشر + صدق النسبة + حارسات الـfork (ADR-0018) | ✅ | `test_vendored_integrity.py` (18) |
 
-**المجموع المحلي (Python 3.11): 967 اختبارًا ناجحًا، 1 متخطّى اختياريًا، 0 فشل، دون مفاتيح API ودون شبكة.**
+**المجموع المحلي (Python 3.11): 1007 اختبارًا ناجحًا، 1 متخطّى اختياريًا، 0 فشل، دون مفاتيح API ودون شبكة.**
 
 CI أخضر على Python 3.11 / 3.12 / 3.13 (Lint + Test + Smoke-test):
 <https://github.com/sayedelazameydesign-crypto/open_source-/actions>

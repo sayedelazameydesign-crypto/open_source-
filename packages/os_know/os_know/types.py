@@ -15,7 +15,7 @@ from typing import Any
 from pydantic import BaseModel, Field, computed_field
 
 #: URL schemes make a document somebody else's text.
-UNTRUSTED_SCHEMES: frozenset[str] = frozenset({"http", "https", "feed", "rss"})
+UNTRUSTED_SCHEMES: frozenset[str] = frozenset({"http", "https", "feed", "rss", "import"})
 
 
 def short_hash(text: str) -> str:
