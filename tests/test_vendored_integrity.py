@@ -225,9 +225,9 @@ def test_github_is_told_the_tree_is_vendored() -> None:
     attributes = REPO / ".gitattributes"
     assert attributes.is_file(), "missing .gitattributes"
     body = attributes.read_text(encoding="utf-8")
-    assert re.search(
-        r"^packages/craft-launcher/\*\*\s+.*linguist-vendored", body, re.MULTILINE
-    ), ".gitattributes must mark packages/craft-launcher/** as linguist-vendored"
+    assert re.search(r"^packages/craft-launcher/\*\*\s+.*linguist-vendored", body, re.MULTILINE), (
+        ".gitattributes must mark packages/craft-launcher/** as linguist-vendored"
+    )
 
 
 def test_the_readme_points_at_the_third_party_notices() -> None:

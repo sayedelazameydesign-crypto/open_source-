@@ -31,6 +31,14 @@ from os_core.router import (
     default_registry,
 )
 from os_core.state import RunState, RunStatus
+from os_core.tokens import (
+    TokenCalibration,
+    count_tokens,
+    estimate,
+    estimate_model_tokens,
+    token_ids,
+    truncate_to_tokens,
+)
 from os_core.types import (
     Artifact,
     Message,
@@ -44,6 +52,13 @@ from os_core.types import (
     ToolResult,
     ToolStatus,
     Usage,
+)
+from os_core.vectors import (
+    VectorError,
+    embedding_space,
+    fuse_rankings,
+    pack,
+    unpack,
 )
 
 __version__ = "0.1.0"
@@ -84,13 +99,25 @@ __all__ = [
     "ScriptedModel",
     "StepStatus",
     "TaskProfile",
+    "TokenCalibration",
     "ToolCall",
     "ToolResult",
     "ToolStatus",
     "Usage",
+    "VectorError",
     "__version__",
+    "cosine",
+    "count_tokens",
     "default_registry",
+    "embedding_space",
+    "estimate",
+    "estimate_model_tokens",
+    "fuse_rankings",
     "outcome_for",
+    "pack",
     "replay_and_stream",
     "resolve_ledger",
+    "token_ids",
+    "truncate_to_tokens",
+    "unpack",
 ]

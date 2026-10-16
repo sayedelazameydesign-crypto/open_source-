@@ -223,6 +223,73 @@ _KNOW_LAYER: Any = None
 ENV_MEMORY_NAMESPACE = "CELA_MEMORY_NAMESPACE"
 
 
+_EMBEDDING_STATE: Any = "unset"
+_EMBED_EGRESS: Any = "unset"
+
+
+def embedding_egress_policy():
+    """A policy for the embedding endpoint alone, from ``CELA_EMBED_ALLOW_HOSTS``.
+
+    Deliberately *not* the reach policy: the embedding origin is configuration the
+    operator named for one tool, and an operator who allows a corpus host must not
+    thereby be allowing a third party to receive corpus text.
+    """
+    global _EMBEDDING_STATE, _EMBED_EGRESS
+    if _EMBED_EGRESS == "unset":
+        from os_tools.egress import EgressPolicy
+
+        hosts = [
+            host.strip()
+            for host in (os.environ.get("CELA_EMBED_ALLOW_HOSTS", "") or "").split(",")
+            if host.strip()
+        ]
+        _EMBED_EGRESS = (
+            EgressPolicy.allow_hosts(
+                *hosts, schemes={"https"}, ports={443}, tools={"embeddings"}, resolve_dns=False
+            )
+            if hosts
+            else None
+        )
+    return _EMBED_EGRESS
+
+
+def embedding_backend() -> Any:
+    """Process-wide embedding backend for ``CELA_EMBED_BACKEND`` (ADR-0019).
+
+    Cached because it is a per-request construction cost otherwise, and *not*
+    swallowed on error: a broken embedding config must fail at startup, not
+    downgrade a deployment to sparse and let the recall numbers drift.
+    """
+    global _EMBEDDING_STATE
+    if _EMBEDDING_STATE == "unset":
+        from os_tools.embedding import embedding_backend_from_env
+
+        _EMBEDDING_STATE = embedding_backend_from_env(policy=embedding_egress_policy())
+    return _EMBEDDING_STATE
+
+
+def reset_embedding_state() -> None:
+    """Drop the cached backend and policy — for tests and for a reload that means it.
+
+    The cache is process-wide on purpose (a model load is not cheap), which is also
+    why it needs an explicit door out: without this, a test that sets the
+    environment would leak its backend into every later test in the same session.
+    """
+    global _EMBEDDING_STATE, _EMBED_EGRESS
+
+    _EMBEDDING_STATE = "unset"
+    _EMBED_EGRESS = "unset"
+
+
+def ai_engine_or_new(ai_engine: Any = None) -> Any:
+    """The shared :class:`LocalAIEngine`, wired with the configured embedding backend."""
+    from os_tools.local_ai import LocalAIEngine
+
+    return (
+        ai_engine if ai_engine is not None else LocalAIEngine(embedding_backend=embedding_backend())
+    )
+
+
 def demo_memory_manager(ai_engine: Any = None) -> Any:
     """Process-wide memory manager when ``CELA_MEMORY_STORE_URL`` is set (ADR-0016).
 
@@ -242,11 +309,9 @@ def demo_memory_manager(ai_engine: Any = None) -> Any:
     if not url:
         return None
     if _MEMORY_MANAGER is None:
-        from os_tools.local_ai import LocalAIEngine
-
         from os_memory import MemoryManager, memory_store_from_url, normalize_namespace
 
-        engine = ai_engine if ai_engine is not None else LocalAIEngine()
+        engine = ai_engine_or_new(ai_engine)
         _MEMORY_MANAGER = MemoryManager(
             memory_store_from_url(url),
             engine,
@@ -262,12 +327,14 @@ def demo_know_layer(ai_engine: Any = None) -> tuple[Any, Any] | None:
     if not url:
         return None
     if _KNOW_LAYER is None:
-        from os_tools.local_ai import LocalAIEngine
-
         from os_know import KnowRetriever, know_store_from_url
 
-        engine = ai_engine if ai_engine is not None else LocalAIEngine()
-        store = know_store_from_url(url)
+        engine = ai_engine_or_new(ai_engine)
+        # The store gets the embedder so vectors are written at index time; the
+        # retriever gets the engine so the sparse arm stays the same one the memory
+        # and skill layers use. Two different objects on purpose: only the store can
+        # *prove* which model a stored vector came from.
+        store = know_store_from_url(url, embedder=embedding_backend())
         _KNOW_LAYER = (store, KnowRetriever(store, engine))
     return _KNOW_LAYER
 
@@ -284,22 +351,39 @@ def demo_skill_manager():
     if not url:
         return None
     if _SKILL_MANAGER is None:
-        from os_tools.local_ai import LocalAIEngine
-
         from os_skills import SkillManager, skill_store_from_url
 
-        _SKILL_MANAGER = SkillManager(skill_store_from_url(url), LocalAIEngine())
+        _SKILL_MANAGER = SkillManager(skill_store_from_url(url), ai_engine_or_new())
     return _SKILL_MANAGER
+
+
+def demo_router_config(*, token_budget: int = 50_000) -> RouterConfig:
+    """Router config for the demo: the demo's budget, the environment's estimator.
+
+    ``RouterConfig.from_env`` is not used wholesale on purpose — a stray
+    ``CELA_TOKEN_BUDGET`` in somebody's shell should not move the number the demo's
+    own budget tests assert. The estimator is honoured, because it is the one knob
+    this build is demonstrating, and a knob nobody can flip is documentation, not
+    configuration.
+    """
+    config = RouterConfig.from_env()
+    return RouterConfig(token_budget=token_budget, token_estimator=config.token_estimator)
 
 
 def build_demo_platform(*, mode: str = "auto", interactive: bool = False) -> Platform:
     registry, _guard, _browser = build_registry()
     model = demo_planner_model("") if mode == "flow" else demo_react_model("")
+    router_config = demo_router_config()
     return Platform(
         model=model,
         registry=registry,
-        config=PlatformConfig(mode=mode, max_steps=8, token_budget=50_000),
-        router=ModelRouter(config=RouterConfig(token_budget=50_000)),
+        config=PlatformConfig(
+            mode=mode,
+            max_steps=8,
+            token_budget=router_config.token_budget,
+            token_estimator=router_config.token_estimator,
+        ),
+        router=ModelRouter(config=router_config),
         approver=QueueApprover(timeout=60.0) if interactive else QueueApprover(timeout=1.0),
         skill_manager=demo_skill_manager(),
         memory_manager=demo_memory_manager(),

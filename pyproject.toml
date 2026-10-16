@@ -151,6 +151,11 @@ ignore = ["RUF001", "RUF002", "RUF003", "B008"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["B011", "S101"]
+# The Colab setup cell has to clone the repo and %cd into it *before* any import
+# from it can resolve, so a module-level import after a shell line is the cell's
+# purpose rather than an ordering mistake. Ignored here instead of silenced inline:
+# the notebook is edited in a browser, where a stray `# noqa` is easy to orphan.
+"CELA_PRO_COLAB.ipynb" = ["E402"]
 "packages/*/os_*/__init__.py" = ["F401"]
 # ASYNC109 wants timeouts expressed via asyncio.timeout() rather than a
 # parameter. The sandbox is the exception: a per-call timeout is part of the

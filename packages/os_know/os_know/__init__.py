@@ -11,9 +11,17 @@ is worth keeping from it is the pipeline shape (``reader → node → index →
 retriever`` as four swappable stages), not 52k stars of surface area.
 """
 
-from os_know.chunking import chunk_code, chunk_for, chunk_markdown, chunk_python, chunk_text
+from os_know.chunking import (
+    MAX_CHARS,
+    MAX_TOKENS,
+    chunk_code,
+    chunk_for,
+    chunk_markdown,
+    chunk_python,
+    chunk_text,
+)
 from os_know.metrics import evaluate, mrr, recall_at_k
-from os_know.retrieve import KnowRetriever
+from os_know.retrieve import MIN_DENSE_SCORE, KnowRetriever
 from os_know.store import (
     InMemoryKnowStore,
     KnowStore,
@@ -24,6 +32,9 @@ from os_know.tools import know_tools
 from os_know.types import Chunk, Corpus, Document, DocumentInput, KnowHit
 
 __all__ = [
+    "MAX_CHARS",
+    "MAX_TOKENS",
+    "MIN_DENSE_SCORE",
     "Chunk",
     "Corpus",
     "Document",

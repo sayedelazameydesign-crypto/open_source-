@@ -496,10 +496,8 @@ def _store_url(flag: str | None, env: str, label: str) -> str | None:
 
 
 def _memory_layer(store_url: str | None, namespace: str | None = None):
-    from os_tools.local_ai import LocalAIEngine
-
     from os_memory import MemoryManager, memory_store_from_url, normalize_namespace
-    from os_server.demo import ENV_MEMORY_NAMESPACE
+    from os_server.demo import ENV_MEMORY_NAMESPACE, ai_engine_or_new
 
     url = _store_url(store_url, "CELA_MEMORY_STORE_URL", "memory")
     if url is None:
@@ -509,19 +507,24 @@ def _memory_layer(store_url: str | None, namespace: str | None = None):
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return None
-    return MemoryManager(memory_store_from_url(url), LocalAIEngine(), namespace=space)
+    # The engine comes from the same factory the server uses, so ``CELA_EMBED_BACKEND``
+    # cannot mean one thing to ``cela memory recall`` and another to a live run —
+    # the kind of split that shows up as "the CLI found it, the agent did not".
+    return MemoryManager(memory_store_from_url(url), ai_engine_or_new(), namespace=space)
 
 
 def _know_layer(store_url: str | None):
-    from os_tools.local_ai import LocalAIEngine
-
     from os_know import KnowRetriever, know_store_from_url
+    from os_server.demo import ai_engine_or_new, embedding_backend
 
     url = _store_url(store_url, "CELA_KNOW_STORE_URL", "knowledge")
     if url is None:
         return None
-    store = know_store_from_url(url)
-    return store, KnowRetriever(store, LocalAIEngine(), min_score=0.01)
+    # Same embedder as the server, on purpose: vectors written by the CLI are read
+    # by the agent, so the two must agree on the model tag or every one of those
+    # vectors is "stale" and the dense arm silently never runs.
+    store = know_store_from_url(url, embedder=embedding_backend())
+    return store, KnowRetriever(store, ai_engine_or_new(), min_score=0.01)
 
 
 def _memory_stats(manager, *, as_json: bool) -> int:
@@ -665,23 +668,87 @@ def _know_search(retriever, query: str, *, corpus: str | None, top_k: int) -> in
 
 
 def _know_eval(
-    store, retriever, golden_path: str, *, k: int, corpus: list[str] | None = None
+    store,
+    retriever,
+    golden_path: str,
+    *,
+    k: int,
+    corpus: list[str] | None = None,
+    arm: str = "both",
+    out: str | None = None,
 ) -> int:
-    from os_know import evaluate
+    """Score the golden set, and say which arm produced the number.
 
-    rows: list[dict[str, object]] = []
-    for line in pathlib.Path(golden_path).read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line:
-            rows.append(json.loads(line))
-    report = evaluate(retriever, rows, k=k, corpus_ids=corpus)
-    per_question = report.pop("per_question")
+    ``--arm both`` is the default and the only shape that answers the question a
+    hybrid layer actually poses: not "is recall 1.0?" but "did the vector arm change
+    anything, and if not, why is it configured?".
+    """
+    from os_evals.retrieval import load_golden, measure, write_report
+
+    rows = load_golden(golden_path, store=store, corpus_ids=corpus)
+    report = measure(retriever, rows, k=k, corpus_ids=corpus, arms=arm)
+    if out:
+        write_report(out, report)
+    # Exactly one JSON document on stdout — this command is machine-read in CI, so
+    # the failure detail rides inside it rather than in a second block to parse.
+    # ``--out`` is where the per-question rows and both arms go.
+    summary = {key: value for key, value in report.items() if key != "arms"}
+    summary["worst"] = [
+        {key: row[key] for key in row if key != "ranked"} for row in report.get("worst", [])
+    ]
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    return report["exit_code"]
+
+
+def _know_reindex(store, *, corpus: str | None) -> int:
+    """Re-embed stored chunks into the *current* space, without re-reading sources.
+
+    The one remedy after `CELA_EMBED_MODEL` or `CELA_EMBED_DIM` changes: the chunks and
+    their citations are fine, only their vectors belong to a retired space. Both
+    refusal paths are exit 2 with a sentence, not a `reindexed: 0` that reads as done.
+    """
+    reindex = getattr(store, "reindex_embeddings", None)
+    if reindex is None:
+        print(
+            "error: reindex is a durable-store operation; this store keeps chunks in "
+            "memory, where they already carry their vectors",
+            file=sys.stderr,
+        )
+        return 2
+    if getattr(store, "embedder", None) is None:
+        print(
+            "error: no embedding backend is configured (CELA_EMBED_BACKEND is unset), so "
+            "there is nothing to embed into — set the backend first, then reindex",
+            file=sys.stderr,
+        )
+        return 2
+    moved = int(reindex(corpus_id=corpus))
     print(
         json.dumps(
-            {**report, "worst": [q for q in per_question if q["recall"] < 1.0][:5]}, indent=2
+            {"reindexed": moved, **store.embedding_stats()}, ensure_ascii=False, sort_keys=True
         )
     )
-    return 0 if report["recall_at_k"] >= 0.8 else 1
+    return 0
+
+
+def _know_stats(store, retriever) -> int:
+    """One screen: how the corpus is cut, and what each arm can see."""
+    documents = store.list_documents()
+    chunks = store.list_chunks()
+    payload = {
+        "documents": len(documents),
+        "chunks": len(chunks),
+        "chars": sum(doc.char_count for doc in documents),
+        "tokens": sum(doc.token_count for doc in documents),
+        "budget": {
+            "max_chars": getattr(store, "max_chars", 0) or None,
+            "max_tokens": getattr(store, "max_tokens", 0) or None,
+        },
+        "vectors": store.embedding_stats() if hasattr(store, "embedding_stats") else None,
+        "retrieval": retriever.retrieval_report() if retriever is not None else None,
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
 
 
 def _telemetry_export(args) -> int:
@@ -874,6 +941,24 @@ def main(argv: list[str] | None = None) -> int:
     k.add_argument("--corpus", default=None, help="restrict scoring to these corpora")
     k.add_argument("--k", type=int, default=5)
     k.add_argument("--store-url", default=None, help="sqlite:///<path> or CELA_KNOW_STORE_URL")
+    k.add_argument(
+        "--arm",
+        choices=("sparse", "hybrid", "both"),
+        default="both",
+        help="which retrieval arm(s) to score; 'both' prints the delta, which is the "
+        "only honest way to report a recall number for a hybrid layer",
+    )
+    k.add_argument("--out", default=None, help="write the report as JSON here too")
+
+    k = know_sub.add_parser("stats", help="corpus, chunk budget, and what the arms can see")
+    k.add_argument("--store-url", default=None, help="sqlite:///<path> or CELA_KNOW_STORE_URL")
+
+    k = know_sub.add_parser(
+        "reindex",
+        help="re-embed stored chunks into the current embedding space (after a model swap)",
+    )
+    k.add_argument("--corpus", default=None, help="one corpus; default: every chunk in the store")
+    k.add_argument("--store-url", default=None, help="sqlite:///<path> or CELA_KNOW_STORE_URL")
 
     telemetry = sub.add_parser(
         "telemetry", help="export stored runs as OTLP/JSON (Langfuse, Phoenix, Tempo, Jaeger)"
@@ -953,7 +1038,19 @@ def main(argv: list[str] | None = None) -> int:
             return _know_index_file(store, args.path, corpus_id=args.corpus)
         if args.know_command == "search":
             return _know_search(retriever, args.query, corpus=args.corpus, top_k=args.top_k)
-        return _know_eval(store, retriever, args.golden, k=args.k, corpus=args.corpus)
+        if args.know_command == "stats":
+            return _know_stats(store, retriever)
+        if args.know_command == "reindex":
+            return _know_reindex(store, corpus=args.corpus)
+        return _know_eval(
+            store,
+            retriever,
+            args.golden,
+            k=args.k,
+            corpus=args.corpus,
+            arm=args.arm,
+            out=args.out,
+        )
 
     if args.command == "telemetry":
         return _telemetry_export(args)

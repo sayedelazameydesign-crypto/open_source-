@@ -9,6 +9,7 @@ being described as retrieval anywhere else in the repo.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 from os_tools.local_ai import LocalAIEngine
@@ -73,6 +74,10 @@ must be PCM 16-bit mono; anything else is reported as unsupported rather than
 guessed at.
 """
 
+#: The one golden set, shared with ``cela know eval`` and ``python -m os_evals retrieval``.
+GOLDEN_PATH = Path(__file__).resolve().parent / "fixtures" / "golden.jsonl"
+
+
 EVALS_DOC = """# Evaluation harness
 
 os_evals runs a suite against a real model through an OpenAI-compatible gateway.
@@ -89,30 +94,27 @@ CORPUS_TEXTS = {
     "evals": EVALS_DOC,
 }
 
-#: ``q`` is the question, ``doc`` the document that must appear in the top k.
-GOLDEN = [
-    {"q": "which OS does the build farm run on?", "doc": "runbook"},
-    {"q": "what is the staging host address?", "doc": "runbook"},
-    {"q": "how do I roll back a release?", "doc": "runbook"},
-    {"q": "where is the recorded outcome of every run kept?", "doc": "runbook"},
-    {"q": "what region is the build farm in?", "doc": "runbook"},
-    {"q": "does memory store behaviour or facts?", "doc": "memory"},
-    {"q": "which library stores behaviour instead of facts?", "doc": "memory"},
-    {"q": "why does every statement carry provenance?", "doc": "memory"},
-    {"q": "may recall give the agent instructions?", "doc": "memory"},
-    {"q": "what happens on each redirect hop?", "doc": "security"},
-    {"q": "which addresses does the SSRF floor refuse?", "doc": "security"},
-    {"q": "is loopback ever allowed at all?", "doc": "security"},
-    {"q": "who configures the telemetry destination?", "doc": "security"},
-    {"q": "what limits apply inside python_execute?", "doc": "sandbox"},
-    {"q": "what happens when unshare is refused?", "doc": "sandbox"},
-    {"q": "is a timeout enforced for untrusted code?", "doc": "sandbox"},
-    {"q": "which audio format can be transcribed locally?", "doc": "audio"},
-    {"q": "does transcription download a model?", "doc": "audio"},
-    {"q": "what is reported for an unsupported format?", "doc": "audio"},
-    {"q": "what does os_evals run against?", "doc": "evals"},
-    {"q": "is the builtin suite a quality metric?", "doc": "evals"},
-]
+
+#: ``q`` is the question, ``doc`` the document that must appear in the top k. The set
+#: lives in ``tests/fixtures/golden.jsonl`` because two things score it — this file,
+#: and ``os_evals.retrieval`` through the CLI — and one copy in each drifts the moment
+#: somebody edits the other, silently, with both suites still green.
+def _read_golden_fixture() -> list[dict[str, str]]:
+    """The golden rows, read at import so ``len(GOLDEN)`` stays a plain constant.
+
+    The shape check is not decoration: ``docs`` (a list of ids) and ``doc`` (a title)
+    are different contracts, and a fixture that quietly grows a third key would be
+    scored by ``measure`` while ``golden_for`` here kept ignoring it.
+    """
+    lines = GOLDEN_PATH.read_text(encoding="utf-8").splitlines()
+    loaded = [json.loads(line) for line in lines if line.strip()]
+    assert loaded, f"{GOLDEN_PATH}: an empty golden set measures nothing"
+    for row in loaded:
+        assert set(row) == {"q", "doc"}, f"{GOLDEN_PATH}: unexpected row shape {row}"
+    return loaded
+
+
+GOLDEN = _read_golden_fixture()
 
 
 @pytest.fixture

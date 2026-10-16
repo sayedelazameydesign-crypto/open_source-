@@ -1175,10 +1175,95 @@ def _extract_pdf_text(data: bytes) -> str:
 
 
 class LocalAIEngine:
-    """Self-contained CPU AI engine requiring zero external network or API keys."""
+    """Self-contained CPU AI engine requiring zero external network or API keys.
 
-    def __init__(self) -> None:
+    ``embedding_backend`` (ADR-0019) is the one optional addition: ``None`` keeps
+    every path in this class byte-for-byte the sparse search it always was, and a
+    backend adds a dense arm to :meth:`semantic_search`. The backend is *injected*,
+    never discovered, so ``capabilities()`` can only report a dense arm that somebody
+    actually wired up.
+    """
+
+    #: Weighted fusion, not rank fusion: both arms here land in ``[0, 1]``, so the
+    #: blended number keeps the meaning that ``MemoryRetriever.min_score`` and
+    #: ``SkillRetriever.min_score`` already threshold on. ``os_know`` fuses by rank
+    #: instead, because its dense arm comes from *stored* vectors (ADR-0019).
+    DEFAULT_SPARSE_WEIGHT = 0.6
+    DEFAULT_DENSE_WEIGHT = 0.4
+
+    def __init__(
+        self,
+        embedding_backend: Any | None = None,
+        *,
+        sparse_weight: float | None = None,
+        dense_weight: float | None = None,
+    ) -> None:
         self._indices: dict[str, list[dict[str, Any]]] = {"default": []}
+        self.embed_backend = embedding_backend
+        self.sparse_weight = (
+            self.DEFAULT_SPARSE_WEIGHT if sparse_weight is None else float(sparse_weight)
+        )
+        self.dense_weight = (
+            self.DEFAULT_DENSE_WEIGHT if dense_weight is None else float(dense_weight)
+        )
+        self._last_dense_error = ""
+
+    # --- embeddings (ADR-0019) ------------------------------------------------
+    def embedding_info(self) -> dict[str, Any]:
+        """What dense retrieval will *actually* do — never what is merely installed."""
+        backend = self.embed_backend
+        if backend is None:
+            return {"backend": None, "dense_retrieval": False, "dim": 0, "model": ""}
+        info = getattr(backend, "info", None)
+        if info is not None and hasattr(info, "as_dict"):
+            return info.as_dict()
+        return {
+            "backend": getattr(backend, "name", "unknown"),
+            "dense_retrieval": True,
+            "dim": int(getattr(backend, "dim", 0) or 0),
+            "model": "",
+        }
+
+    def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        """Dense vectors for ``texts``; raises when no backend was wired in.
+
+        Public because the stores index vectors at write time — a chunk that is
+        only ever embedded at query time makes every search pay for the whole
+        corpus.
+        """
+        from os_tools.embedding import EmbeddingUnavailable
+
+        if self.embed_backend is None:
+            raise EmbeddingUnavailable(
+                "none",
+                "no embedding backend is configured (set CELA_EMBED_BACKEND=local|model|provider)",
+            )
+        return self.embed_backend.embed(list(texts))
+
+    def _dense_scores(self, query: str, bodies: Sequence[str]) -> list[float] | None:
+        """Cosine of the query against every candidate, or ``None`` to stay sparse.
+
+        A backend failure degrades to the sparse ranking *and reports itself*: an
+        embedding outage must not look like a corpus with no answers, and it must
+        not look like a successful hybrid search either.
+        """
+        if self.embed_backend is None or not bodies:
+            return None
+        try:
+            vectors = self.embed_backend.embed([query, *bodies])
+        except Exception as exc:  # any backend outage: degrade, report, never crash
+            self._last_dense_error = f"{type(exc).__name__}: {exc}"
+            return None
+        if len(vectors) != len(bodies) + 1:
+            self._last_dense_error = (
+                f"backend returned {len(vectors)} vectors for {len(bodies) + 1} inputs"
+            )
+            return None
+        self._last_dense_error = ""
+        from os_core.vectors import cosine
+
+        q_vec = vectors[0]
+        return [max(0.0, round(cosine(q_vec, vec), 6)) for vec in vectors[1:]]
 
     # --- 5.1 Capabilities ---------------------------------------------------
 
@@ -1212,6 +1297,17 @@ class LocalAIEngine:
             ],
             "optional_libraries": optional_libs,
             "libraries": optional_libs,
+            # A wheel being importable is not a capability. These two blocks are
+            # deliberately separate: ``optional_libraries`` answers "is it
+            # installed", ``embedding`` answers "will retrieval use a vector".
+            # Conflating them is the exact report this module used to give.
+            "embedding": self.embedding_info(),
+            "dense_retrieval": self.embed_backend is not None,
+            "retrieval": {
+                "mode": "hybrid" if self.embed_backend is not None else "sparse",
+                "fusion": "weighted" if self.embed_backend is not None else "none",
+                "weights": {"sparse": self.sparse_weight, "dense": self.dense_weight},
+            },
             **optional_libs,
             "namespaces": {ns: len(docs) for ns, docs in self._indices.items()},
         }
@@ -1446,8 +1542,17 @@ class LocalAIEngine:
         documents: Sequence[str | dict[str, Any]] | None = None,
         namespace: str = "default",
         top_k: int = 5,
+        *,
+        use_dense: bool = True,
     ) -> dict[str, Any]:
-        """Hybrid search: light stemming + TF-IDF + char 3/4-grams + concept clusters."""
+        """Hybrid search: light stemming + TF-IDF + char 3/4-grams + concept clusters.
+
+        ``use_dense=False`` runs the sparse arm only even when a backend is wired.
+        Layers that store vectors themselves (``os_know``, ``os_memory``) must pass it:
+        otherwise the same documents get embedded once from the store and again here,
+        which is a second bill on the ``provider`` backend and a second, differently
+        weighted, ranking of the same evidence.
+        """
         if top_k < 1:
             raise ValueError("top_k must be >= 1")
         candidates = (
@@ -1545,13 +1650,51 @@ class LocalAIEngine:
                 }
             )
 
-        scored.sort(key=lambda item: item["score"], reverse=True)
+        # Dense arm (ADR-0019). Bodies are built the same way the sparse arm sees
+        # them, so a title that carries the answer is not silently dropped from
+        # one of the two rankings.
+        dense_scores: list[float] | None = None
+        if self.embed_backend is not None and use_dense:
+            dense_scores = self._dense_scores(
+                query,
+                [f"{doc.get('title') or ''} {doc['text']}".strip() for doc in candidates],
+            )
+        if dense_scores is not None:
+            for idx, entry in enumerate(scored):
+                entry["sparse_score"] = entry["score"]
+                entry["dense_score"] = dense_scores[idx]
+                entry["score"] = round(
+                    min(
+                        1.0,
+                        self.sparse_weight * entry["sparse_score"]
+                        + self.dense_weight * entry["dense_score"],
+                    ),
+                    4,
+                )
+        else:
+            for entry in scored:
+                entry["sparse_score"] = entry["score"]
+                entry["dense_score"] = None
+
+        # Tie-break on id: two documents can land on the same 4-dp score, and an
+        # order that depends on insertion order is a number nobody can reproduce.
+        scored.sort(key=lambda item: (-item["score"], str(item["id"])))
         return {
             "query": query,
             "namespace": namespace,
             "language": detect_language(query),
             "top_k": top_k,
             "total_candidates": len(candidates),
+            "retrieval": {
+                "mode": "hybrid" if dense_scores is not None else "sparse",
+                "ad_hoc_dense": dense_scores is not None,
+                "fusion": "weighted" if dense_scores is not None else "none",
+                "backend": getattr(self.embed_backend, "name", None)
+                if dense_scores is not None
+                else None,
+                "weights": {"sparse": self.sparse_weight, "dense": self.dense_weight},
+                "degraded_reason": getattr(self, "_last_dense_error", ""),
+            },
             "results": scored[:top_k],
         }
 
