@@ -6,10 +6,13 @@
 - ألوان HEX فقط (لا rgb()) لتجنّب SyntaxError في Python
 """
 
-import os
+import contextlib
 import json
-import httpx
+import os
+import pathlib
+
 import gradio as gr
+import httpx
 
 # ---------- الألوان (HEX فقط) ----------
 BG = "#0b0f19"
@@ -31,10 +34,7 @@ KIMI_MODEL = os.getenv("KIMI_MODEL", "moonshot-v1-8k")
 def kimi_chat(messages):
     """استدعاء Kimi (OpenAI-compatible). يعود بوضع تجريبي إن لم يوجد مفتاح."""
     if not KIMI_API_KEY:
-        return (
-            "⚠️ KIMI_API_KEY غير مُعيّن — وضع تجريبي.\n"
-            "أضف المفتاح: export KIMI_API_KEY=sk-..."
-        )
+        return "⚠️ KIMI_API_KEY غير مُعيّن — وضع تجريبي.\nأضف المفتاح: export KIMI_API_KEY=sk-..."
     try:
         with httpx.Client(timeout=60.0) as client:
             response = client.post(
@@ -52,31 +52,25 @@ def kimi_chat(messages):
             response.raise_for_status()
             data = response.json()
             return data["choices"][0]["message"]["content"]
-    except Exception as exc:  # noqa: BLE001 - واجهة مستخدم
+    except Exception as exc:
         return f"❌ خطأ Kimi: {exc}"
 
 
-import pathlib as _pathlib
-
-_SKILLS_FILE = _pathlib.Path("cela_pro_skills.json")
+_SKILLS_FILE = pathlib.Path("cela_pro_skills.json")
 
 
 def _load_skills():
-    try:
+    # A corrupt or unreadable skill file is a *missing* skill file to a UI: the app
+    # must open on an empty library instead of a traceback the user cannot act on.
+    with contextlib.suppress(Exception):
         if _SKILLS_FILE.exists():
             return json.loads(_SKILLS_FILE.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001
-        pass
     return {}
 
 
 def _save_skills(skills):
-    try:
-        _SKILLS_FILE.write_text(
-            json.dumps(skills, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-    except Exception:  # noqa: BLE001
-        pass
+    with contextlib.suppress(Exception):
+        _SKILLS_FILE.write_text(json.dumps(skills, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 # ---------- محرك المهارات (Skill Engine) ----------
@@ -118,11 +112,7 @@ class OrionAgent:
         if not task.strip():
             return "⚠️ أدخل مهمة."
         if not approved:
-            return (
-                "⏸️ في انتظار الموافقة (HITL).\n"
-                "فعّل «أوافق» ثم أعد التنفيذ.\n"
-                f"المهمة: {task}"
-            )
+            return f"⏸️ في انتظار الموافقة (HITL).\nفعّل «أوافق» ثم أعد التنفيذ.\nالمهمة: {task}"
         self.history.append(task)
         skills = self.engine.list_skills()
         return (
@@ -141,7 +131,7 @@ for _mod in ("os_skills", "os_memory", "os_know", "os_core"):
     try:
         __import__(_mod)
         _MODULE_STATUS[_mod] = True
-    except Exception:  # noqa: BLE001
+    except Exception:
         _MODULE_STATUS[_mod] = False
 
 
@@ -172,8 +162,9 @@ button.primary {{
 
 def chat_fn(message, history):
     """معالج المحادثة."""
-    messages = [{"role": "system", "content": "أنت CELA.PRO، مساعد ذكي بالعربية لنظام Sovereign AI OS v2026."}]
-    for pair in (history or []):
+    system = "أنت CELA.PRO، مساعد ذكي بالعربية لنظام Sovereign AI OS v2026."
+    messages = [{"role": "system", "content": system}]
+    for pair in history or []:
         if isinstance(pair, (list, tuple)) and len(pair) >= 2:
             messages.append({"role": "user", "content": str(pair[0])})
             messages.append({"role": "assistant", "content": str(pair[1])})
@@ -190,9 +181,8 @@ with gr.Blocks(title="CELA.PRO") as demo:
         f"Model: {KIMI_MODEL}"
     )
     gr.Markdown(
-        "### 🔌 وحدات النظام\n" + "\n".join(
-            f"- {m}: {'✅' if ok else '❌'}" for m, ok in _MODULE_STATUS.items()
-        )
+        "### 🔌 وحدات النظام\n"
+        + "\n".join(f"- {m}: {'✅' if ok else '❌'}" for m, ok in _MODULE_STATUS.items())
     )
 
     with gr.Row():
@@ -219,7 +209,9 @@ with gr.Blocks(title="CELA.PRO") as demo:
             approved = gr.Checkbox(label="أوافق (HITL)", value=False)
             run_btn = gr.Button("تنفيذ", variant="primary")
             run_out = gr.Textbox(label="الناتج", lines=6, interactive=False)
-            run_btn.click(lambda t, a: ORION.run(t, approved=a), inputs=[task, approved], outputs=run_out)
+            run_btn.click(
+                lambda t, a: ORION.run(t, approved=a), inputs=[task, approved], outputs=run_out
+            )
 
             gr.Markdown("### 📤 تصدير/مسح")
             export_btn = gr.Button("تصدير JSON")

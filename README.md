@@ -296,20 +296,37 @@ cela mcp serve --demo                    # الاتجاه الآخر: المنص
 
 | الطبقة | ما تفعله | ما لا تدّعيه |
 |---|---|---|
-| `os_memory` | سجلات `MemoryRecord` (SQLite/Postgres/ذاكرة) + **بوابة كتابة** تفحص الحقن والأسرار قبل التخزين، واسترجاع بخصم ثقةٍ وقِدَم، وتوثيق كل حقن بـ`id` ومنشأ | ليست «ذاكرة محسّنة بالنموذج»: بلا مفتاح لا LLM — القطع مستخرجة بالأدوات ومطابقة مفاهيمية حتمية |
-| `os_know` | تقطيع هيكلي حتمي (1600 حرف سقفًا) + استرجاع مع **اقتباس مُتحقَّق منه** (`sha256` + نطاق أسطر) و`recall@k`/`MRR` على مجموعة ذهبية | **لم تُقَس فائدة ترتيب على متون طويلة** مقابل المستند الكامل؛ المكسب المقيس هو اقتصاد السياق (٥٫٣×) |
+| `os_memory` | سجلات `MemoryRecord` (SQLite/Postgres/ذاكرة) + **بوابة كتابة** تفحص الحقن والأسرار قبل التخزين، واسترجاع **هجين** (متجه داخل `record_json` بلا تغيير مخطط + ذراع دلالي من المتجهات المخزَّنة + RRF) بخصم ثقةٍ وقِدَم، وتوثيق كل حقن بـ`id` ومنشأ | ليست «ذاكرة محسّنة بالنموذج»: بلا مفتاح لا LLM — القطع مستخرجة بالأدوات ومطابقة مفاهيمية حتمية؛ وعطلُ التضمين **لا يُفقد سجلًا** بل يُعدّ في `stats["vector_errors"]` |
+| `os_know` | تقطيع هيكلي حتمي يسبقه **سقف ميزانية بوحدات النموذج** (‏1600 حرفًا **أو** ‏512 توكنًا مُقدَّرًا، أيّهما أسبق) + متجهات مخزَّنة (`CEV1`‏ BLOB + وسم فضاء `model@dim`) + استرجاع **هجين بالرتبة (RRF)** مع **اقتباس مُتحقَّق منه** (`sha256` + نطاق أسطر) و`recall@k`/`MRR` على مجموعة ذهبية واحدة يقرؤها الاختبار والـCLI معًا | **الذراع الدلالي لم يُحسّن الترتيب على المجموعة المنشورة** (‏1.0 مقابل 1.0، و`dense_only_hits = 0`)؛ ولا يُدَّعى رقم دقّة مقابل BPE (انظر ADR-0019) |
+
+**خلفيات التضمين (عقد واحد، أربع حالات، ‏`off` افتراضيًا):**
+
+| المتغيّر | ما يفعله | ما يعنيه غيابه |
+|---|---|---|
+| `CELA_EMBED_BACKEND=off\|local\|model\|provider` | مُضمِّن المنصة كلّه (الذاكرة والمهارات و`os_know`) | استرجاعًا قاموسيًا صرفًا — **وهو الوضع المنشور في الأرقام** |
+| `CELA_EMBED_DIM` / `CELA_EMBED_MODEL` / `CELA_EMBED_MAX_INPUT_CHARS` | البُعد والاسم وسقف الإدخال؛ البُعد جزء من **وسم الفضاء** لا زينة | أبعاد/نماذج افتراضية موثَّقة في `os_tools.embedding` |
+| `CELA_EMBED_ALLOW_PROVIDER=1` **و**`CELA_EMBED_ALLOW_HOSTS=api.example.com` | `provider` وحده: نصّك يخرج إلى طرف ثالث | **رفضٌ لا تحويل صامت إلى `local`** |
+| `CELA_TOKEN_ESTIMATOR=chars4\|platform` و`CELA_TOKEN_BUDGET` | وحدة عدّ الميزانية في المُوجِّه (`platform` = مقسّم لغوي: ‏2.6 حرفًا/توكن عربي مقابل 4.0 إنجليزي) | السلوك التاريخي `chars/4` الذي قيس عليه كل رقم منشور |
+
+القدرة **تُصرَّح ولا تُستنتج**: `GET /api/ai/capabilities` يعيد `embedding` و`dense_retrieval` و`retrieval.mode` منفصلة عن `optional_libraries` — لأن «الحزمة مثبَّتة» جملة مختلفة تمامًا عن «الاسترجاع يستخدم متجهًا».
 
 ```bash
 cela memory remember "أفضِل apt على npm" --key pkg.manager --provenance user
 cela memory recall "أي مدير حزم؟"          # يُحقن موسومًا <untrusted-memory>
 cela know index ./docs --corpus repo && cela know search "سياسة الخروج" --corpus repo
+cela know stats --store-url sqlite:///./know.sqlite   # كيف قُطِّع، وأي ذراع يرى فعلًا
+cela know eval --golden tests/fixtures/golden.jsonl --corpus docs --arm both --out ab.json
+python -m os_evals retrieval --golden tests/fixtures/golden.jsonl \
+  --store-url sqlite:///./know.sqlite --corpus docs --embedder hash --arm both
+cela know reindex --store-url sqlite:///./know.sqlite  # بعد تبديل نموذج التضمين
 cela telemetry export --out trace.json     # OTLP/JSON بلا مجموعة جمع؛ ‏--send يحتاج CELA_OTEL_ENDPOINT
 ```
 
 **بوابة الكتابة ليست نصيحة:** نصّ من `os_reach` يحمل تعليمة حقن **يُرفض عند التخزين**، وما يمرّ يبقى
 `candidate` لا يُرقَّى تلقائيًا أبدًا. ‏`python_execute` لا يقرأ الذاكرة. والأخطاء في الطبقتين **لا تُفشل
 تشغيلًا** — تُسجَّل كتحوّط وتُمضَى الجلسة. التفاصيل: [الخطة وأرقامها](docs/INTEGRATIONS_PLAN.md) ·
-[القرار](adr/0016-memory-and-retrieval-layer.md).
+[القرار](adr/0016-memory-and-retrieval-layer.md) ·
+[وميزانية التوكنز والمتجهات](adr/0019-token-ids-and-embedding-vectors.md) (ADR-0019).
 
 **فضاءات الذاكرة (`namespace`):** كل سجل يحمل فضاءً، والدمج (التأكيد/التجاوز) والاسترجاع **لا يعبران
 الفضاء أبدًا** — الجملة نفسها في فضاءين سجلان مستقلان. الخادم يربط ذاكرته كلّها بفضاء واحد يسمّيه
@@ -322,6 +339,8 @@ cela telemetry export --out trace.json     # OTLP/JSON بلا مجموعة جم�
 
 ## حدود صادقة
 
+* **لا رقم دقّة لتقدير التوكنز منشور:** معجم BPE المرجعي غير قابل للتنزيل داخل بيئة الاختبارات، فالبديل المقيس هو `TokenCalibration` — انحراف التقدير مقابل `usage.prompt_tokens` الذي يعيده المزوّد نفسه (`drift_ratio` بلا عينات = `null`، لا `0.0`).
+* `os_know` لا يعرف `postgres://`: يرمي صراحةً بدل الرجوع إلى SQLite — المتجهات الدائمة تحتاج المخزن الذي تملكه الطبقات الأخرى أصلًا (فجوة P1-11 المُعلَنة).
 * `unshare` يحتاج Linux + صلاحيات؛ عند غيابه **لا يوجد عزل شبكة فعلي** ويُبلَّغ
   `network="unverified"` بدل ادعاء العزل. الإنتاج يحتاج E2B/Firecracker.
 * `packages/web` واجهة Next.js 15 مبنيّة؛ معاينة الـArtifacts المضمنة وشجرة DAG الحية ما زالتا ضمن المتبقي.

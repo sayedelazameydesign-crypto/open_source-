@@ -700,6 +700,37 @@ def _know_eval(
     return report["exit_code"]
 
 
+def _know_reindex(store, *, corpus: str | None) -> int:
+    """Re-embed stored chunks into the *current* space, without re-reading sources.
+
+    The one remedy after `CELA_EMBED_MODEL` or `CELA_EMBED_DIM` changes: the chunks and
+    their citations are fine, only their vectors belong to a retired space. Both
+    refusal paths are exit 2 with a sentence, not a `reindexed: 0` that reads as done.
+    """
+    reindex = getattr(store, "reindex_embeddings", None)
+    if reindex is None:
+        print(
+            "error: reindex is a durable-store operation; this store keeps chunks in "
+            "memory, where they already carry their vectors",
+            file=sys.stderr,
+        )
+        return 2
+    if getattr(store, "embedder", None) is None:
+        print(
+            "error: no embedding backend is configured (CELA_EMBED_BACKEND is unset), so "
+            "there is nothing to embed into — set the backend first, then reindex",
+            file=sys.stderr,
+        )
+        return 2
+    moved = int(reindex(corpus_id=corpus))
+    print(
+        json.dumps(
+            {"reindexed": moved, **store.embedding_stats()}, ensure_ascii=False, sort_keys=True
+        )
+    )
+    return 0
+
+
 def _know_stats(store, retriever) -> int:
     """One screen: how the corpus is cut, and what each arm can see."""
     documents = store.list_documents()
@@ -922,6 +953,13 @@ def main(argv: list[str] | None = None) -> int:
     k = know_sub.add_parser("stats", help="corpus, chunk budget, and what the arms can see")
     k.add_argument("--store-url", default=None, help="sqlite:///<path> or CELA_KNOW_STORE_URL")
 
+    k = know_sub.add_parser(
+        "reindex",
+        help="re-embed stored chunks into the current embedding space (after a model swap)",
+    )
+    k.add_argument("--corpus", default=None, help="one corpus; default: every chunk in the store")
+    k.add_argument("--store-url", default=None, help="sqlite:///<path> or CELA_KNOW_STORE_URL")
+
     telemetry = sub.add_parser(
         "telemetry", help="export stored runs as OTLP/JSON (Langfuse, Phoenix, Tempo, Jaeger)"
     )
@@ -1002,6 +1040,8 @@ def main(argv: list[str] | None = None) -> int:
             return _know_search(retriever, args.query, corpus=args.corpus, top_k=args.top_k)
         if args.know_command == "stats":
             return _know_stats(store, retriever)
+        if args.know_command == "reindex":
+            return _know_reindex(store, corpus=args.corpus)
         return _know_eval(
             store,
             retriever,

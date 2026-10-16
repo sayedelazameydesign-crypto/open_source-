@@ -693,3 +693,36 @@ def test_store_url_without_a_vector_store_still_builds(tmp_path) -> None:
     titles = index_into(store)
     assert len(titles) == 6
     assert store.embedding_stats()["with_vectors"] == len(store.list_chunks())
+
+
+def test_cela_know_reindex_refuses_without_a_backend_then_repairs(
+    tmp_path, capsys, monkeypatch
+) -> None:
+    """The remedy exists, and its refusal is an exit code, not `reindexed: 0`.
+
+    A command that prints a zero and exits green is how "nothing happened" becomes
+    "already migrated" in somebody's incident notes.
+    """
+    from os_server.cli import main as cela_main
+
+    from os_server import demo
+
+    demo.reset_embedding_state()
+    path = tmp_path / "nobackend.sqlite"
+    store = know_store_from_url(f"sqlite:///{path}", embedder=HashEmbedding(dim=64))
+    index_into(store)
+    store.close()
+    assert cela_main(["know", "reindex", "--store-url", f"sqlite:///{path}"]) == 2
+    assert "CELA_EMBED_BACKEND" in capsys.readouterr().err
+    capsys.readouterr()
+
+    # Now the same command with the backend the corpus was written for: it re-embeds
+    # in place, and the JSON it prints is the store's own accounting, not a claim.
+    monkeypatch.setenv("CELA_EMBED_BACKEND", "local")
+    monkeypatch.setenv("CELA_EMBED_DIM", "64")
+    demo.reset_embedding_state()
+    assert cela_main(["know", "reindex", "--store-url", f"sqlite:///{path}"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["reindexed"] == payload["chunks"] > 0
+    assert payload["with_vectors"] == payload["stored_vectors"] and payload["stale"] == 0
+    demo.reset_embedding_state()
