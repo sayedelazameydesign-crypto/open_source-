@@ -177,18 +177,26 @@ def get_provider_config(provider: str | None = None) -> dict[str, Any]:
 
 
 def format_provider_status(provider: str | None = None) -> str:
-    """تنسيق حالة إعداد المزوّد للعرض في الواجهة دون كشف أي مفاتيح سرية."""
+    """تنسيق حالة *إعداد* المزوّد للعرض في الواجهة دون كشف أي مفاتيح سرية.
+
+    يصف هذا النص وجود المفتاح وتهيئته فقط، ولا يُعلن اتصالًا ناجحًا: وجود
+    ``GROQ_API_KEY`` في البيئة لا يعني أن المفتاح صالح أو أن النموذج والعنوان
+    يعملان. التحقق الفعلي مصدره الفحص الدقيق (``smoke_test_provider``) وحده.
+    """
     try:
         cfg = get_provider_config(provider)
     except ValueError as exc:
         return f"<span class='status-err'>●</span> {exc}"
 
+    unverified = "الاتصال غير مُتحقَّق منه — اضغط «🧪 اختبار اتصال المزوّد»"
     if not cfg["requires_key"]:
-        key_state = "<span class='status-ok'>●</span> جاهز محليًا (لا يحتاج مفتاحًا محليًا)"
+        key_state = (
+            f"<span class='status-info'>●</span> مُهيّأ محليًا (لا يحتاج مفتاحًا) — {unverified}"
+        )
     elif cfg["configured"]:
         key_state = (
-            f"<span class='status-ok'>●</span> متصل "
-            f"(المفتاح `{cfg['api_key_env']}` مُعيّن)"
+            f"<span class='status-info'>●</span> المفتاح `{cfg['api_key_env']}` مُعيّن — "
+            f"{unverified}"
         )
     else:
         key_state = (
@@ -198,24 +206,28 @@ def format_provider_status(provider: str | None = None) -> str:
 
     return (
         f"**المزوّد الحالي:** `{cfg['name']}`  |  "
-        f"**الحالة:** {key_state}  |  "
+        f"**حالة الإعداد:** {key_state}  |  "
         f"**النموذج:** `{cfg['model']}` (`{cfg['model_env']}`)  |  "
         f"**العنوان:** `{cfg['base_url']}`"
     )
 
 
 def format_all_providers_summary() -> str:
-    """ملخص حالة جميع المزوّدين الخمسة دون إظهار قيم المفاتيح."""
-    lines = ["### 🌐 حالة مزوّدي الذكاء الاصطناعي"]
+    """ملخص *إعداد* المزوّدين الخمسة دون إظهار قيم المفاتيح ودون ادعاء اتصال ناجح."""
+    lines = ["### 🌐 حالة إعداد مزوّدي الذكاء الاصطناعي"]
     for name in PROVIDER_CHOICES:
         cfg = get_provider_config(name)
         if not cfg["requires_key"]:
-            badge = "🟢 محلي (بدون مفتاح)"
+            badge = "🔵 مُهيّأ محليًا (بدون مفتاح) — غير مُختبَر"
         elif cfg["configured"]:
-            badge = f"✅ `{cfg['api_key_env']}` مُعيّن"
+            badge = f"🔑 `{cfg['api_key_env']}` مُعيّن — غير مُختبَر"
         else:
             badge = f"⚠️ ينقصه `{cfg['api_key_env']}`"
         lines.append(f"- **{name}** (`{cfg['model']}`): {badge}")
+    lines.append(
+        "\nℹ️ «مُعيّن» تعني وجود المفتاح في متغيرات البيئة فحسب، لا أن الاتصال يعمل؛ "
+        "التحقق الفعلي بزر «🧪 اختبار اتصال المزوّد» ونتيجته `PASS`."
+    )
     return "\n".join(lines)
 
 
@@ -527,6 +539,7 @@ button.primary {{
     border: none !important;
 }}
 .status-ok {{ color: {SUCCESS}; }}
+.status-info {{ color: {ACCENT}; }}
 .status-warn {{ color: {WARN}; }}
 .status-err {{ color: {DANGER}; }}
 """

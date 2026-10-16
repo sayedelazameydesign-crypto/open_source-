@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -357,3 +358,51 @@ def test_smoke_test_and_chat_redact_api_key(monkeypatch: pytest.MonkeyPatch) -> 
     assert len(calls) == 2
     assert calls[0]["headers"].get("Authorization") == f"Bearer {secret}"
     assert calls[1]["headers"].get("Authorization") == f"Bearer {secret}"
+
+
+def test_provider_status_reports_configuration_not_a_verified_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """8) «مُعيّن» لا تعني «متصل»: حالة الإعداد لا تُعلن اتصالًا لم يُتحقَّق منه."""
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_configured_but_unverified")
+
+    status = cela_pro_app.format_provider_status("Groq")
+    assert "GROQ_API_KEY" in status
+    assert "مُعيّن" in status
+    assert "متصل" not in status
+    assert "غير مُتحقَّق" in status
+    assert "اختبار اتصال المزوّد" in status
+
+    summary = cela_pro_app.format_all_providers_summary()
+    groq_line = next(line for line in summary.splitlines() if "**Groq**" in line)
+    assert "مُعيّن" in groq_line
+    assert "غير مُختبَر" in groq_line
+    assert "✅" not in groq_line
+
+    # غياب المفتاح يبقى تحذيرًا صريحًا كما كان، وOllama المحلي لا يُعلن اتصالًا هو الآخر
+    assert "غير مُعيّن" in cela_pro_app.format_provider_status("Kimi")
+    assert "KIMI_API_KEY" in cela_pro_app.format_provider_status("Kimi")
+    assert "غير مُتحقَّق" in cela_pro_app.format_provider_status("Ollama")
+
+
+def test_colab_notebook_syncs_source_before_smoke_and_launch() -> None:
+    """9) دفتر Colab: مزامنة المصدر من origin/main، والفحص قبل التشغيل، وخلايا صالحة."""
+    notebook_path = _REPO_ROOT / "CELA_PRO_COLAB.ipynb"
+    notebook = json.loads(notebook_path.read_text(encoding="utf-8"))
+    sources = [
+        "".join(cell["source"]) for cell in notebook["cells"] if cell["cell_type"] == "code"
+    ]
+
+    for index, source in enumerate(sources):
+        if source.lstrip().startswith(("!", "%")):
+            continue  # أوامر IPython السحرية ليست Python صالحًا بمفردها
+        compile(source, f"<cell {index}>", "exec")
+
+    sync_cell = next(source for source in sources if "--ff-only" in source)
+    assert "fetch" in sync_cell
+    assert "cela_pro_app.local.bak.py" in sync_cell  # لا استبدال صامتًا لنسخة محلية مختلفة
+    assert "rev-parse" in sync_cell  # يُعلن التزام المصدر المستخدم بدل إخفائه
+
+    smoke_cell = next(source for source in sources if "run_smoke_test" in source)
+    launch_cell = next(source for source in sources if "demo.launch" in source)
+    assert sources.index(sync_cell) < sources.index(smoke_cell) < sources.index(launch_cell)
