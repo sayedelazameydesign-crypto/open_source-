@@ -406,3 +406,17 @@ def test_colab_notebook_syncs_source_before_smoke_and_launch() -> None:
     smoke_cell = next(source for source in sources if "run_smoke_test" in source)
     launch_cell = next(source for source in sources if "demo.launch" in source)
     assert sources.index(sync_cell) < sources.index(smoke_cell) < sources.index(launch_cell)
+
+    # كل متغير بيئة يقرؤه التطبيق يجب أن يكون قابلًا للتحميل من Colab Secrets،
+    # وإلا تعذّر توجيه مزوّد إلى عنوان مخصّص (مثل نقطة Modal الوسيطة لـ Kimi).
+    secrets_cell = next(source for source in sources if "SECRET_KEYS" in source)
+    required_env = {
+        str(spec[key])
+        for spec in cela_pro_app.PROVIDER_SPECS.values()
+        for key in ("api_key_env", "optional_key_env", "model_env", "base_url_env")
+        if spec.get(key)
+    }
+    required_env |= {"GRADIO_USERNAME", "GRADIO_PASSWORD", "CELA_DEFAULT_PROVIDER"}
+    missing = sorted(env for env in required_env if f'"{env}"' not in secrets_cell)
+    assert not missing, f"متغيرات بيئة ناقصة في خلية أسرار Colab: {missing}"
+    assert "TOKEN_ID.TOKEN_SECRET" in secrets_cell  # توثيق صيغة مفتاح وسيط Modal

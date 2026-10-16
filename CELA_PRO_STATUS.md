@@ -68,6 +68,41 @@
 ملخص الفحص الدقيق: {'Groq': 'PASS', 'Gemini': 'BLOCKED'}
 ```
 
+## وصفة: ربط `Kimi` بنقطة وسيطة متوافقة مع OpenAI (مثل Modal)
+
+أي نقطة وسيطة تتحدّث بروتوكول OpenAI Chat Completions تعمل مع مزوّد `Kimi` عبر متغيرات البيئة وحدها، دون تعديل في الكود:
+
+| المتغير | القيمة |
+|---|---|
+| `KIMI_BASE_URL` | عنوان النقطة منتهيًا بـ `/v1` (التطبيق يضيف `/chat/completions`)، مثل `https://<workspace>--ep-<endpoint>.<region>.modal.direct/v1` |
+| `KIMI_MODEL` | اسم النموذج كما تعلنه النقطة، مثل `moonshotai/Kimi-K3` |
+| `KIMI_API_KEY` | الصيغة المركّبة التي يقبلها الوسيط: `TOKEN_ID.TOKEN_SECRET` |
+| `CELA_DEFAULT_PROVIDER` | `Kimi` |
+
+محليًا:
+
+```bash
+# ضع هذه الأسطر في ملف .env (مُدرج في .gitignore) أو صدّرها في الجلسة — لا ترفعها إلى المستودع
+export KIMI_BASE_URL="https://<workspace>--ep-<endpoint>.<region>.modal.direct/v1"
+export KIMI_MODEL="moonshotai/Kimi-K3"
+export KIMI_API_KEY="<TOKEN_ID>.<TOKEN_SECRET>"
+export CELA_DEFAULT_PROVIDER="Kimi"
+bash launch_cela_pro.sh
+```
+
+وعلى Colab أضف `KIMI_API_KEY` و`KIMI_BASE_URL` و`KIMI_MODEL` في قسم **Secrets (🔑)**؛ خلية الأسرار في الدفتر تقرأ كل متغيرات المزوّدين (`*_API_KEY` و`*_MODEL` و`*_BASE_URL`) وتطبع **أسماء** ما حُمّل فقط دون القيم.
+
+### قراءة نتيجة الفحص ضد نقطة وسيطة
+
+| النتيجة | المعنى عمليًا |
+|---|---|
+| `PASS` | النقطة قبلت المفتاح وردّت بعبارة «اختبار الاتصال ناجح» |
+| `FAIL` | رفض الوسيط للمفتاح (`401`)، أو تعذّر الوصول إلى العنوان، أو ردّ فارغ |
+| `INCONCLUSIVE` | وصل رد حقيقي بصياغة أخرى — سلوك متوقّع من نماذج الاستدلال/التفكير ما لم يُضبط مجهود التفكير (مثل `reasoning_effort`) |
+| `BLOCKED` | `KIMI_API_KEY` غير مُعيّن أصلًا، ولم يُرسل أي طلب |
+
+> ⚠️ لا تلصق قيمة `TOKEN_SECRET` في تعليق على issue أو في مخرجات اختبار أو في الدفتر؛ التطبيق يحجبها `[REDACTED]` في كل ما يعرضه، لكنه لا يستطيع حجبها مما تكتبه أنت يدويًا. وإن تسرّبت يومًا، أنشئ توكن جديدًا من إعدادات مساحة العمل وألغِ القديم.
+
 ## حماية الرابط العام في Gradio
 
 لأن التطبيق يعمل برابط عام (`share=True`)، يُنصح بتعيين متغيري المصادقة لحماية حصص API الخاصة بك:
