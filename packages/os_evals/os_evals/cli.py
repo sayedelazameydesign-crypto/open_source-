@@ -1,5 +1,11 @@
 """CLI: ``python -m os_evals run --suite builtin`` or with a real model.
 
+``retrieval`` is the second entry point and the CI gate for the knowledge layer: it
+scores a golden JSONL against a store, once per arm (sparse, hybrid), and exits
+non-zero when a floor is missed. It is a separate subcommand because it measures a
+retriever rather than a model — no endpoint, no key, no network — so the gate can
+run on every push instead of only where a GPU happens to be.
+
 Real-model example (vLLM on :8000):
 ``CELA_EVAL_MODEL_ID=deepseek-ai/DeepSeek-R1 python -m os_evals run
 --dataset gaia.jsonl --model-url http://localhost:8000/v1 --out report.json``
@@ -28,6 +34,69 @@ from pathlib import Path
 
 from os_evals.harness import EvalReport, EvalRunner, load_jsonl
 from os_evals.suites import builtin_cases
+
+
+def _embedder_for(kind: str):
+    """The dense-arm backend to build the store with — chosen, never guessed.
+
+    ``hash`` is the offline stand-in: same-dimension, deterministic, and *not*
+    semantic, which is exactly why it is legal here. The gate measures whether the
+    plumbing (vectors stored, dimensions tagged, fusion applied, arms compared) works;
+    a real embedding model would let a passing run be attributed to the model rather
+    than to the wiring, and this environment cannot download one anyway.
+    """
+    if kind == "off":
+        return None
+    if kind == "hash":
+        from os_tools.embedding import HashEmbedding
+
+        return HashEmbedding()
+    from os_tools.embedding import embedding_backend_from_env
+
+    return embedding_backend_from_env()
+
+
+def _retrieval(args) -> int:
+    """``python -m os_evals retrieval`` — the A/B gate. Exit code is the verdict."""
+    from os_tools.local_ai import LocalAIEngine
+
+    from os_evals.retrieval import load_golden, measure, write_report
+    from os_know import KnowRetriever, know_store_from_url
+
+    embedder = _embedder_for(args.embedder)
+    if args.embedder != "off" and embedder is None:
+        print(
+            "note: --embedder env found no CELA_EMBED_* backend; scoring the sparse arm "
+            "only — pass --embedder hash for the offline dense arm",
+            file=sys.stderr,
+        )
+    store = know_store_from_url(args.store_url, embedder=embedder)
+    try:
+        rows = load_golden(args.golden, store=store, corpus_ids=args.corpus)
+        report = measure(
+            KnowRetriever(store, LocalAIEngine()),
+            rows,
+            k=args.k,
+            corpus_ids=args.corpus,
+            arms=args.arm,
+            recall_floor=args.fail_under_recall,
+            mrr_floor=args.fail_under_mrr,
+        )
+    finally:
+        close = getattr(store, "close", None)
+        if callable(close):
+            close()
+    payload = json.dumps(report, indent=2, ensure_ascii=False, sort_keys=True)
+    print(payload)
+    if args.out:
+        write_report(args.out, report)
+    if report["exit_code"] == 2:
+        print("error: nothing was measured — check --golden and --store-url", file=sys.stderr)
+    for failure in report["gates"]["failures"]:
+        print(f"gate: {failure}", file=sys.stderr)
+    for cost in report.get("costs", ()):
+        print(f"cost: {cost}", file=sys.stderr)
+    return report["exit_code"]
 
 
 def _all_errored(report: EvalReport) -> bool:
@@ -74,6 +143,34 @@ def _real_factory(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="os-evals", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
+    gate = sub.add_parser(
+        "retrieval",
+        help="score a golden set against a know-store, per arm (offline CI gate)",
+    )
+    gate.add_argument("--golden", required=True, help='JSONL: {"q": ..., "doc"|"docs": ...}')
+    gate.add_argument("--store-url", required=True, help="sqlite:///<path> or memory://")
+    gate.add_argument(
+        "--corpus", action="append", default=None, help="restrict scoring to these corpora"
+    )
+    gate.add_argument("--k", type=int, default=5)
+    gate.add_argument(
+        "--arm",
+        default="both",
+        choices=["sparse", "hybrid", "both"],
+        help="which arm(s) to score; 'both' also reports the delta and the context cost",
+    )
+    gate.add_argument(
+        "--embedder",
+        default="env",
+        choices=["off", "hash", "env"],
+        help=(
+            "dense-arm backend: 'hash' is the offline toy space (deterministic, no model), "
+            "'env' honours CELA_EMBED_*, 'off' measures the sparse arm only"
+        ),
+    )
+    gate.add_argument("--fail-under-recall", type=float, default=None)
+    gate.add_argument("--fail-under-mrr", type=float, default=None)
+    gate.add_argument("--out", default=None, help="write the full JSON report here")
     run = sub.add_parser("run", help="run an evaluation suite")
     run.add_argument("--suite", default="builtin", choices=["builtin", "custom"])
     run.add_argument("--dataset", default=None, help="GAIA/SWE-bench-style JSONL")
@@ -98,6 +195,9 @@ def main(argv: list[str] | None = None) -> int:
         "— read the pass rates in the report for that",
     )
     args = parser.parse_args(argv)
+
+    if args.command == "retrieval":
+        return _retrieval(args)
 
     if args.dataset:
         cases = load_jsonl(args.dataset)

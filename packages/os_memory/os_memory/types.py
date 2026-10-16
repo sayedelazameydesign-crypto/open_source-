@@ -114,6 +114,17 @@ class MemoryRecord(BaseModel):
     last_used_at: float | None = None
     ttl_at: float | None = None  # None = never expires
 
+    #: Dense vector, base64 of ``os_core.vectors.pack`` — stored *in the record*
+    #: rather than in a column so all three backends (memory, SQLite, Postgres)
+    #: carry it with no schema change, at the cost of ~2.7 kB per record at
+    #: ``dim=512``. The trade is deliberate: a memory layer that only has vectors
+    #: on one backend is a memory layer whose recall number means different
+    #: things depending on the deployment.
+    vector_b64: str = ""
+    #: Which model produced it. A vector without this is not "probably fine"; it is
+    #: unusable, and :meth:`vector` says so by returning ``[]``.
+    embedding_model: str = ""
+
     uses: int = 0
     successes: int = 0
     failures: int = 0
@@ -149,6 +160,43 @@ class MemoryRecord(BaseModel):
             "status": MemoryStatus.QUARANTINED.value,
         }[field]
         return fallback
+
+    def set_vector(self, values: list[float], *, model: str) -> None:
+        """Pack a freshly embedded vector onto the record (no-op on an empty one)."""
+        if not values:
+            self.vector_b64 = ""
+            self.embedding_model = ""
+            return
+        import base64
+
+        from os_core.vectors import pack
+
+        self.vector_b64 = base64.b64encode(pack([float(v) for v in values])).decode("ascii")
+        self.embedding_model = model
+
+    def vector(self, *, expect_model: str | None = None) -> list[float]:
+        """The stored vector, or ``[]`` when it is missing, corrupt, or foreign.
+
+        ``expect_model`` enforces the rule that makes stored vectors safe to mix
+        across a model upgrade: only vectors from the *current* space may join a
+        ranking. A cosine between two spaces is not a weak signal, it is noise
+        wearing a signal's clothes.
+        """
+        if not self.vector_b64:
+            return []
+        if expect_model is not None and (self.embedding_model or "") != expect_model:
+            return []
+        import base64
+
+        from os_core.vectors import VectorError, unpack
+
+        try:
+            return unpack(base64.b64decode(self.vector_b64, validate=True))
+        except (VectorError, ValueError, TypeError):
+            return []
+
+    def has_usable_vector(self, *, expect_model: str | None = None) -> bool:
+        return bool(self.vector(expect_model=expect_model))
 
     @property
     def fingerprint(self) -> str:
@@ -234,6 +282,12 @@ class MemoryHit(BaseModel):
     record: MemoryRecord
     score: float
     terms: list[str] = Field(default_factory=list)
+    #: 1-based position in each arm that recalled this record. Kept rather than
+    #: blended: "a verified record the words matched" and "a record only a vector
+    #: liked" are different risks, and the injection gate has to stay able to tell
+    #: them apart.
+    arms: dict[str, int] = Field(default_factory=dict)
+    dense_score: float | None = None
 
 
 __all__ = [

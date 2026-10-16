@@ -31,6 +31,8 @@ class PlatformConfig(BaseModel):
     max_steps: int = 25
     max_seconds: float = 300.0
     token_budget: int = 200_000
+    #: Unit for every budget threshold below. See ``os_core.router.RouterConfig``.
+    token_estimator: str = "chars4"
     max_replans: int = 2
     parallelism: int = 4
 
@@ -65,7 +67,12 @@ class Platform(BaseModel):
 
     def router_or_default(self) -> ModelRouter:
         if self.router is None:
-            self.router = ModelRouter(config=RouterConfig(token_budget=self.config.token_budget))
+            self.router = ModelRouter(
+                config=RouterConfig(
+                    token_budget=self.config.token_budget,
+                    token_estimator=self.config.token_estimator,  # type: ignore[arg-type]
+                )
+            )
         return self.router
 
     def budget(self) -> BudgetConfig:

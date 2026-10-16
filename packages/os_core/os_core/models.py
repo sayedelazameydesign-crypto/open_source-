@@ -16,6 +16,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
 
+from os_core.tokens import TokenCalibration, TokenEstimator, estimate
 from os_core.types import ExecutionInfo, Message, ModelResponse, ToolCall, Usage
 
 
@@ -68,6 +69,10 @@ class ScriptedModel(BaseModel):
         if self.script:
             return self.script.pop(0)
         text = self.final_content
+        # ``chars4`` here is a stand-in for a model that does not exist, so it is
+        # deliberately *not* fed to TokenCalibration: comparing the estimator against
+        # a fabricated usage block would manufacture a zero-drift result, which is
+        # the one thing this instrument must never be able to say by accident.
         return ModelResponse(
             content=text,
             model=self.name,
@@ -97,6 +102,19 @@ class OpenAICompatModel(BaseModel):
     auth_prefix: str = "Bearer "
     timeout: float = 120.0
     transport: Any = Field(default=None, exclude=True)
+    # Estimator used for the *budget* decisions this adapter can influence, and the
+    # label recorded on every calibration sample.
+    token_estimator: TokenEstimator = "chars4"
+    # Estimated-vs-reported pairing per request, so "about 4 chars/token" can be
+    # replaced by a measured sentence. Excluded from serialisation: it is run
+    # instrumentation, and a config dump that grows with traffic is a leak of the
+    # request count at best.
+    calibration: TokenCalibration = Field(default_factory=TokenCalibration, exclude=True)
+    track_token_drift: bool = True
+
+    def calibration_report(self) -> dict[str, Any]:
+        """Drift of the platform's token count against this endpoint's own usage."""
+        return self.calibration.report()
 
     def _headers(self) -> dict[str, str]:
         key = ""
@@ -157,15 +175,27 @@ class OpenAICompatModel(BaseModel):
                     args=_safe_json(fn.get("arguments") or "{}"),
                 )
             )
+        usage = Usage(
+            prompt_tokens=int(raw_usage.get("prompt_tokens", 0)),
+            completion_tokens=int(raw_usage.get("completion_tokens", 0)),
+        )
+        if self.track_token_drift:
+            # Estimated over the serialized body rather than over the message texts,
+            # because that is what the endpoint counted: chat-template markup and the
+            # tool schemas are part of the billed prompt, and an estimate that ignores
+            # them would report its own blind spot as model behaviour.
+            estimated, source = estimate(
+                json.dumps(payload, ensure_ascii=False), self.token_estimator
+            )
+            self.calibration.record(
+                estimated=estimated, observed=usage.prompt_tokens, estimator=source
+            )
         return ModelResponse(
             content=msg.get("content") or "",
             tool_calls=tool_calls,
             model=data.get("model", self.model_id),
             finish_reason=choice.get("finish_reason", "stop"),
-            usage=Usage(
-                prompt_tokens=int(raw_usage.get("prompt_tokens", 0)),
-                completion_tokens=int(raw_usage.get("completion_tokens", 0)),
-            ),
+            usage=usage,
         )
 
 
@@ -178,7 +208,11 @@ def _safe_json(text: str) -> dict[str, Any]:
 
 
 def _approx(text: str) -> int:
-    """Cheap token estimate (~4 chars/token) used for routing and budgets."""
+    """Cheap token estimate (~4 chars/token) used for routing and budgets.
+
+    Same rule as ``os_core.tokens.estimate(..., "chars4")``, kept as a thin alias so
+    the scripted fallback and the router cannot disagree about what a "token" was.
+    """
     return max(1, len(text) // 4)
 
 

@@ -63,6 +63,10 @@ class Document(BaseModel):
     mime: str = "text/markdown"
     char_count: int = 0
     chunk_count: int = 0
+    #: Sum of the chunks' token counts — the unit a model bills in, which is why
+    #: "how much context does this layer cost" is answerable in tokens as of
+    #: ADR-0019 and was only answerable in characters before it.
+    token_count: int = 0
     indexed_at: float = Field(default_factory=time.time)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -80,6 +84,7 @@ class ChunkDraft(BaseModel):
     start_line: int = 1
     end_line: int = 1
     ordinal: int = 0
+    token_count: int = 0
 
 
 class Chunk(BaseModel):
@@ -94,6 +99,15 @@ class Chunk(BaseModel):
     source_uri: str | None = None
     doc_sha256: str = ""
     untrusted: bool = False
+    token_count: int = 0
+    #: Dense vector as produced by the store's embedder. Empty means "no dense
+    #: arm for this chunk", which is a *legitimate* state (sparse-only
+    #: deployments), not a failure to be papered over.
+    embedding: list[float] = Field(default_factory=list)
+    #: Which model produced ``embedding``. A vector without its origin cannot be
+    #: compared with a query vector from another space, so a model swap invalidates
+    #: stored vectors instead of blending them (same stance as a stale MCP tool list).
+    embedding_model: str = ""
 
     def search_text(self) -> str:
         return f"{self.heading}\n{self.text}" if self.heading else self.text
@@ -114,6 +128,13 @@ class KnowHit(BaseModel):
     chunk: Chunk
     score: float
     terms: list[str] = Field(default_factory=list)
+    #: 1-based position in each arm that contributed this hit. Kept alongside the
+    #: number rather than folded into it: a fused score cannot explain itself to an
+    #: auditor, and "why did this rank first" is the question retrieval answers get.
+    arms: dict[str, int] = Field(default_factory=dict)
+    dense_score: float | None = None
+    #: ``"sparse"``, ``"hybrid"`` — which path produced the hit.
+    mode: str = "sparse"
 
     @property
     def untrusted(self) -> bool:

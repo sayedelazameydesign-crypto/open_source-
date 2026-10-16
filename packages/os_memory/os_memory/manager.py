@@ -22,6 +22,7 @@ from typing import Any
 
 from os_core.redact import sanitize_boundaries, scrub_credentials
 from os_core.state import RunState
+from os_core.vectors import embedding_space
 
 from os_memory.distiller import distill_run
 from os_memory.gate import GateDecision, MemoryGate
@@ -145,8 +146,15 @@ class MemoryManager:
         if source_run_id and source_run_id not in record.evidence:
             record.evidence.append(source_run_id)
 
+        # Vector after the gate, never before: the gate is what decides whether
+        # this text is admissible, and an embedder that is also a network call
+        # (``provider``) must not be paid for content that is about to be refused.
+        self._attach_vector(record)
+
         twin = self.store.find_by_fingerprint(record.fingerprint, namespace=record.namespace)
         if twin is not None and twin.status != MemoryStatus.QUARANTINED:
+            if not twin.vector_b64:
+                self._attach_vector(twin)
             twin.successes += 1
             if source_run_id and source_run_id not in twin.evidence:
                 twin.evidence.append(source_run_id)
@@ -183,6 +191,51 @@ class MemoryManager:
         self.store.save_record(record)
         self.stats["written"] += 1
         return record, decision
+
+    def _attach_vector(self, record: MemoryRecord) -> None:
+        """Embed one record's search text, or record why it has no vector.
+
+        Never raises. A memory write that fails because an embedder is down would
+        turn an optimisation into data loss — the same rule that keeps
+        :meth:`recall` from failing a run, applied on the way in.
+        """
+        if getattr(self.ai, "embed_backend", None) is None or not record.text.strip():
+            return
+        embedder = self.ai.embed
+        try:
+            vectors = embedder([record.search_text()])
+        except Exception as exc:  # degrade to sparse for this record, and count it
+            self.stats["vector_errors"] = int(self.stats.get("vector_errors", 0)) + 1
+            self.stats.setdefault("vector_error_last", f"{type(exc).__name__}: {exc}")
+            return
+        if not vectors or not vectors[0]:
+            self.stats["vector_errors"] = int(self.stats.get("vector_errors", 0)) + 1
+            return
+        record.set_vector(list(vectors[0]), model=self.vector_model or "")
+
+    @property
+    def retriever_kind(self) -> str:
+        if self.retriever is None:
+            return "none"
+        backend = getattr(self.ai, "embed_backend", None)
+        engine = "hybrid(lexical+dense)" if backend is not None else "hybrid(lexical)"
+        vectors = sum(
+            1
+            for r in self.store.list_records()
+            if r.has_usable_vector(expect_model=self.vector_model)
+        )
+        return f"{engine}, {vectors} records carry a vector"
+
+    @property
+    def vector_model(self) -> str | None:
+        """Tag of the embedding space in use, or ``None`` when there is none.
+
+        ``None`` and ``""`` are not interchangeable here, and both this property and
+        :attr:`os_memory.retriever.MemoryRetriever.vector_model` use the same rule:
+        ``None`` means "no dense arm exists, so do not filter", while ``""`` would
+        mean "filter on the empty tag" and silently reject every real vector.
+        """
+        return embedding_space(getattr(self.ai, "embed_backend", None))
 
     def learn_from_run(self, state: RunState) -> MemoryRecord | None:
         """Distil a finished run into an episode. Never raises, never blocks a run."""
@@ -343,7 +396,10 @@ class MemoryManager:
             )
             if records
             else 0.0,
-            "retriever": "hybrid(LocalAIEngine)" if self.retriever is not None else "none",
+            # "hybrid" used to be printed for lexical-only search, which is a word
+            # doing two jobs: it means "several signals" *and* "dense vectors", and
+            # only the second is what a reader asks about. Both are reported now.
+            "retriever": self.retriever_kind,
             "stats": dict(self.stats),
         }
 
