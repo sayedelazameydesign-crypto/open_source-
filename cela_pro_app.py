@@ -3,6 +3,8 @@
 تطبيق Gradio (RTL) مع:
 - قائمة اختيار مزوّد الذكاء الاصطناعي (Groq, Gemini, OpenRouter, Kimi, Ollama)
 - محادثة متوافقة مع OpenAI Chat Completions دون تسريب المفاتيح للواجهة أو التبديل التلقائي
+- فحص دقيق (Smoke Test) لاتصال المزوّد يُصنّف النتيجة إلى BLOCKED / FAIL / INCONCLUSIVE / PASS
+- حجب تلقائي لقيمة مفتاح API ([REDACTED]) في رسائل الخطأ ومخرجات الفحص
 - محرك مهارات (Skill Engine) + OrionAgent مع موافقة بشرية (HITL)
 - ألوان HEX فقط لتجنّب SyntaxError في Python
 """
@@ -78,6 +80,7 @@ PROVIDER_SPECS: dict[str, dict[str, Any]] = {
         "api_key_env": "GROQ_API_KEY",
         "model_env": "GROQ_MODEL",
         "base_url_env": "GROQ_BASE_URL",
+        "extra_body_env": "GROQ_REQUEST_EXTRA_JSON",
         "requires_key": True,
     },
     "Gemini": {
@@ -86,6 +89,7 @@ PROVIDER_SPECS: dict[str, dict[str, Any]] = {
         "api_key_env": "GEMINI_API_KEY",
         "model_env": "GEMINI_MODEL",
         "base_url_env": "GEMINI_BASE_URL",
+        "extra_body_env": "GEMINI_REQUEST_EXTRA_JSON",
         "requires_key": True,
     },
     "OpenRouter": {
@@ -94,6 +98,7 @@ PROVIDER_SPECS: dict[str, dict[str, Any]] = {
         "api_key_env": "OPENROUTER_API_KEY",
         "model_env": "OPENROUTER_MODEL",
         "base_url_env": "OPENROUTER_BASE_URL",
+        "extra_body_env": "OPENROUTER_REQUEST_EXTRA_JSON",
         "requires_key": True,
     },
     "Kimi": {
@@ -102,6 +107,7 @@ PROVIDER_SPECS: dict[str, dict[str, Any]] = {
         "api_key_env": "KIMI_API_KEY",
         "model_env": "KIMI_MODEL",
         "base_url_env": "KIMI_BASE_URL",
+        "extra_body_env": "KIMI_REQUEST_EXTRA_JSON",
         "requires_key": True,
     },
     "Ollama": {
@@ -111,6 +117,7 @@ PROVIDER_SPECS: dict[str, dict[str, Any]] = {
         "optional_key_env": "OLLAMA_API_KEY",
         "model_env": "OLLAMA_MODEL",
         "base_url_env": "OLLAMA_BASE_URL",
+        "extra_body_env": "OLLAMA_REQUEST_EXTRA_JSON",
         "requires_key": False,
     },
 }
@@ -168,6 +175,7 @@ def get_provider_config(provider: str | None = None) -> dict[str, Any]:
         "api_key_env": api_key_env,
         "model_env": spec["model_env"],
         "base_url_env": spec["base_url_env"],
+        "extra_body_env": spec["extra_body_env"],
         "requires_key": requires_key,
         "configured": configured,
         "api_key": api_key,
@@ -175,18 +183,26 @@ def get_provider_config(provider: str | None = None) -> dict[str, Any]:
 
 
 def format_provider_status(provider: str | None = None) -> str:
-    """تنسيق حالة إعداد المزوّد للعرض في الواجهة دون كشف أي مفاتيح سرية."""
+    """تنسيق حالة *إعداد* المزوّد للعرض في الواجهة دون كشف أي مفاتيح سرية.
+
+    يصف هذا النص وجود المفتاح وتهيئته فقط، ولا يُعلن اتصالًا ناجحًا: وجود
+    ``GROQ_API_KEY`` في البيئة لا يعني أن المفتاح صالح أو أن النموذج والعنوان
+    يعملان. التحقق الفعلي مصدره الفحص الدقيق (``smoke_test_provider``) وحده.
+    """
     try:
         cfg = get_provider_config(provider)
     except ValueError as exc:
         return f"<span class='status-err'>●</span> {exc}"
 
+    unverified = "الاتصال غير مُتحقَّق منه — اضغط «🧪 اختبار اتصال المزوّد»"
     if not cfg["requires_key"]:
-        key_state = "<span class='status-ok'>●</span> جاهز محليًا (لا يحتاج مفتاحًا محليًا)"
+        key_state = (
+            f"<span class='status-info'>●</span> مُهيّأ محليًا (لا يحتاج مفتاحًا) — {unverified}"
+        )
     elif cfg["configured"]:
         key_state = (
-            f"<span class='status-ok'>●</span> متصل "
-            f"(المفتاح `{cfg['api_key_env']}` مُعيّن)"
+            f"<span class='status-info'>●</span> المفتاح `{cfg['api_key_env']}` مُعيّن — "
+            f"{unverified}"
         )
     else:
         key_state = (
@@ -196,25 +212,70 @@ def format_provider_status(provider: str | None = None) -> str:
 
     return (
         f"**المزوّد الحالي:** `{cfg['name']}`  |  "
-        f"**الحالة:** {key_state}  |  "
+        f"**حالة الإعداد:** {key_state}  |  "
         f"**النموذج:** `{cfg['model']}` (`{cfg['model_env']}`)  |  "
         f"**العنوان:** `{cfg['base_url']}`"
     )
 
 
 def format_all_providers_summary() -> str:
-    """ملخص حالة جميع المزوّدين الخمسة دون إظهار قيم المفاتيح."""
-    lines = ["### 🌐 حالة مزوّدي الذكاء الاصطناعي"]
+    """ملخص *إعداد* المزوّدين الخمسة دون إظهار قيم المفاتيح ودون ادعاء اتصال ناجح."""
+    lines = ["### 🌐 حالة إعداد مزوّدي الذكاء الاصطناعي"]
     for name in PROVIDER_CHOICES:
         cfg = get_provider_config(name)
         if not cfg["requires_key"]:
-            badge = "🟢 محلي (بدون مفتاح)"
+            badge = "🔵 مُهيّأ محليًا (بدون مفتاح) — غير مُختبَر"
         elif cfg["configured"]:
-            badge = f"✅ `{cfg['api_key_env']}` مُعيّن"
+            badge = f"🔑 `{cfg['api_key_env']}` مُعيّن — غير مُختبَر"
         else:
             badge = f"⚠️ ينقصه `{cfg['api_key_env']}`"
         lines.append(f"- **{name}** (`{cfg['model']}`): {badge}")
+    lines.append(
+        "\nℹ️ «مُعيّن» تعني وجود المفتاح في متغيرات البيئة فحسب، لا أن الاتصال يعمل؛ "
+        "التحقق الفعلي بزر «🧪 اختبار اتصال المزوّد» ونتيجته `PASS`."
+    )
     return "\n".join(lines)
+
+
+#: البديل المعروض دائمًا مكان قيمة أي مفتاح سري في السجلات ومخرجات الواجهة.
+REDACTED = "[REDACTED]"
+
+
+def redact_secret(text: Any, secret: str | None) -> str:
+    """حجب قيمة المفتاح السري من أي نص قبل عرضه أو تسجيله.
+
+    تُستخدم لرسائل الاستثناءات (التي قد تتضمن ترويسة ``Authorization`` كاملة)
+    ولردود المزوّد على حد سواء، حتى لا يتسرّب مفتاح API إلى الواجهة أو السجلات.
+    """
+    cleaned = str(text)
+    if secret:
+        cleaned = cleaned.replace(secret, REDACTED)
+    return cleaned
+
+
+def get_provider_extra_body(cfg: dict[str, Any]) -> dict[str, Any]:
+    """قراءة وسائط الطلب الإضافية الاختيارية من ``<PROVIDER>_REQUEST_EXTRA_JSON``.
+
+    تُدمج في حمولة الطلب لضبط وسائط خاصة بمزوّد أو بنقطة وسيطة — مثل
+    ``{"reasoning_effort": "none"}`` لنماذج الاستدلال خلف وسيط Modal — دون أي تعديل
+    في الكود. المتغير اختياري تمامًا: إن كان فارغًا أو غير مُعيّن تبقى الحمولة كما كانت.
+
+    يرفع ``ValueError`` إذا لم تكن القيمة كائن JSON صالحًا، ليتولّى المستدعي عرض رسالة
+    واضحة بدل إرسال طلب ناقص.
+    """
+    env_name = str(cfg.get("extra_body_env") or "")
+    raw = os.getenv(env_name, "").strip()
+    if not env_name or not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except ValueError as exc:
+        raise ValueError(f"قيمة `{env_name}` ليست JSON صالحًا ({exc})") from exc
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"قيمة `{env_name}` يجب أن تكون كائن JSON (قاموسًا) لا {type(data).__name__}"
+        )
+    return data
 
 
 def call_provider_chat(messages: list[dict[str, str]], provider: str | None = None) -> str:
@@ -235,31 +296,199 @@ def call_provider_chat(messages: list[dict[str, str]], provider: str | None = No
     if cfg["api_key"]:
         headers["Authorization"] = f"Bearer {cfg['api_key']}"
 
+    try:
+        extra_body = get_provider_extra_body(cfg)
+    except ValueError as exc:
+        return (
+            f"❌ {exc}.\n"
+            f"الصيغة المتوقعة لـ `{cfg['extra_body_env']}`: كائن JSON مثل "
+            '{"reasoning_effort": "none"} — أو اتركه فارغًا.'
+        )
+
+    payload: dict[str, Any] = {
+        "model": cfg["model"],
+        "messages": messages,
+        "temperature": 0.7,
+    }
+    payload.update(extra_body)
+    # هوية الطلب لا تُشترى من متغير إضافي: النموذج من إعداد المزوّد، والرسائل من المحادثة.
+    payload["model"] = cfg["model"]
+    payload["messages"] = messages
+
     endpoint = f"{cfg['base_url']}/chat/completions"
     try:
         with httpx.Client(timeout=60.0) as client:
             response = client.post(
                 endpoint,
                 headers=headers,
-                json={
-                    "model": cfg["model"],
-                    "messages": messages,
-                    "temperature": 0.7,
-                },
+                json=payload,
             )
             response.raise_for_status()
             data = response.json()
-            return str(data["choices"][0]["message"]["content"])
+            content = str(data["choices"][0]["message"]["content"])
+            # لا يُعاد المفتاح السري إلى الواجهة حتى لو أعاد المزوّد صدىً له.
+            return redact_secret(content, cfg["api_key"])
     except Exception as exc:
+        # رسائل الاستثناء قد تحمل ترويسة Authorization كاملة، لذا تُحجب قبل العرض.
+        detail = redact_secret(exc, cfg["api_key"])
         return (
             f"❌ فشل الاتصال بمزوّد {cfg['name']} "
-            f"(النموذج `{cfg['model']}` على `{cfg['base_url']}`): {exc}"
+            f"(النموذج `{cfg['model']}` على `{cfg['base_url']}`): {detail}"
         )
 
 
 def kimi_chat(messages: list[dict[str, str]]) -> str:
     """دالة توافقية لاستدعاء Kimi مباشرة."""
     return call_provider_chat(messages, provider="Kimi")
+
+
+# ---------- الفحص الدقيق لاتصال المزوّد (Smoke Test) ----------
+SMOKE_PASS = "PASS"
+SMOKE_INCONCLUSIVE = "INCONCLUSIVE"
+SMOKE_FAIL = "FAIL"
+SMOKE_BLOCKED = "BLOCKED"
+SMOKE_STATES: tuple[str, ...] = (SMOKE_BLOCKED, SMOKE_FAIL, SMOKE_INCONCLUSIVE, SMOKE_PASS)
+
+#: العبارة التي يجب أن يتضمنها رد المزوّد ليُعتبر الفحص ناجحًا.
+SMOKE_VERIFICATION_PHRASE = "اختبار الاتصال ناجح"
+
+_SMOKE_ICONS: dict[str, str] = {
+    SMOKE_PASS: "✅",
+    SMOKE_INCONCLUSIVE: "🟡",
+    SMOKE_FAIL: "❌",
+    SMOKE_BLOCKED: "⛔",
+}
+
+SMOKE_TEST_MESSAGES: list[dict[str, str]] = [
+    {
+        "role": "system",
+        "content": (
+            "أنت مساعد فحص اتصال آلي لنظام CELA.PRO. "
+            "ردّك يُقرأ آليًا، فأجب بعبارة واحدة فقط دون شرح أو مقدمات."
+        ),
+    },
+    {
+        "role": "user",
+        "content": (
+            "اكتب العبارة التالية كما هي بالحرف الواحد دون أي إضافة أو ترجمة: "
+            f"{SMOKE_VERIFICATION_PHRASE}"
+        ),
+    },
+]
+
+
+def classify_smoke_reply(reply: str | None) -> str:
+    """تصنيف رد المزوّد إلى FAIL / INCONCLUSIVE / PASS (دون BLOCKED التي تُقاس قبل الطلب)."""
+    text = (reply or "").strip()
+    if not text or "❌" in text or "⚠️" in text:
+        return SMOKE_FAIL
+    if SMOKE_VERIFICATION_PHRASE in text:
+        return SMOKE_PASS
+    return SMOKE_INCONCLUSIVE
+
+
+def run_smoke_test(provider: str | None = None) -> dict[str, Any]:
+    """نفّذ فحص اتصال لمزوّد واحد وأرجع نتيجة مصنّفة دون كشف أي مفتاح سري.
+
+    الحالات الأربع:
+    - ``BLOCKED``: مفتاح المزوّد غير مُعيّن في متغيرات البيئة (لم يُرسل أي طلب).
+    - ``FAIL``: فشل الطلب أو أعاد المزوّد رسالة خطأ (``❌`` / ``⚠️``) أو ردًا فارغًا.
+    - ``INCONCLUSIVE``: وصل رد من المزوّد لكنه لا يتضمن عبارة التحقق المطلوبة.
+    - ``PASS``: وصل رد حقيقي يتضمن عبارة التحقق المطلوبة.
+    """
+    try:
+        cfg = get_provider_config(provider)
+    except ValueError as exc:
+        return {
+            "state": SMOKE_FAIL,
+            "provider": (provider or "").strip(),
+            "model": "",
+            "base_url": "",
+            "api_key_env": None,
+            "extra_body_env": None,
+            "extra_body": {},
+            "reply": "",
+            "detail": str(exc),
+        }
+
+    result: dict[str, Any] = {
+        "state": SMOKE_FAIL,
+        "provider": cfg["name"],
+        "model": cfg["model"],
+        "base_url": cfg["base_url"],
+        "api_key_env": cfg["api_key_env"],
+        "extra_body_env": cfg["extra_body_env"],
+        "extra_body": {},
+        "reply": "",
+        "detail": "",
+    }
+
+    if cfg["requires_key"] and not cfg["configured"]:
+        result["state"] = SMOKE_BLOCKED
+        result["detail"] = (
+            f"المفتاح `{cfg['api_key_env']}` غير مُعيّن في متغيرات البيئة "
+            f"({cfg['name']} يتطلب مفتاحًا)، لذلك لم يُرسل أي طلب إلى المزوّد."
+        )
+        return result
+
+    try:
+        result["extra_body"] = get_provider_extra_body(cfg)
+    except ValueError:
+        result["extra_body"] = {}  # رسالة الخطأ ستصل عبر رد المزوّد وتصنَّف FAIL
+
+    reply = redact_secret(
+        call_provider_chat(SMOKE_TEST_MESSAGES, provider=cfg["name"]),
+        cfg["api_key"],
+    )
+    result["reply"] = reply
+    result["state"] = classify_smoke_reply(reply)
+    if result["state"] == SMOKE_FAIL:
+        result["detail"] = "فشل الطلب أو أعاد المزوّد رسالة خطأ/ردًا فارغًا."
+    elif result["state"] == SMOKE_INCONCLUSIVE:
+        result["detail"] = (
+            "وصل رد من المزوّد لكنه لا يتضمن عبارة التحقق المطلوبة "
+            f"«{SMOKE_VERIFICATION_PHRASE}»."
+        )
+    else:
+        result["detail"] = (
+            f"وصل رد حقيقي من المزوّد يتضمن عبارة التحقق "
+            f"«{SMOKE_VERIFICATION_PHRASE}»."
+        )
+    return result
+
+
+def format_smoke_result(result: dict[str, Any]) -> str:
+    """تنسيق نتيجة الفحص الدقيق للعرض في الواجهة (المفاتيح محجوبة دائمًا)."""
+    state = str(result.get("state", SMOKE_FAIL))
+    icon = _SMOKE_ICONS.get(state, "")
+    provider = result.get("provider") or "(غير محدّد)"
+    lines = [
+        f"### 🧪 الفحص الدقيق لاتصال المزوّد — الحالة: {icon} `{state}`",
+        f"- **المزوّد:** `{provider}`",
+    ]
+    if result.get("model"):
+        lines.append(f"- **النموذج:** `{result['model']}`")
+    if result.get("base_url"):
+        lines.append(f"- **العنوان:** `{result['base_url']}`")
+    if result.get("api_key_env"):
+        lines.append(f"- **المفتاح:** `{result['api_key_env']}` = `{REDACTED}` (القيمة محجوبة)")
+    extra = result.get("extra_body") or {}
+    if extra:
+        rendered = ", ".join(f"`{key}`" for key in sorted(extra))
+        lines.append(f"- **وسائط طلب إضافية:** {rendered} (من `{result.get('extra_body_env')}`)")
+    lines.append(f"- **عبارة التحقق المطلوبة:** «{SMOKE_VERIFICATION_PHRASE}»")
+    if result.get("detail"):
+        lines.append(f"- **التفصيل:** {result['detail']}")
+    reply = str(result.get("reply") or "").strip()
+    if reply:
+        shown = reply if len(reply) <= 400 else f"{reply[:400]}…"
+        lines.append(f"- **رد المزوّد:** {shown}")
+    return "\n".join(lines)
+
+
+def smoke_test_provider(provider: str | None = None) -> str:
+    """زر «اختبار اتصال المزوّد»: فحص حيّ لمزوّد واحد يُرجع تقريرًا مصنّفًا ومحجوب المفاتيح."""
+    return format_smoke_result(run_smoke_test(provider))
 
 
 _SKILLS_FILE = pathlib.Path("cela_pro_skills.json")
@@ -369,6 +598,7 @@ button.primary {{
     border: none !important;
 }}
 .status-ok {{ color: {SUCCESS}; }}
+.status-info {{ color: {ACCENT}; }}
 .status-warn {{ color: {WARN}; }}
 .status-err {{ color: {DANGER}; }}
 """
@@ -454,6 +684,22 @@ with gr.Blocks(title="CELA.PRO") as demo:
         fn=_refresh_provider_ui,
         inputs=[provider_dropdown],
         outputs=[provider_status_md, providers_summary_md],
+    )
+
+    with gr.Row():
+        smoke_test_btn = gr.Button("🧪 اختبار اتصال المزوّد", variant="primary")
+
+    smoke_result_md = gr.Markdown(
+        "اضغط «🧪 اختبار اتصال المزوّد» لإرسال طلب تحقق واحد إلى المزوّد المختار "
+        f"والتأكد من أنه يرد بعبارة «{SMOKE_VERIFICATION_PHRASE}».\n\n"
+        "الحالات: `BLOCKED` (المفتاح غير مُعيّن في البيئة) · `FAIL` (فشل الطلب أو رسالة خطأ) · "
+        "`INCONCLUSIVE` (وصل رد بلا عبارة التحقق) · `PASS` (وصل رد يتضمن عبارة التحقق). "
+        f"قيمة المفتاح تُحجب دائمًا `{REDACTED}`."
+    )
+    smoke_test_btn.click(
+        fn=smoke_test_provider,
+        inputs=[provider_dropdown],
+        outputs=[smoke_result_md],
     )
 
     gr.Markdown(
