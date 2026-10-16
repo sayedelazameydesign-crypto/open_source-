@@ -20,6 +20,7 @@ from os_core.guardrails import Guardrails
 from os_core.hitl import Approver, DenyApprover
 from os_core.ledger import LedgerError, RunLedger
 from os_core.models import ChatModel, describe_execution
+from os_core.prompting import PromptSpec
 from os_core.router import ModelRouter, RouterConfig
 from os_core.state import RunState, RunStatus
 from os_tools.registry import ToolRegistry
@@ -45,6 +46,11 @@ class Platform(BaseModel):
     guardrails: Guardrails = Field(default_factory=Guardrails)
     approver: Approver = Field(default_factory=DenyApprover)
     reviewer: Any = Field(default_factory=HeuristicReviewer)
+    # Door 1 wiring (docs/AI_DOORS_AR.md): an optional prompt contract for the
+    # ReAct mode. PlanningFlow keeps its own JSON plan contract, so the spec
+    # does not rewrite flow prompts in this version.
+    prompt_spec: PromptSpec | None = None
+    self_critique: bool = False
     # Optional continuous-learning hook (os_skills.SkillManager, duck-typed so
     # this layer never imports os_skills): retrieved skills are injected as
     # initial guidance and completed runs are distilled back into the library.
@@ -187,6 +193,8 @@ class Platform(BaseModel):
                 approver=self.approver,
                 budget_cfg=self.budget(),
                 reviewer=self.reviewer,
+                prompt_spec=self.prompt_spec,
+                self_critique=self.self_critique,
             )
             outcome = await agent.run(effective_task, state=state)
             return self._learn(state=outcome.run, used_skill_id=used_skill_id)
@@ -287,6 +295,8 @@ def build_platform(
     skill_manager: Any = None,
     memory_manager: Any = None,
     ledger: RunLedger | None = None,
+    prompt_spec: PromptSpec | None = None,
+    self_critique: bool = False,
 ) -> Platform:
     """Convenience factory used by the CLI, the server and the tests."""
     return Platform(
@@ -297,4 +307,6 @@ def build_platform(
         skill_manager=skill_manager,
         memory_manager=memory_manager,
         ledger=ledger,
+        prompt_spec=prompt_spec,
+        self_critique=self_critique,
     )

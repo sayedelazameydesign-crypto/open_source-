@@ -20,6 +20,7 @@ from os_core.events import Event, EventBus, EventType
 from os_core.guardrails import Guardrails, ScanVerdict
 from os_core.hitl import ApprovalDecision, Approver, DenyApprover
 from os_core.models import ChatModel
+from os_core.prompting import PromptSpec, parse_critique
 from os_core.router import ModelRouter
 from os_core.state import RunState, RunStatus
 from os_core.types import (
@@ -65,6 +66,14 @@ class ReActAgent(BaseModel):
     budget_cfg: BudgetConfig = Field(default_factory=BudgetConfig)
     reviewer: Any = Field(default_factory=HeuristicReviewer)
     system_prompt: str = SYSTEM_PROMPT
+    #: Door 1 (docs/AI_DOORS_AR.md): when set, the spec — not ``system_prompt``
+    #: — renders the system/user turns, and its creativity preset picks the
+    #: temperature. ``None`` keeps the historical bare-task behaviour exactly.
+    prompt_spec: PromptSpec | None = None
+    #: Run one tools-free self-critique pass over the final answer. Also
+    #: enabled by ``prompt_spec.self_critique``; this flag is the bare-task
+    #: path. Off by default: it costs one extra model call per run.
+    self_critique: bool = False
     max_stagnation_reviews: int = 2
 
     model_config = {"arbitrary_types_allowed": True}
@@ -96,10 +105,13 @@ class ReActAgent(BaseModel):
                 data={"task": task, "mode": "react", "max_steps": budget.config.max_steps},
             )
         )
-        messages: list[Message] = [
-            Message(role="system", content=self.system_prompt),
-            Message(role="user", content=f"USER TASK:\n{task}"),
-        ]
+        if self.prompt_spec is not None:
+            messages: list[Message] = self.prompt_spec.render_messages(task)
+        else:
+            messages = [
+                Message(role="system", content=self.system_prompt),
+                Message(role="user", content=f"USER TASK:\n{task}"),
+            ]
         run.messages = messages
         stopped_reason = "completed"
         stagnation_reviews = 0
@@ -146,7 +158,13 @@ class ReActAgent(BaseModel):
             await self.bus.model_selected(choice, step_id=step.id)
 
             response = await self.model.complete(
-                messages, tools=self.registry.specs(), temperature=0.2
+                messages,
+                tools=self.registry.specs(),
+                temperature=(
+                    self.prompt_spec.suggested_temperature()
+                    if self.prompt_spec is not None
+                    else 0.2
+                ),
             )
             budget.charge_tokens(response.usage.total)
             self.router.charge(response.usage.total)
@@ -159,6 +177,8 @@ class ReActAgent(BaseModel):
             if not response.wants_tools:
                 step.status = StepStatus.DONE
                 run.final_answer = response.content
+                if self._critique_enabled() and response.content.strip():
+                    run.final_answer = await self._self_critique(run, budget, response.content)
                 run.mark_finished(RunStatus.COMPLETED)
                 stopped_reason = "final answer produced"
                 break
@@ -311,6 +331,42 @@ class ReActAgent(BaseModel):
         messages.append(Message(role="system", content=f"REVIEWER: {decision.instruction}"))
         budget.consecutive_errors = 0
         return None
+
+    def _critique_enabled(self) -> bool:
+        return self.self_critique or bool(
+            self.prompt_spec is not None and self.prompt_spec.self_critique
+        )
+
+    async def _self_critique(self, run: RunState, budget: Budget, answer: str) -> str:
+        """One self-critique pass over a finished answer (Door 1).
+
+        Tools-free and temperature 0, charged to the same budget/router as
+        every other call. Failure modes all keep the original answer: a
+        model error is logged, and a reply without a ``REVISED:`` section
+        is treated as commentary, never as a replacement answer.
+        """
+        spec = self.prompt_spec or PromptSpec()
+        try:
+            response = await self.model.complete(
+                [Message(role="user", content=spec.critique_prompt(answer))],
+                temperature=0.0,
+            )
+        except Exception as exc:  # a failed review must not lose a good answer
+            await self.bus.log(f"self-critique unavailable: {exc}", level="warning")
+            return answer
+        budget.charge_tokens(response.usage.total)
+        self.router.charge(response.usage.total)
+        run.tokens_used += response.usage.total
+        parsed = parse_critique(response.content)
+        if parsed.weaknesses:
+            run.metadata["self_critique_weaknesses"] = parsed.weaknesses
+        applied = bool(parsed.revised and parsed.revised != answer)
+        run.metadata["self_critique_applied"] = applied
+        await self.bus.log(
+            f"self-critique: {len(parsed.weaknesses)} weakness(es), "
+            f"revised answer {'applied' if applied else 'kept original'}"
+        )
+        return parsed.revised if applied else answer
 
     async def _review(self, run: RunState, budget: Budget, reason: str):
         decision = await self.reviewer.review(

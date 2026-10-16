@@ -1,20 +1,28 @@
 """Model layer.
 
-Two implementations of :class:`ChatModel`:
+Implementations of :class:`ChatModel`:
 
 * :class:`ScriptedModel` — deterministic, offline, used by the test-suite and
   the demo so the whole platform runs with zero API keys and zero GPUs.
 * :class:`OpenAICompatModel` — talks to any OpenAI-compatible endpoint, which
   covers vLLM, Ollama, llama.cpp-server, TGI and the hosted APIs.
+* :class:`CachedModel` — in-process cache for deterministic calls (Door 3:
+  prompt caching). Only ``temperature=0`` calls without tools are cached;
+  anything else bypasses, because a cached tool plan is a stale decision.
+* :class:`FallbackModel` — tries candidates in order (Door 3: provider
+  fallback). Continuity when one provider's quota or endpoint is gone,
+  without the agent loop knowing anything happened.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
+from collections import OrderedDict
 from collections.abc import Callable, Sequence
 from typing import Any, Protocol, runtime_checkable
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr, field_validator
 
 from os_core.types import ExecutionInfo, Message, ModelResponse, ToolCall, Usage
 
@@ -169,6 +177,149 @@ class OpenAICompatModel(BaseModel):
         )
 
 
+class CachedModel(BaseModel):
+    """Cache wrapper: identical deterministic calls cost one model call.
+
+    The cache key is the SHA-256 of the candidate's name, the full message
+    transcript and ``max_tokens`` — so the same stable prompt prefix (see
+    :meth:`os_core.prompting.PromptSpec.stable_prefix`) with the same task
+    hits, and any changed word misses. Entries are LRU-evicted at
+    ``max_entries``; counters make the saving observable instead of assumed.
+    Returned responses are deep copies, so a caller mutating a result cannot
+    poison the cached entry for the next caller.
+    """
+
+    name: str = "cached"
+    underlying: Any = Field(exclude=True)
+    max_entries: int = Field(default=128, ge=1)
+    _cache: OrderedDict[str, ModelResponse] = PrivateAttr(default_factory=OrderedDict)
+    _hits: int = PrivateAttr(default=0)
+    _misses: int = PrivateAttr(default=0)
+    _bypasses: int = PrivateAttr(default=0)
+
+    model_config = {"arbitrary_types_allowed": True}
+
+    @property
+    def hits(self) -> int:
+        return self._hits
+
+    @property
+    def misses(self) -> int:
+        return self._misses
+
+    @property
+    def bypasses(self) -> int:
+        return self._bypasses
+
+    @staticmethod
+    def _key(underlying: Any, messages: Sequence[Message], max_tokens: int) -> str:
+        payload = json.dumps(
+            {
+                "model": getattr(underlying, "name", type(underlying).__name__),
+                "messages": [[m.role, m.content, m.tool_call_id] for m in messages],
+                "max_tokens": max_tokens,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    async def complete(
+        self,
+        messages: Sequence[Message],
+        *,
+        tools: Sequence[dict[str, Any]] | None = None,
+        temperature: float = 0.2,
+        max_tokens: int = 1024,
+    ) -> ModelResponse:
+        if tools or temperature != 0.0:
+            self._bypasses += 1
+            return await self.underlying.complete(
+                messages, tools=tools, temperature=temperature, max_tokens=max_tokens
+            )
+        key = self._key(self.underlying, messages, max_tokens)
+        cached = self._cache.get(key)
+        if cached is not None:
+            self._hits += 1
+            self._cache.move_to_end(key)
+            return cached.model_copy(deep=True)
+        self._misses += 1
+        response = await self.underlying.complete(
+            messages, tools=tools, temperature=temperature, max_tokens=max_tokens
+        )
+        self._cache[key] = response.model_copy(deep=True)
+        while len(self._cache) > self.max_entries:
+            self._cache.popitem(last=False)
+        return response
+
+
+class FallbackModel(BaseModel):
+    """Ordered provider fallback: first success wins, every attempt is logged.
+
+    Candidates are tried in order — typically the primary endpoint, then a
+    second provider or a local server. ``attempts`` records
+    ``"<name>: ok"`` / ``"<name>: <ErrorType>: ..."`` per try so a run that
+    silently failed over is visible after the fact. When every candidate
+    fails, the raised :class:`RuntimeError` names all of them and chains the
+    last exception; a fallback layer must never swallow the real error.
+    """
+
+    name: str = "fallback"
+    candidates: list[Any] = Field(exclude=True)
+    _attempts: list[str] = PrivateAttr(default_factory=list)
+    _last_used_index: int = PrivateAttr(default=-1)
+
+    model_config = {"arbitrary_types_allowed": True}
+
+    @field_validator("candidates")
+    @classmethod
+    def _need_a_candidate(cls, value: list[Any]) -> list[Any]:
+        if not value:
+            raise ValueError("FallbackModel needs at least one candidate model")
+        return value
+
+    @property
+    def attempts(self) -> list[str]:
+        return list(self._attempts)
+
+    @property
+    def fallback_used(self) -> bool:
+        """True when the most recent answer came from a non-primary candidate."""
+        return self._last_used_index > 0
+
+    async def complete(
+        self,
+        messages: Sequence[Message],
+        *,
+        tools: Sequence[dict[str, Any]] | None = None,
+        temperature: float = 0.2,
+        max_tokens: int = 1024,
+    ) -> ModelResponse:
+        failures: list[str] = []
+        last_exc: Exception | None = None
+        self._last_used_index = -1
+        for index, candidate in enumerate(self.candidates):
+            label = str(getattr(candidate, "name", type(candidate).__name__))
+            try:
+                response = await candidate.complete(
+                    messages, tools=tools, temperature=temperature, max_tokens=max_tokens
+                )
+            except Exception as exc:  # provider down / quota gone -> next candidate
+                last_exc = exc
+                entry = f"{label}: {type(exc).__name__}: {exc}"
+                failures.append(entry)
+                self._attempts.append(entry)
+                continue
+            self._attempts.append(f"{label}: ok")
+            self._last_used_index = index
+            if not response.model:
+                response.model = label
+            return response
+        raise RuntimeError(
+            f"all {len(self.candidates)} model candidates failed: " + "; ".join(failures)
+        ) from last_exc
+
+
 def _safe_json(text: str) -> dict[str, Any]:
     try:
         parsed = json.loads(text)
@@ -196,4 +347,8 @@ def describe_execution(model: object) -> ExecutionInfo:
         return ExecutionInfo(kind="scripted", model_name=model.name)
     if isinstance(model, OpenAICompatModel):
         return ExecutionInfo(kind="provider_adapter", model_name=model.name)
+    if isinstance(model, CachedModel):
+        return describe_execution(model.underlying)
+    if isinstance(model, FallbackModel) and model.candidates:
+        return describe_execution(model.candidates[0])
     return ExecutionInfo()

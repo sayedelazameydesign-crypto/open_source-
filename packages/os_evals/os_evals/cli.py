@@ -27,7 +27,7 @@ import sys
 from pathlib import Path
 
 from os_evals.harness import EvalReport, EvalRunner, load_jsonl
-from os_evals.suites import builtin_cases
+from os_evals.suites import builtin_cases, practice_cases
 
 
 def _all_errored(report: EvalReport) -> bool:
@@ -75,7 +75,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="os-evals", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     run = sub.add_parser("run", help="run an evaluation suite")
-    run.add_argument("--suite", default="builtin", choices=["builtin", "custom"])
+    run.add_argument("--suite", default="builtin", choices=["builtin", "practice", "custom"])
+    run.add_argument(
+        "--concurrency",
+        type=int,
+        default=1,
+        help="batch mode for non-urgent suites: run up to N cases in parallel "
+        "(Door 3); result order still matches case order. Ignored with "
+        "--ab-skills, where the skilled arm must learn sequentially",
+    )
     run.add_argument("--dataset", default=None, help="GAIA/SWE-bench-style JSONL")
     run.add_argument("--model-url", default=os.environ.get("CELA_EVAL_MODEL_URL"))
     run.add_argument("--model-id", default=os.environ.get("CELA_EVAL_MODEL_ID", ""))
@@ -106,6 +114,8 @@ def main(argv: list[str] | None = None) -> int:
             return 2
     elif args.suite == "builtin":
         cases = builtin_cases()
+    elif args.suite == "practice":
+        cases = practice_cases()
     else:
         print("error: --suite custom requires --dataset", file=sys.stderr)
         return 2
@@ -126,7 +136,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.dataset and not args.model_url:
         print(
             "error: dataset runs need a real model (--model-url); "
-            "the offline demo model only backs --suite builtin",
+            "the offline demo model only backs --suite builtin/practice",
             file=sys.stderr,
         )
         return 2
@@ -187,7 +197,11 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         return 0 if skilled.pass_rate >= baseline.pass_rate else 1
 
-    report = asyncio.run(EvalRunner(factory).run_suite(cases))
+    runner = EvalRunner(factory)
+    if args.concurrency > 1:
+        report = asyncio.run(runner.run_suite_batch(cases, concurrency=args.concurrency))
+    else:
+        report = asyncio.run(runner.run_suite(cases))
     payload = report.model_dump_json(indent=2)
     print(payload)
     if args.out:

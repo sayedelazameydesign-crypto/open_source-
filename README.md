@@ -56,6 +56,7 @@ python -m os_server.cli serve --demo --host 0.0.0.0 --port 8080
 | **سجل النتائج** | `RunLedger`: سطر JSONL دائم **لكل** تنفيذ (نجاح/فشل/ميزانية/انقطاع) + ملخّص إجمالي (معدّل النجاح، p50/p95)، عبر `/ledger` و`/cela/v1/ledger` |
 | **الذاكرة والمعرفة** | `os_memory` (بوابة كتابة تفحص الحقن والأسرار **قبل** التخزين + خصم موثوقية) و`os_know` (تقطيع حتمي + اقتباس مُتحقَّق منه بـ`sha256`) — محليّتان بالكامل، بلا تبعية جديدة، ومُفعَّلتان بالعنوان فقط |
 
+الأبواب الخمسة (Prompting/أدوات/تكلفة/جودة/خطر) مربوطة بهذا النظام: [`docs/AI_DOORS_AR.md`](docs/AI_DOORS_AR.md) ·
 البنية الكاملة: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · الـ API الخاص: [`docs/CELA_API.md`](docs/CELA_API.md) ·
 القرارات: [`adr/`](adr) · ما تبقّى: [`docs/ROADMAP.md`](docs/ROADMAP.md)
 ربط Agent Mode بـ GitHub: [`docs/arena-github-integration.md`](docs/arena-github-integration.md)

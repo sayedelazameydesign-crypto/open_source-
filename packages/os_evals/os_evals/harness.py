@@ -11,6 +11,7 @@ which keeps CI hermetic and licences with the dataset owner.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -164,6 +165,27 @@ class EvalRunner:
     async def run_suite(self, cases: list[EvalCase]) -> EvalReport:
         results = [await self.run_case(case) for case in cases]
         return EvalReport.from_results(results)
+
+    async def run_suite_batch(self, cases: list[EvalCase], *, concurrency: int = 4) -> EvalReport:
+        """Batch mode for non-urgent suites (Door 3): bounded parallelism.
+
+        Same cases, same checkers, same report — only the scheduling
+        changes, and result order always matches case order. This is the
+        local half of the batch door: it spends wall-clock, not per-request
+        priority. A provider-side Batch API (cheaper queued inference) is a
+        transport feature of ``OpenAICompatModel``'s endpoint, not something
+        a runner can invent; see ``docs/AI_DOORS_AR.md`` §3.
+        """
+        if concurrency < 1:
+            raise ValueError("concurrency must be >= 1")
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async def _one(case: EvalCase) -> CaseResult:
+            async with semaphore:
+                return await self.run_case(case)
+
+        results = await asyncio.gather(*(_one(case) for case in cases))
+        return EvalReport.from_results(list(results))
 
 
 def load_jsonl(path: str | Path) -> list[EvalCase]:

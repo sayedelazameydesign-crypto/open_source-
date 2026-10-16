@@ -20,7 +20,17 @@ from os_core.ledger import (
     outcome_for,
     resolve_ledger,
 )
-from os_core.models import ChatModel, OpenAICompatModel, ScriptedModel
+from os_core.models import CachedModel, ChatModel, FallbackModel, OpenAICompatModel, ScriptedModel
+from os_core.prompting import (
+    Creativity,
+    CritiqueResult,
+    OutputFormat,
+    OutputValidation,
+    PromptExample,
+    PromptSpec,
+    parse_critique,
+    validate_output,
+)
 from os_core.router import (
     ModelChoice,
     ModelRegistry,
@@ -53,11 +63,15 @@ __all__ = [
     "Approver",
     "Artifact",
     "AutoApprover",
+    "CachedModel",
     "ChatModel",
+    "Creativity",
+    "CritiqueResult",
     "DenyApprover",
     "Event",
     "EventBus",
     "EventType",
+    "FallbackModel",
     "Guardrails",
     "LedgerEntry",
     "LedgerError",
@@ -68,8 +82,12 @@ __all__ = [
     "ModelRouter",
     "ModelSpec",
     "OpenAICompatModel",
+    "OutputFormat",
+    "OutputValidation",
     "PlanStep",
     "PolicyApprover",
+    "PromptExample",
+    "PromptSpec",
     "QueueApprover",
     "ReviewDecision",
     "ReviewVerdict",
@@ -91,6 +109,8 @@ __all__ = [
     "__version__",
     "default_registry",
     "outcome_for",
+    "parse_critique",
     "replay_and_stream",
     "resolve_ledger",
+    "validate_output",
 ]
