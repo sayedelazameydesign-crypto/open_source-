@@ -321,9 +321,11 @@ def test_smoke_test_classifies_pass_inconclusive_and_fail(
     assert "فشل الطلب" in failed_report
     assert "تعذر الاتصال بالخادم" in failed_report
 
-    # ثلاثة طلبات لمزوّد واحد فقط: لا تبديل تلقائي إلى مزوّد آخر عند الفشل
+    # ثلاثة طلبات لمزوّد واحد فقط: لا تبديل تلقائي إلى مزوّد آخر عند الفشل.
+    # تُقارَن مضيفات الطلبات مطابقةً تامةً (لا فحصًا جزئياً للنص) حتى لا يمرّ
+    # عنوان مثل https://api.groq.com.example/ كمزوّد صحيح.
     assert len(calls) == 3
-    assert all(call["url"].startswith("https://api.groq.com") for call in calls)
+    assert all(httpx.URL(call["url"]).host == "api.groq.com" for call in calls)
     assert cela_pro_app.SMOKE_STATES == ("BLOCKED", "FAIL", "INCONCLUSIVE", "PASS")
 
 
