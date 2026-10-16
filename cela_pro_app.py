@@ -3,6 +3,8 @@
 تطبيق Gradio (RTL) مع:
 - قائمة اختيار مزوّد الذكاء الاصطناعي (Groq, Gemini, OpenRouter, Kimi, Ollama)
 - محادثة متوافقة مع OpenAI Chat Completions دون تسريب المفاتيح للواجهة أو التبديل التلقائي
+- فحص دقيق (Smoke Test) لاتصال المزوّد يُصنّف النتيجة إلى BLOCKED / FAIL / INCONCLUSIVE / PASS
+- حجب تلقائي لقيمة مفتاح API ([REDACTED]) في رسائل الخطأ ومخرجات الفحص
 - محرك مهارات (Skill Engine) + OrionAgent مع موافقة بشرية (HITL)
 - ألوان HEX فقط لتجنّب SyntaxError في Python
 """
@@ -217,6 +219,22 @@ def format_all_providers_summary() -> str:
     return "\n".join(lines)
 
 
+#: البديل المعروض دائمًا مكان قيمة أي مفتاح سري في السجلات ومخرجات الواجهة.
+REDACTED = "[REDACTED]"
+
+
+def redact_secret(text: Any, secret: str | None) -> str:
+    """حجب قيمة المفتاح السري من أي نص قبل عرضه أو تسجيله.
+
+    تُستخدم لرسائل الاستثناءات (التي قد تتضمن ترويسة ``Authorization`` كاملة)
+    ولردود المزوّد على حد سواء، حتى لا يتسرّب مفتاح API إلى الواجهة أو السجلات.
+    """
+    cleaned = str(text)
+    if secret:
+        cleaned = cleaned.replace(secret, REDACTED)
+    return cleaned
+
+
 def call_provider_chat(messages: list[dict[str, str]], provider: str | None = None) -> str:
     """استدعاء المزوّد المحدد فقط دون تبديل تلقائي عند غياب المفتاح أو الفشل."""
     try:
@@ -249,17 +267,157 @@ def call_provider_chat(messages: list[dict[str, str]], provider: str | None = No
             )
             response.raise_for_status()
             data = response.json()
-            return str(data["choices"][0]["message"]["content"])
+            content = str(data["choices"][0]["message"]["content"])
+            # لا يُعاد المفتاح السري إلى الواجهة حتى لو أعاد المزوّد صدىً له.
+            return redact_secret(content, cfg["api_key"])
     except Exception as exc:
+        # رسائل الاستثناء قد تحمل ترويسة Authorization كاملة، لذا تُحجب قبل العرض.
+        detail = redact_secret(exc, cfg["api_key"])
         return (
             f"❌ فشل الاتصال بمزوّد {cfg['name']} "
-            f"(النموذج `{cfg['model']}` على `{cfg['base_url']}`): {exc}"
+            f"(النموذج `{cfg['model']}` على `{cfg['base_url']}`): {detail}"
         )
 
 
 def kimi_chat(messages: list[dict[str, str]]) -> str:
     """دالة توافقية لاستدعاء Kimi مباشرة."""
     return call_provider_chat(messages, provider="Kimi")
+
+
+# ---------- الفحص الدقيق لاتصال المزوّد (Smoke Test) ----------
+SMOKE_PASS = "PASS"
+SMOKE_INCONCLUSIVE = "INCONCLUSIVE"
+SMOKE_FAIL = "FAIL"
+SMOKE_BLOCKED = "BLOCKED"
+SMOKE_STATES: tuple[str, ...] = (SMOKE_BLOCKED, SMOKE_FAIL, SMOKE_INCONCLUSIVE, SMOKE_PASS)
+
+#: العبارة التي يجب أن يتضمنها رد المزوّد ليُعتبر الفحص ناجحًا.
+SMOKE_VERIFICATION_PHRASE = "اختبار الاتصال ناجح"
+
+_SMOKE_ICONS: dict[str, str] = {
+    SMOKE_PASS: "✅",
+    SMOKE_INCONCLUSIVE: "🟡",
+    SMOKE_FAIL: "❌",
+    SMOKE_BLOCKED: "⛔",
+}
+
+SMOKE_TEST_MESSAGES: list[dict[str, str]] = [
+    {
+        "role": "system",
+        "content": (
+            "أنت مساعد فحص اتصال آلي لنظام CELA.PRO. "
+            "ردّك يُقرأ آليًا، فأجب بعبارة واحدة فقط دون شرح أو مقدمات."
+        ),
+    },
+    {
+        "role": "user",
+        "content": (
+            "اكتب العبارة التالية كما هي بالحرف الواحد دون أي إضافة أو ترجمة: "
+            f"{SMOKE_VERIFICATION_PHRASE}"
+        ),
+    },
+]
+
+
+def classify_smoke_reply(reply: str | None) -> str:
+    """تصنيف رد المزوّد إلى FAIL / INCONCLUSIVE / PASS (دون BLOCKED التي تُقاس قبل الطلب)."""
+    text = (reply or "").strip()
+    if not text or "❌" in text or "⚠️" in text:
+        return SMOKE_FAIL
+    if SMOKE_VERIFICATION_PHRASE in text:
+        return SMOKE_PASS
+    return SMOKE_INCONCLUSIVE
+
+
+def run_smoke_test(provider: str | None = None) -> dict[str, Any]:
+    """نفّذ فحص اتصال لمزوّد واحد وأرجع نتيجة مصنّفة دون كشف أي مفتاح سري.
+
+    الحالات الأربع:
+    - ``BLOCKED``: مفتاح المزوّد غير مُعيّن في متغيرات البيئة (لم يُرسل أي طلب).
+    - ``FAIL``: فشل الطلب أو أعاد المزوّد رسالة خطأ (``❌`` / ``⚠️``) أو ردًا فارغًا.
+    - ``INCONCLUSIVE``: وصل رد من المزوّد لكنه لا يتضمن عبارة التحقق المطلوبة.
+    - ``PASS``: وصل رد حقيقي يتضمن عبارة التحقق المطلوبة.
+    """
+    try:
+        cfg = get_provider_config(provider)
+    except ValueError as exc:
+        return {
+            "state": SMOKE_FAIL,
+            "provider": (provider or "").strip(),
+            "model": "",
+            "base_url": "",
+            "api_key_env": None,
+            "reply": "",
+            "detail": str(exc),
+        }
+
+    result: dict[str, Any] = {
+        "state": SMOKE_FAIL,
+        "provider": cfg["name"],
+        "model": cfg["model"],
+        "base_url": cfg["base_url"],
+        "api_key_env": cfg["api_key_env"],
+        "reply": "",
+        "detail": "",
+    }
+
+    if cfg["requires_key"] and not cfg["configured"]:
+        result["state"] = SMOKE_BLOCKED
+        result["detail"] = (
+            f"المفتاح `{cfg['api_key_env']}` غير مُعيّن في متغيرات البيئة "
+            f"({cfg['name']} يتطلب مفتاحًا)، لذلك لم يُرسل أي طلب إلى المزوّد."
+        )
+        return result
+
+    reply = redact_secret(
+        call_provider_chat(SMOKE_TEST_MESSAGES, provider=cfg["name"]),
+        cfg["api_key"],
+    )
+    result["reply"] = reply
+    result["state"] = classify_smoke_reply(reply)
+    if result["state"] == SMOKE_FAIL:
+        result["detail"] = "فشل الطلب أو أعاد المزوّد رسالة خطأ/ردًا فارغًا."
+    elif result["state"] == SMOKE_INCONCLUSIVE:
+        result["detail"] = (
+            "وصل رد من المزوّد لكنه لا يتضمن عبارة التحقق المطلوبة "
+            f"«{SMOKE_VERIFICATION_PHRASE}»."
+        )
+    else:
+        result["detail"] = (
+            f"وصل رد حقيقي من المزوّد يتضمن عبارة التحقق "
+            f"«{SMOKE_VERIFICATION_PHRASE}»."
+        )
+    return result
+
+
+def format_smoke_result(result: dict[str, Any]) -> str:
+    """تنسيق نتيجة الفحص الدقيق للعرض في الواجهة (المفاتيح محجوبة دائمًا)."""
+    state = str(result.get("state", SMOKE_FAIL))
+    icon = _SMOKE_ICONS.get(state, "")
+    provider = result.get("provider") or "(غير محدّد)"
+    lines = [
+        f"### 🧪 الفحص الدقيق لاتصال المزوّد — الحالة: {icon} `{state}`",
+        f"- **المزوّد:** `{provider}`",
+    ]
+    if result.get("model"):
+        lines.append(f"- **النموذج:** `{result['model']}`")
+    if result.get("base_url"):
+        lines.append(f"- **العنوان:** `{result['base_url']}`")
+    if result.get("api_key_env"):
+        lines.append(f"- **المفتاح:** `{result['api_key_env']}` = `{REDACTED}` (القيمة محجوبة)")
+    lines.append(f"- **عبارة التحقق المطلوبة:** «{SMOKE_VERIFICATION_PHRASE}»")
+    if result.get("detail"):
+        lines.append(f"- **التفصيل:** {result['detail']}")
+    reply = str(result.get("reply") or "").strip()
+    if reply:
+        shown = reply if len(reply) <= 400 else f"{reply[:400]}…"
+        lines.append(f"- **رد المزوّد:** {shown}")
+    return "\n".join(lines)
+
+
+def smoke_test_provider(provider: str | None = None) -> str:
+    """زر «اختبار اتصال المزوّد»: فحص حيّ لمزوّد واحد يُرجع تقريرًا مصنّفًا ومحجوب المفاتيح."""
+    return format_smoke_result(run_smoke_test(provider))
 
 
 _SKILLS_FILE = pathlib.Path("cela_pro_skills.json")
@@ -454,6 +612,22 @@ with gr.Blocks(title="CELA.PRO") as demo:
         fn=_refresh_provider_ui,
         inputs=[provider_dropdown],
         outputs=[provider_status_md, providers_summary_md],
+    )
+
+    with gr.Row():
+        smoke_test_btn = gr.Button("🧪 اختبار اتصال المزوّد", variant="primary")
+
+    smoke_result_md = gr.Markdown(
+        "اضغط «🧪 اختبار اتصال المزوّد» لإرسال طلب تحقق واحد إلى المزوّد المختار "
+        f"والتأكد من أنه يرد بعبارة «{SMOKE_VERIFICATION_PHRASE}».\n\n"
+        "الحالات: `BLOCKED` (المفتاح غير مُعيّن في البيئة) · `FAIL` (فشل الطلب أو رسالة خطأ) · "
+        "`INCONCLUSIVE` (وصل رد بلا عبارة التحقق) · `PASS` (وصل رد يتضمن عبارة التحقق). "
+        f"قيمة المفتاح تُحجب دائمًا `{REDACTED}`."
+    )
+    smoke_test_btn.click(
+        fn=smoke_test_provider,
+        inputs=[provider_dropdown],
+        outputs=[smoke_result_md],
     )
 
     gr.Markdown(

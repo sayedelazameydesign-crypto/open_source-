@@ -1,4 +1,4 @@
-"""اختبارات التحقق المحلية لتطبيق CELA.PRO ومزوّدي الذكاء الاصطناعي الخمسة."""
+"""اختبارات التحقق المحلية لتطبيق CELA.PRO ومزوّديه الخمسة وآلية الفحص الدقيق (Smoke Test)."""
 
 from __future__ import annotations
 
@@ -41,6 +41,56 @@ _PROVIDER_ENV_KEYS = (
 def _clean_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for key in _PROVIDER_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
+
+
+def _install_scripted_client(
+    monkeypatch: pytest.MonkeyPatch,
+    script: list[Any],
+) -> list[dict[str, Any]]:
+    """استبدال `httpx.Client` بعميل وهمي يُعيد عناصر `script` بالترتيب.
+
+    كل عنصر إمّا نص رد المزوّد أو استثناء يُرفع، وتُسجَّل الطلبات في القائمة المُعادة
+    للتحقق من العنوان والترويسات والحمولة دون أي اتصال شبكي حقيقي.
+    """
+    calls: list[dict[str, Any]] = []
+    queue = list(script)
+
+    class _FakeResponse:
+        def __init__(self, content: str) -> None:
+            self._content = content
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return {"choices": [{"message": {"content": self._content}}]}
+
+    class _FakeClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def __enter__(self) -> _FakeClient:
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            return None
+
+        def post(
+            self,
+            url: str,
+            headers: dict[str, str] | None = None,
+            json: dict[str, Any] | None = None,
+        ) -> _FakeResponse:
+            calls.append({"url": url, "headers": headers or {}, "json": json or {}})
+            if not queue:
+                raise AssertionError("عدد الطلبات أكبر من المسموح به (لا تبديل تلقائي للمزوّد)")
+            item = queue.pop(0)
+            if isinstance(item, BaseException):
+                raise item
+            return _FakeResponse(str(item))
+
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+    return calls
 
 
 def test_provider_choices_and_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -207,3 +257,101 @@ def test_connection_failure_no_fallback_and_orion_skills_preserved(
     run_msg = agent.run("لخّص التقرير", approved=True)
     assert "[OrionAgent] تنفيذ المهمة: لخّص التقرير" in run_msg
     assert "summarize" in run_msg
+
+
+def test_smoke_test_blocked_when_key_is_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """5) BLOCKED: غياب المفتاح يمنع إرسال أي طلب، وOllama (بلا مفتاح) لا يُحجب أبدًا."""
+
+    def _forbidden_client(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("لا يجوز إرسال طلب شبكي عندما يكون مفتاح المزوّد غير مُعيّن")
+
+    monkeypatch.setattr(httpx, "Client", _forbidden_client)
+
+    blocked = cela_pro_app.run_smoke_test("Gemini")
+    assert blocked["state"] == cela_pro_app.SMOKE_BLOCKED
+    assert blocked["reply"] == ""
+    assert "GEMINI_API_KEY" in blocked["detail"]
+
+    report = cela_pro_app.smoke_test_provider("Gemini")
+    assert "`BLOCKED`" in report
+    assert "GEMINI_API_KEY" in report
+    assert "لم يُرسل أي طلب" in report
+
+    # Ollama لا يتطلب مفتاحًا محليًا، لذلك لا يمكن أن تكون حالته BLOCKED
+    calls = _install_scripted_client(monkeypatch, [""])
+    ollama = cela_pro_app.run_smoke_test("Ollama")
+    assert ollama["state"] == cela_pro_app.SMOKE_FAIL
+    assert ollama["state"] != cela_pro_app.SMOKE_BLOCKED
+    assert len(calls) == 1
+    assert calls[0]["url"] == "http://localhost:11434/v1/chat/completions"
+
+
+def test_smoke_test_classifies_pass_inconclusive_and_fail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """6) PASS / INCONCLUSIVE / FAIL: تصنيف رد المزوّد وفق عبارة التحقق المطلوبة."""
+    secret = "gsk_smoke_test_secret_value"
+    monkeypatch.setenv("GROQ_API_KEY", secret)
+    calls = _install_scripted_client(
+        monkeypatch,
+        [
+            f"العبارة المطلوبة هي: {cela_pro_app.SMOKE_VERIFICATION_PHRASE}",
+            "أهلًا بك! كيف أستطيع مساعدتك اليوم؟",
+            httpx.ConnectError("تعذر الاتصال بالخادم"),
+        ],
+    )
+
+    passed = cela_pro_app.run_smoke_test("Groq")
+    assert passed["state"] == cela_pro_app.SMOKE_PASS
+    assert cela_pro_app.SMOKE_VERIFICATION_PHRASE in passed["reply"]
+    assert "عبارة التحقق" in passed["detail"]
+    assert len(calls) == 1
+    assert calls[0]["url"] == "https://api.groq.com/openai/v1/chat/completions"
+    assert calls[0]["headers"].get("Authorization") == f"Bearer {secret}"
+    assert calls[0]["json"]["model"] == "openai/gpt-oss-20b"
+    assert calls[0]["json"]["messages"] == cela_pro_app.SMOKE_TEST_MESSAGES
+
+    inconclusive = cela_pro_app.run_smoke_test("Groq")
+    assert inconclusive["state"] == cela_pro_app.SMOKE_INCONCLUSIVE
+    assert "لا يتضمن عبارة التحقق" in inconclusive["detail"]
+    assert "`INCONCLUSIVE`" in cela_pro_app.format_smoke_result(inconclusive)
+
+    failed_report = cela_pro_app.smoke_test_provider("Groq")
+    assert "`FAIL`" in failed_report
+    assert "فشل الطلب" in failed_report
+    assert "تعذر الاتصال بالخادم" in failed_report
+
+    # ثلاثة طلبات لمزوّد واحد فقط: لا تبديل تلقائي إلى مزوّد آخر عند الفشل
+    assert len(calls) == 3
+    assert all(call["url"].startswith("https://api.groq.com") for call in calls)
+    assert cela_pro_app.SMOKE_STATES == ("BLOCKED", "FAIL", "INCONCLUSIVE", "PASS")
+
+
+def test_smoke_test_and_chat_redact_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """7) حجب قيمة المفتاح ([REDACTED]) في رسائل الخطأ ومخرجات الفحص وردود المحادثة."""
+    secret = "gsk_super_secret_do_not_leak_9999"
+    monkeypatch.setenv("GROQ_API_KEY", secret)
+    leaky_error = f"401 Unauthorized — Authorization: Bearer {secret} rejected"
+    calls = _install_scripted_client(
+        monkeypatch,
+        [
+            httpx.ConnectError(leaky_error),
+            f"المفتاح المستلم هو {secret} — {cela_pro_app.SMOKE_VERIFICATION_PHRASE}",
+        ],
+    )
+
+    report = cela_pro_app.smoke_test_provider("Groq")
+    assert "`FAIL`" in report
+    assert "401 Unauthorized" in report
+    assert cela_pro_app.REDACTED in report
+    assert secret not in report
+
+    echoed = cela_pro_app.chat_fn("تحقق من الاتصال", history=[], provider="Groq")
+    assert cela_pro_app.SMOKE_VERIFICATION_PHRASE in echoed
+    assert cela_pro_app.REDACTED in echoed
+    assert secret not in echoed
+
+    # الحجب يقع على العرض فقط: الطلب الحقيقي ما يزال يحمل المفتاح في الترويسة
+    assert len(calls) == 2
+    assert calls[0]["headers"].get("Authorization") == f"Bearer {secret}"
+    assert calls[1]["headers"].get("Authorization") == f"Bearer {secret}"
