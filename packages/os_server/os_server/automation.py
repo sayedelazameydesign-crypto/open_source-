@@ -29,6 +29,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from os_core.redact import scrub_credentials
 from os_tools.egress import EgressPolicy, EgressRule
@@ -312,6 +313,28 @@ class InboundWebhookVerifier:
 
 
 _SECRET_NAME_TOKENS = ("TOKEN", "SECRET", "KEY", "PASSWORD", "CREDENTIAL", "DSN")
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+_CLOUDFLARE_BFF_PATH = Path("packages/web/functions/api/backend/[[path]].ts")
+
+
+def _backend_url_problem(raw: str) -> str | None:
+    """Return why *raw* must not be used as ``CELA_BACKEND_URL``, or ``None``.
+
+    Mirrors the refusals of the Cloudflare Pages proxy: bearer tokens may only
+    leave the edge over TLS, and credentials must not be embedded in a URL that
+    intermediaries log.
+    """
+    parts = urlsplit(raw)
+    if parts.scheme not in {"http", "https"} or not parts.hostname:
+        return "CELA_BACKEND_URL must be an absolute http(s) URL"
+    if parts.username or parts.password:
+        return "CELA_BACKEND_URL must not embed credentials"
+    if parts.scheme == "http" and parts.hostname not in _LOOPBACK_HOSTS:
+        return (
+            "CELA_BACKEND_URL must use https outside loopback: "
+            "tokens must not travel in cleartext"
+        )
+    return None
 
 
 def check_deployment_readiness(
@@ -344,6 +367,10 @@ def check_deployment_readiness(
     private_token = active_env.get("CELA_PRIVATE_API_TOKEN", "").strip()
     store_url = active_env.get("CELA_RUN_STORE_URL", "").strip()
     is_render = active_env.get("RENDER", "").lower() in {"1", "true", "yes"}
+    # Cloudflare Pages sets CF_PAGES=1 in every build environment, so the doctor
+    # can tell which edge the front end is being built for.
+    is_cloudflare_pages = active_env.get("CF_PAGES", "").lower() in {"1", "true", "yes"}
+    backend_url = active_env.get("CELA_BACKEND_URL", "").strip()
 
     if strict_production or is_render:
         if not api_token:
@@ -385,6 +412,33 @@ def check_deployment_readiness(
             }
         )
 
+    if is_cloudflare_pages:
+        if backend_url:
+            problem = _backend_url_problem(backend_url)
+            if problem is not None:
+                errors.append(
+                    {
+                        "id": "insecure_backend_url",
+                        "variable": "CELA_BACKEND_URL",
+                        "message_ar": (
+                            f"{problem}. وكيل Pages Function يرفض هذا العنوان كي لا تنتقل "
+                            "رموز الوصول على الشبكة مكشوفة."
+                        ),
+                    }
+                )
+        else:
+            warnings.append(
+                {
+                    "id": "cloudflare_backend_url_unset",
+                    "variable": "CELA_BACKEND_URL",
+                    "message_ar": (
+                        "لم يُضبط CELA_BACKEND_URL في بيئة بناء Cloudflare Pages. لا يفحص "
+                        "هذا الفحص أسرار وقت التشغيل في Pages Function؛ تأكد من ضبطه مع "
+                        "CELA_API_TOKEN و CELA_PRIVATE_API_TOKEN في إعدادات المشروع."
+                    ),
+                }
+            )
+
     return {
         "ready": len(errors) == 0,
         "strict_production": strict_production or is_render,
@@ -396,6 +450,7 @@ def check_deployment_readiness(
         "files": {
             "render_yaml": (workspace / "render.yaml").is_file(),
             "env_example": (workspace / ".env.example").is_file(),
+            "cloudflare_bff_proxy": (workspace / _CLOUDFLARE_BFF_PATH).is_file(),
         },
         "errors": errors,
         "warnings": warnings,
