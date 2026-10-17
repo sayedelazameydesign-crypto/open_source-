@@ -1,5 +1,5 @@
 .PHONY: install test lint format demo-react demo-flow serve check clean launcher-test launcher-build \
-        vendored-verify vendored-verify-upstream vendored-write defork-launcher
+        vendored-verify vendored-verify-upstream vendored-write defork-launcher evidence evidence-check
 
 install:
 	pip install -e ".[dev,server]"
@@ -13,7 +13,9 @@ lint:
 format:
 	ruff format .
 
-check: lint test
+# The test count is generated, not typed: `evidence-check` fails when
+# docs/EVIDENCE.md drifts from what the suite actually collects.
+check: lint evidence-check test
 
 demo-react:
 	python -m os_server.cli run --demo "Sum the integers from 0 to 100"
@@ -58,6 +60,14 @@ vendored-write:
 #   make defork-launcher ARGS="--i-am-forking --dry-run"
 defork-launcher:
 	./scripts/defork_launcher.sh $(ARGS)
+
+# Regenerate the generated test-count block (docs/EVIDENCE.md).
+evidence:
+	python scripts/update_evidence.py
+
+# Fail when the documented count no longer matches the suite (CI runs this).
+evidence-check:
+	python scripts/update_evidence.py --check
 
 clean:
 	rm -rf .pytest_cache .ruff_cache .coverage **/__pycache__
