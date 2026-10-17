@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import importlib.util
 import json
 import os
 from collections import OrderedDict
@@ -314,6 +315,17 @@ class InboundWebhookVerifier:
 
 _SECRET_NAME_TOKENS = ("TOKEN", "SECRET", "KEY", "PASSWORD", "CREDENTIAL", "DSN")
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _postgres_driver_available() -> bool:
+    """Is the optional ``psycopg`` driver importable in *this* environment?
+
+    ``PostgresRunStore`` imports psycopg lazily, so a deployment can start
+    cleanly, pass ``/health``, and only then fail on the first run with "psycopg
+    is not installed". The doctor must catch that at deploy time instead.
+    A seam so tests can simulate both environments without installing a driver.
+    """
+    return importlib.util.find_spec("psycopg") is not None
 _CLOUDFLARE_BFF_PATH = Path("packages/web/functions/api/backend/[[path]].ts")
 
 
@@ -408,6 +420,21 @@ def check_deployment_readiness(
                 "message_ar": (
                     "قرص Render Free مؤقت ويُمسح عند إعادة التشغيل؛ استخدم رابط "
                     "postgresql:// (مثل Supabase Postgres Free) لحفظ المهام والتقارير."
+                ),
+            }
+        )
+
+    if store_url.startswith(("postgres://", "postgresql://", "distributed")) and not (
+        _postgres_driver_available()
+    ):
+        errors.append(
+            {
+                "id": "postgres_driver_missing",
+                "variable": "CELA_RUN_STORE_URL",
+                "message_ar": (
+                    "CELA_RUN_STORE_URL يشير إلى Postgres بينما حزمة psycopg غير مثبتة في "
+                    "هذه البيئة؛ ثبّت extra التوزيع: pip install -e '.[server,distributed]' "
+                    "(يتوقف الخادم عند أول تشغيل وليس عند الإقلاع، لذا يفشل الفحص هنا)."
                 ),
             }
         )

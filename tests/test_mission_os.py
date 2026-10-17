@@ -702,8 +702,16 @@ def test_mission_status_and_inbound_activepieces_webhook_routes(
         assert json.loads(dl.text)["schema_version"] == "celia.mission.report.v1"
 
 
-def test_deploy_doctor_flags_browser_exposed_secrets_and_ephemeral_sqlite() -> None:
+def test_deploy_doctor_flags_browser_exposed_secrets_and_ephemeral_sqlite(
+    monkeypatch,
+) -> None:
     from os_server.automation import check_deployment_readiness
+
+    from os_server import automation
+
+    # A Postgres URL is only deployable when the optional driver is present;
+    # this test is about secret scrubbing, not about the driver gate.
+    monkeypatch.setattr(automation, "_postgres_driver_available", lambda: True)
 
     bad_report = check_deployment_readiness(
         {

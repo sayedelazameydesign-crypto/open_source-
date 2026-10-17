@@ -9,7 +9,9 @@ services:
     name: celia-mission-os-api
     runtime: python
     plan: free
-    buildCommand: pip install --upgrade pip && pip install -e ".[server]"
+    # `distributed` is not optional here: CELA_RUN_STORE_URL points at Supabase
+    # Postgres, and without psycopg the first run would 500 at connect time.
+    buildCommand: pip install --upgrade pip && pip install -e ".[server,distributed]"
     startCommand: uvicorn os_server.app:create_app --factory --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:

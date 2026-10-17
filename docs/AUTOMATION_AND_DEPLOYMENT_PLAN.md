@@ -90,7 +90,7 @@ PY
 | **استقبال Webhooks وإرسال إشعارات** | `packages/os_server/os_server/waapi.py` + `waapi_inbox.py` + `waapi_outbox.py` (خاص بـ WhatsApp/WaAPI فقط، مع سر مسار 32+ حرفًا ومنع تكرار SQLite وتنقيح مسار ASGI) | لا يوجد **سطح ويب هوك عام للأتمتة** (`/api/webhooks/automation/...`) يقبل مهام من Activepieces / Windmill / n8n أو يرسل إليها إشعارات انتهاء التشغيل (`RunOutcome`) |
 | **ربط أدوات خارجية بالوكيل** | `packages/os_mcp/` ([ADR-0017](../adr/0017-mcp-transport.md)): عميل `StdioMCPClient` و`HttpMCPClient` + خادم `MCPRegistryServer` + فحص `Guardrails` + `EgressPolicy` | نحتاج **ملفات إعداد ووصفات ربط MCP قياسية** لـ Activepieces وn8n وWindmill دون تعديل نواة `os_mcp` |
 | **أتمتة CI/CD وفحص الأمان** | `.github/workflows/{ci,web-ci,launcher-ci,eval-real-model,codeql,codacy}.yml` + اختبار الحماية `tests/test_eval_workflow_security.py` | ينقصنا مسار نشر التوثيق/التقارير إلى `GitHub Pages` ومسار فحص جاهزية النشر (`deploy_doctor`) |
-| **نشر الواجهة (`packages/web`)** | Next.js 15 مع وكيل Node.js في `app/api/backend/[...path]/route.ts` **ووكيل حافة مكتمل** في `functions/api/backend/[[path]].ts` (14 اختبار سلوكي في `npm run test:deploy`) | ✅ **اكتمل الوكيل**. المتبقي: وضع بناء ثابت (`output: "export"`) يستثني مسار Next الخادمي كي تُنشر الصفحات على Pages بجانب الوكيل — التفاصيل في القسم 6.1 |
+| **نشر الواجهة (`packages/web`)** | Next.js 15 مع وكيل Node.js في `app/api/backend/[...path]/route.ts` **ووكيل حافة مكتمل** في `functions/api/backend/[[path]].ts` (14 اختبار سلوكي في `npm run test:deploy`) | ✅ **اكتمل الوكيل ووضع التصدير الثابت معًا** — `npm run build:pages` يُنتج `out/`، والدليل في `docs/DEPLOY_FREE_TIER_RUNBOOK.md` |
 | **نشر الخادم (`os_server`)** | `docs/publish-runbook.md` يوثّق متغيرات Render وVercel | ينقصنا ملف **`render.yaml`** مضبوط بحواجز الأمان وفحص جاهزية يمنع تشغيل الخادم بقرص مؤقت دون علم المشغّل |
 
 ---
@@ -271,7 +271,9 @@ PY
 
 **التحقق:** `tests/test_deploy_config.py` (15 اختبارًا في CI البايثوني) + `npm run test:deploy` (15 اختبارًا سلوكيًا بدالة `fetch` مُستبدلة، بلا شبكة) موصولة بـ `.github/workflows/web-ci.yml`. ويضيف `deploy_doctor.py` الفحص `files.cloudflare_bff_proxy` ويُفشل بناء Pages إذا كان `CELA_BACKEND_URL` غير مشفّر (`insecure_backend_url`) مع تحذير صريح بأن أسرار **وقت تشغيل** Pages Function لا تُرى من بيئة البناء.
 
-**المتبقي كي يصبح النشر بضغطة واحدة:** وضع بناء ثابت (`output: "export"`) يستثني مسار `app/api/backend/[...path]/route.ts` (الذي لا يدعمه التصدير الثابت) — أما وكيل الحافة واختباراته فهي جاهزة. وبديل آخر هو `@opennextjs/cloudflare` الذي يُبقي مسار Next الخادمي ويعمل على Workers، وعندها لا يُستخدم وكيل الحافة أصلًا.
+**وضع التصدير الثابت (✅ مكتمل):** `CELA_STATIC_EXPORT=1 npm run build:pages` يضبط `output: "export"` ويضيِّق `pageExtensions` إلى `["tsx","jsx"]`، فيُستثنى مسار Next الخادمي من بناء `out/` (التصدير الثابت لا يدعم Route Handler ديناميكيًا) ويبقى وكيل الحافة هو المسار الوحيد إلى الخادم. تحقق فعلي: بُني `out/` (5 صفحات) وتم تقديمه عبر خادم يحاكي Pages مع تشغيل الوكيل الحقيقي أمام `os_server` — `POST /runs` → `202`، SSE → `text/event-stream`، والصفحات → `200`.
+**دليل التشغيل الكامل** (Supabase ← Render ← Cloudflare، مع قائمة تحقق واستكشاف أعطال): [`docs/DEPLOY_FREE_TIER_RUNBOOK.md`](DEPLOY_FREE_TIER_RUNBOOK.md).
+ومازال `@opennextjs/cloudflare` بديلًا يُبقي مسار Next الخادمي على Workers، وعندها لا يُستخدم وكيل الحافة أصلًا.
 
 **متغيرات Pages المطلوبة** (Settings → Variables and Secrets، بنوع *Secret*): `CELA_BACKEND_URL` (https) و`CELA_API_TOKEN` و`CELA_PRIVATE_API_TOKEN` (مختلفان)، واختياريًا `CELA_BACKEND_TIMEOUT_MS`. **لا** تضبط أيًّا منها باسم يبدأ بـ `NEXT_PUBLIC_` — `deploy_doctor.py` يعتبر ذلك خطأً مانعًا.
 
@@ -286,10 +288,10 @@ PY
 | **انتهاء PostgreSQL المجانية بعد 30 يومًا** | فقدان كامل لبيانات التشغيلات والذاكرة بعد شهر واحد | عدم استخدام قاعدة Render المجانية للتخزين الدائم؛ ربط `PostgresRunStore` بقاعدة مجانية دائمة لا تنتهي بعد 30 يومًا (مثل Supabase أو Neon في الخطة المجانية دون بطاقة، أو خادم ذاتي) |
 
 **مواصفات ملف `render.yaml` المخطط إضافته:**
-* أمر البناء: `pip install -e ".[server,distributed]"`
-* أمر التشغيل: `python -m os_server.cli serve --host 0.0.0.0 --port $PORT`
+* أمر البناء: `pip install --upgrade pip && pip install -e ".[server,distributed]"` — وجود `psycopg` من `distributed` **شرط**: `PostgresRunStore` يستورده بتأخير، فبدونه يقلع الخادم ويجيب `/health` ثم يفشل أول تشغيل بـ 500. `deploy_doctor` يكشف ذلك الآن (`postgres_driver_missing`).
+* أمر التشغيل: `uvicorn os_server.app:create_app --factory --host 0.0.0.0 --port $PORT`
 * مسار فحص الصحة: `GET /health`
-* المتغيرات الإلزامية (`sync: false`): `CELA_API_TOKEN`، `CELA_PRIVATE_API_TOKEN` (مختلفان وجوبًا)، `CELA_RUN_STORE_URL`، و`CELA_AUTOMATION_WEBHOOK_SECRET`.
+* المتغيرات الإلزامية (`sync: false`): `CELA_API_TOKEN`، `CELA_PRIVATE_API_TOKEN` (مختلفان وجوبًا)، `CELA_RUN_STORE_URL`؛ واختياريًا `GEMINI_API_KEY` و`CELA_ACTIVEPIECES_WEBHOOK_URL`/`_SECRET`.
 
 ### 6.3 GitHub Pages — للتوثيق وتقارير التقييم الثابتة فقط
 
