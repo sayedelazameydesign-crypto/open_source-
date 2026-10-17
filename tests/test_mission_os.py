@@ -504,3 +504,233 @@ async def test_mission_tools_registered_in_default_registry_and_callable(
     res = await local_reg.execute(ToolCall(name="inspect_project_files", args={"path": "."}))
     assert res.ok
     assert json.loads(res.output)["verification_kind"] == "STATIC_INSPECTION"
+
+
+async def test_resilient_mission_model_falls_back_on_quota_or_network_error(
+    tmp_path: Path,
+) -> None:
+    from os_core.models import OpenAICompatModel, describe_execution
+    from os_server.demo import ResilientMissionModel
+
+    def failing_llm_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            429,
+            json={"error": {"message": "Quota exceeded for free tier token=supersecret123"}},
+        )
+
+    primary = OpenAICompatModel(
+        name="gemini-2.5-flash",
+        model_id="gemini-2.5-flash",
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        api_key="dummy",
+        transport=httpx.MockTransport(failing_llm_handler),
+    )
+    plat = build_mission_platform(
+        root=str(tmp_path),
+        project_name="Quota Fallback Demo",
+        goal="افحص مشروعي عند نفاد حصة النموذج",
+        primary_model=primary,
+    )
+    assert isinstance(plat.model, ResilientMissionModel)
+    # Before execution, execution description reflects configured provider adapter
+    assert describe_execution(plat.model).kind == "provider_adapter"
+
+    state = await plat.run("افحص مشروعي عند نفاد حصة النموذج")
+    assert state.status.value == "completed"
+    assert plat.model.fallback_triggered is True
+    assert plat.model.fallback_reason is not None
+    assert "supersecret123" not in plat.model.fallback_reason
+    # After fallback triggers, describe_execution honestly reports scripted fallback
+    assert describe_execution(plat.model).kind == "scripted"
+    assert {a.filename for a in state.artifacts} == {
+        "mission-report.md",
+        "mission-report.json",
+        "mission-report.html",
+    }
+
+
+async def test_activepieces_dispatcher_ssrf_secret_scrubbing_and_quota_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from os_server.automation import (
+        ENV_ACTIVEPIECES_SECRET,
+        ActivepiecesDispatcher,
+        ActivepiecesQuotaGuard,
+        verify_webhook_signature,
+    )
+
+    monkeypatch.setenv(ENV_ACTIVEPIECES_SECRET, "whsec_test_signing_key")
+    received_headers: dict[str, str] = {}
+    received_body: bytes = b""
+
+    def webhook_handler(request: httpx.Request) -> httpx.Response:
+        nonlocal received_headers, received_body
+        received_headers = {k.lower(): v for k, v in request.headers.items()}
+        received_body = request.read()
+        return httpx.Response(200, json={"ok": True})
+
+    # 1. Block SSRF destination on webhook URL
+    ssrf_dispatcher = ActivepiecesDispatcher(
+        webhook_url="http://169.254.169.254/latest/meta-data/",
+        transport=httpx.MockTransport(webhook_handler),
+    )
+    blocked = await ssrf_dispatcher.dispatch(
+        run_id="run_1", event_type="run_finished", payload={"status": "completed"}
+    )
+    assert blocked["dispatched"] is False
+    assert blocked["status"] == "blocked_by_policy"
+
+    # 2. Valid public webhook with secret scrubbing + HMAC signature + daily quota cap = 2
+    guard = ActivepiecesQuotaGuard(daily_limit=2, monthly_limit=5)
+    dispatcher = ActivepiecesDispatcher(
+        webhook_url="https://cloud.activepieces.com/api/v1/webhooks/flow123",
+        quota_guard=guard,
+        transport=httpx.MockTransport(webhook_handler),
+    )
+    fake_secret = "ghp_" + "R" * 36
+    sent1 = await dispatcher.dispatch(
+        run_id="run_1",
+        event_type="run_finished",
+        payload={"note": f"leaked {fake_secret}", "url": "https://u:p@example.org/x"},
+    )
+    assert sent1["dispatched"] is True
+    assert fake_secret.encode() not in received_body
+    assert b"u:p@" not in received_body
+    assert verify_webhook_signature(
+        received_body,
+        received_headers["x-celia-signature-256"],
+        "whsec_test_signing_key",
+    )
+
+    sent2 = await dispatcher.dispatch(
+        run_id="run_2", event_type="run_finished", payload={"ok": True}
+    )
+    assert sent2["dispatched"] is True
+
+    # 3rd call hits the daily free-tier circuit breaker cleanly without raising
+    capped = await dispatcher.dispatch(
+        run_id="run_3", event_type="run_finished", payload={"ok": True}
+    )
+    assert capped["dispatched"] is False
+    assert capped["status"] == "daily_quota_exceeded"
+
+
+def test_mission_status_and_inbound_activepieces_webhook_routes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from os_server.automation import ENV_ACTIVEPIECES_SECRET, sign_webhook_payload
+
+    monkeypatch.setenv(ENV_ACTIVEPIECES_SECRET, "inbound_secret_key")
+    headers = {"Authorization": f"Bearer {PLATFORM_TOKEN}"}
+    private_headers = {"Authorization": f"Bearer {PRIVATE_TOKEN}"}
+
+    app = create_app(api_token=PLATFORM_TOKEN, private_api_token=PRIVATE_TOKEN)
+    with TestClient(app) as client:
+        # 1. GET /mission/status returns honest live capabilities
+        status_res = client.get("/mission/status", headers=headers)
+        assert status_res.status_code == 200
+        status_json = status_res.json()
+        assert status_json["product"] == "Celia.sh — Mission OS"
+        assert (
+            status_json["core_capabilities"]["deterministic_inspector_core"]["active"]
+            is True
+        )
+        assert (
+            status_json["core_capabilities"]["verified_report_downloads"]["sha256_verified"]
+            is True
+        )
+
+        # 2. Inbound webhook rejects bad HMAC signature and deduplicates valid replays
+        body = b'{"event":"flow.completed","run_id":"run_1"}'
+        bad = client.post(
+            "/webhooks/activepieces",
+            content=body,
+            headers={
+                "X-Celia-Signature-256": "sha256=deadbeef",
+                "X-Celia-Idempotency-Key": "idem-1",
+            },
+        )
+        assert bad.status_code == 401
+
+        good_sig = sign_webhook_payload(body, "inbound_secret_key")
+        first = client.post(
+            "/webhooks/activepieces",
+            content=body,
+            headers={
+                "X-Celia-Signature-256": good_sig,
+                "X-Celia-Idempotency-Key": "idem-1",
+            },
+        )
+        assert first.status_code == 200
+        assert first.json()["accepted"] is True
+        assert first.json()["duplicate"] is False
+
+        replay = client.post(
+            "/webhooks/activepieces",
+            content=body,
+            headers={
+                "X-Celia-Signature-256": good_sig,
+                "X-Celia-Idempotency-Key": "idem-1",
+            },
+        )
+        assert replay.status_code == 200
+        assert replay.json()["duplicate"] is True
+
+        # 3. Default create_app() routes Arabic Mission OS tasks to the 3-step inspector
+        start = client.post(
+            "/runs",
+            json={
+                "task": "افحص مشروعي، واكتشف نقاط الضعف، ثم أنشئ خطة نشر مجانية وآمنة",
+                "mode": "flow",
+            },
+            headers=headers,
+        )
+        assert start.status_code == 202
+        run_id = start.json()["run_id"]
+        waited = client.post(
+            f"/cela/v1/runs/{run_id}/wait",
+            json={"timeout": 15.0},
+            headers=private_headers,
+        )
+        assert waited.status_code == 200
+        assert waited.json()["status"] == "completed"
+        dl = client.get(
+            f"/runs/{run_id}/artifacts/mission-report.json/download",
+            headers=headers,
+        )
+        assert dl.status_code == 200
+        assert json.loads(dl.text)["schema_version"] == "celia.mission.report.v1"
+
+
+def test_deploy_doctor_flags_browser_exposed_secrets_and_ephemeral_sqlite() -> None:
+    from os_server.automation import check_deployment_readiness
+
+    bad_report = check_deployment_readiness(
+        {
+            "RENDER": "true",
+            "CELA_API_TOKEN": "same-token",
+            "CELA_PRIVATE_API_TOKEN": "same-token",
+            "NEXT_PUBLIC_CELA_API_TOKEN": "leaked-to-browser",
+            "CELA_RUN_STORE_URL": "sqlite:///./local.db",
+        }
+    )
+    assert bad_report["ready"] is False
+    error_ids = {e["id"] for e in bad_report["errors"]}
+    warning_ids = {w["id"] for w in bad_report["warnings"]}
+    assert "browser_exposed_secret_var" in error_ids
+    assert "identical_public_and_private_tokens" in error_ids
+    assert "ephemeral_sqlite_on_render" in warning_ids
+    assert "leaked-to-browser" not in json.dumps(bad_report)
+
+    good_report = check_deployment_readiness(
+        {
+            "RENDER": "true",
+            "CELA_API_TOKEN": "pub-token-123",
+            "CELA_PRIVATE_API_TOKEN": "priv-token-456",
+            "CELA_RUN_STORE_URL": "postgresql://u:secretpass@db.supabase.co:5432/postgres",
+        }
+    )
+    assert good_report["ready"] is True
+    assert good_report["store_backend_scheme"] == "postgresql"
+    assert "secretpass" not in json.dumps(good_report)
+

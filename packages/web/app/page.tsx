@@ -6,6 +6,7 @@ import { Icon } from "../components/icon";
 import {
   ActivityPanel,
   EvidencePanel,
+  MissionStagesBar,
   PlanPanel,
 } from "../components/workspace/panels";
 import { LoadingState, Notice, StatusPill } from "../components/workspace/ui";
@@ -105,6 +106,7 @@ export default function Home() {
         </div>
       </div>
       <ExecutionDisclosure execution={run.execution} />
+      <MissionStagesBar snapshot={run.snapshot} steps={steps} />
       <div className="workspace-grid">
         <div className="task-column">
           <div
@@ -367,6 +369,24 @@ export default function Home() {
             </form>
             {!run.runId && (
               <div className="suggestion-grid" aria-label="بدايات متاحة">
+                <button
+                  onClick={() =>
+                    selectExample(
+                      "افحص مشروعي، واكتشف نقاط الضعف، ثم أنشئ خطة نشر مجانية وآمنة",
+                      "flow",
+                    )
+                  }
+                >
+                  <Icon name="shield" />
+                  <span>
+                    <strong>مهندس فحص المشاريع · Mission OS</strong>
+                    <small>
+                      فحص ساكن للملفات وتوليد تقارير قابلة للتنزيل (MD / JSON /
+                      HTML) ببصمة SHA-256
+                    </small>
+                  </span>
+                  <Icon name="arrow" width="16" />
+                </button>
                 <button onClick={() => selectExample("Sum 0..100", "react")}>
                   <Icon name="layers" />
                   <span>

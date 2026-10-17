@@ -1,0 +1,417 @@
+"""Optional Activepieces & signed-webhook automation connector for Celia.sh — Mission OS.
+
+Security & free-tier design principles:
+
+1. **Zero required paid dependencies.** Mission OS works 100% without
+   Activepieces configured. When ``CELA_ACTIVEPIECES_WEBHOOK_URL`` is unset,
+   outbound dispatch returns a clean ``disabled`` status and never blocks a run.
+2. **Secrets stay in process environment (ADR-0011).** The HMAC signing secret is
+   read from ``os.environ[secret_env]`` at request time and is never stored on
+   an instance attribute or logged.
+3. **SSRFGuard + EgressPolicy on outbound webhooks.** Webhook URLs cannot point
+   at loopback, RFC1918 private networks, link-local, or cloud metadata
+   endpoints (`169.254.169.254`).
+4. **Free-tier credit circuit breaker.** Activepieces Cloud Free caps tasks
+   (e.g. 100/day or 1,000/month). :class:`ActivepiecesQuotaGuard` halts outbound
+   triggers cleanly once the budget is reached so runs still complete locally.
+5. **Idempotency + constant-time HMAC.** Both outbound and inbound webhooks
+   carry ``X-Celia-Idempotency-Key`` and ``X-Celia-Signature-256``.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+import os
+from collections import OrderedDict
+from collections.abc import Mapping
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+from os_core.redact import scrub_credentials
+from os_tools.egress import EgressPolicy, EgressRule
+from os_tools.ssrf import SSRFGuard
+
+ENV_ACTIVEPIECES_URL = "CELA_ACTIVEPIECES_WEBHOOK_URL"
+ENV_ACTIVEPIECES_SECRET = "CELA_ACTIVEPIECES_WEBHOOK_SECRET"
+ENV_ACTIVEPIECES_DAILY_LIMIT = "CELA_ACTIVEPIECES_DAILY_LIMIT"
+ENV_ACTIVEPIECES_MONTHLY_LIMIT = "CELA_ACTIVEPIECES_MONTHLY_LIMIT"
+
+
+def sign_webhook_payload(payload: bytes, secret: str) -> str:
+    """Return ``sha256=<hex>`` HMAC-SHA256 signature for *payload*."""
+    digest = hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
+    return f"sha256={digest}"
+
+
+def verify_webhook_signature(payload: bytes, signature: str, secret: str) -> bool:
+    """Constant-time verification of ``sha256=<hex>`` HMAC-SHA256 *signature*."""
+    if not secret or not signature or not signature.startswith("sha256="):
+        return False
+    expected = sign_webhook_payload(payload, secret)
+    return hmac.compare_digest(expected, signature.strip())
+
+
+def default_webhook_egress_policy(*, resolve_dns: bool = False) -> EgressPolicy:
+    """Allow public HTTPS/HTTP webhook endpoints on 80/443 above the SSRF floor."""
+    rules = [
+        EgressRule(
+            action="allow",
+            host="*",
+            schemes={"http", "https"},
+            ports={80, 443},
+            tools={"activepieces_webhook"},
+        )
+    ]
+    return EgressPolicy(rules=rules, guard=SSRFGuard(resolve_dns=resolve_dns))
+
+
+class ActivepiecesQuotaGuard:
+    """Circuit breaker protecting the Activepieces free-tier task budget."""
+
+    def __init__(
+        self,
+        *,
+        daily_limit: int | None = None,
+        monthly_limit: int | None = None,
+    ) -> None:
+        env_daily = int(os.environ.get(ENV_ACTIVEPIECES_DAILY_LIMIT, "100"))
+        env_monthly = int(os.environ.get(ENV_ACTIVEPIECES_MONTHLY_LIMIT, "1000"))
+        self.daily_limit = max(1, daily_limit if daily_limit is not None else env_daily)
+        self.monthly_limit = max(1, monthly_limit if monthly_limit is not None else env_monthly)
+        self._current_day: str = ""
+        self._current_month: str = ""
+        self._daily_used: int = 0
+        self._monthly_used: int = 0
+
+    def _roll_windows(self, now: datetime | None = None) -> None:
+        ts = now or datetime.now(UTC)
+        day_key = ts.strftime("%Y-%m-%d")
+        month_key = ts.strftime("%Y-%m")
+        if day_key != self._current_day:
+            self._current_day = day_key
+            self._daily_used = 0
+        if month_key != self._current_month:
+            self._current_month = month_key
+            self._monthly_used = 0
+
+    def check_and_consume(self, cost: int = 1, *, now: datetime | None = None) -> dict[str, Any]:
+        """Consume *cost* credits if within daily and monthly caps."""
+        self._roll_windows(now)
+        amount = max(1, int(cost))
+        if self._daily_used + amount > self.daily_limit:
+            return {
+                "allowed": False,
+                "reason": "daily_quota_exceeded",
+                "reason_ar": (
+                    f"تم بلوغ الحد اليومي للحصة المجانية في Activepieces "
+                    f"({self._daily_used}/{self.daily_limit}). أُكملت المهمة محليًا "
+                    "دون إرسال الويب هوك."
+                ),
+                **self.snapshot(now=now),
+            }
+        if self._monthly_used + amount > self.monthly_limit:
+            return {
+                "allowed": False,
+                "reason": "monthly_quota_exceeded",
+                "reason_ar": (
+                    f"تم بلوغ الحد الشهري للحصة المجانية في Activepieces "
+                    f"({self._monthly_used}/{self.monthly_limit}). أُكملت المهمة محليًا "
+                    "دون إرسال الويب هوك."
+                ),
+                **self.snapshot(now=now),
+            }
+        self._daily_used += amount
+        self._monthly_used += amount
+        return {
+            "allowed": True,
+            "reason": "ok",
+            "reason_ar": "ضمن حدود الحصة المجانية.",
+            **self.snapshot(now=now),
+        }
+
+    def snapshot(self, *, now: datetime | None = None) -> dict[str, Any]:
+        self._roll_windows(now)
+        return {
+            "daily_used": self._daily_used,
+            "daily_limit": self.daily_limit,
+            "remaining_daily": max(0, self.daily_limit - self._daily_used),
+            "monthly_used": self._monthly_used,
+            "monthly_limit": self.monthly_limit,
+            "remaining_monthly": max(0, self.monthly_limit - self._monthly_used),
+        }
+
+
+class ActivepiecesDispatcher:
+    """Safe, credential-scrubbed outbound webhook sender for Activepieces."""
+
+    def __init__(
+        self,
+        *,
+        webhook_url: str | None = None,
+        secret_env: str = ENV_ACTIVEPIECES_SECRET,
+        quota_guard: ActivepiecesQuotaGuard | None = None,
+        policy: EgressPolicy | None = None,
+        transport: Any = None,
+    ) -> None:
+        self._configured_url = webhook_url
+        self.secret_env = secret_env
+        self.quota_guard = quota_guard or ActivepiecesQuotaGuard()
+        self.policy = policy or default_webhook_egress_policy()
+        self.transport = transport
+
+    @property
+    def webhook_url(self) -> str:
+        return (self._configured_url or os.environ.get(ENV_ACTIVEPIECES_URL, "")).strip()
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.webhook_url)
+
+    def __repr__(self) -> str:
+        safe_url = scrub_credentials(self.webhook_url) if self.webhook_url else "<unconfigured>"
+        return f"ActivepiecesDispatcher(url={safe_url!r}, secret_env={self.secret_env!r})"
+
+    async def dispatch(
+        self,
+        *,
+        run_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Send a signed, credential-scrubbed webhook if enabled and within quota."""
+        target = self.webhook_url
+        if not target:
+            return {
+                "dispatched": False,
+                "status": "disabled",
+                "reason_ar": "موصّل Activepieces الاختياري غير مفعّل (لم يُحدَّد رابط الويب هوك).",
+            }
+
+        # 1. Enforce SSRFGuard + EgressPolicy before consuming quota or touching network
+        try:
+            self.policy.enforce(target, tool="activepieces_webhook")
+        except Exception as exc:
+            return {
+                "dispatched": False,
+                "status": "blocked_by_policy",
+                "error": scrub_credentials(f"{type(exc).__name__}: {exc}"),
+                "reason_ar": "رفض حارس SSRF أو سياسة الخروج (EgressPolicy) وجهة الويب هوك.",
+            }
+
+        # 2. Enforce free-tier quota guard
+        quota_check = self.quota_guard.check_and_consume(1)
+        if not quota_check["allowed"]:
+            return {
+                "dispatched": False,
+                "status": quota_check["reason"],
+                "reason_ar": quota_check["reason_ar"],
+                "quota": self.quota_guard.snapshot(),
+            }
+
+        # 3. Scrub secrets from payload and compute deterministic idempotency key
+        idem_key = idempotency_key or hashlib.sha256(
+            f"{run_id}:{event_type}".encode()
+        ).hexdigest()
+        envelope = {
+            "schema": "celia.mission.webhook.v1",
+            "run_id": scrub_credentials(run_id),
+            "event_type": scrub_credentials(event_type),
+            "idempotency_key": idem_key,
+            "sent_at": datetime.now(UTC).isoformat(),
+            "data": json.loads(
+                scrub_credentials(json.dumps(payload, ensure_ascii=False, default=str))
+            ),
+        }
+        raw_bytes = json.dumps(envelope, ensure_ascii=False, sort_keys=True).encode("utf-8")
+
+        headers: dict[str, str] = {
+            "Content-Type": "application/json; charset=utf-8",
+            "X-Celia-Idempotency-Key": idem_key,
+            "User-Agent": "celia-mission-os-webhook/0.1",
+        }
+        secret = os.environ.get(self.secret_env, "")
+        if secret:
+            headers["X-Celia-Signature-256"] = sign_webhook_payload(raw_bytes, secret)
+
+        import httpx
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=10.0,
+                transport=self.transport,
+                follow_redirects=False,
+            ) as client:
+                resp = await client.post(target, content=raw_bytes, headers=headers)
+            return {
+                "dispatched": 200 <= resp.status_code < 300,
+                "status": "sent" if 200 <= resp.status_code < 300 else "http_error",
+                "status_code": int(resp.status_code),
+                "idempotency_key": idem_key,
+                "quota": self.quota_guard.snapshot(),
+            }
+        except Exception as exc:
+            return {
+                "dispatched": False,
+                "status": "network_error",
+                "error": scrub_credentials(f"{type(exc).__name__}: {exc}"),
+                "idempotency_key": idem_key,
+                "quota": self.quota_guard.snapshot(),
+            }
+
+
+class InboundWebhookVerifier:
+    """Constant-time HMAC verifier + replay/idempotency guard for inbound webhooks."""
+
+    def __init__(
+        self,
+        *,
+        secret_env: str = ENV_ACTIVEPIECES_SECRET,
+        max_keys: int = 2048,
+    ) -> None:
+        self.secret_env = secret_env
+        self.max_keys = max(64, max_keys)
+        self._seen: OrderedDict[str, str] = OrderedDict()
+
+    def verify_and_record(
+        self,
+        *,
+        payload: bytes,
+        signature: str | None,
+        idempotency_key: str | None,
+    ) -> dict[str, Any]:
+        secret = os.environ.get(self.secret_env, "")
+        if not secret:
+            raise PermissionError(f"missing webhook signing secret in {self.secret_env}")
+        if not signature or not verify_webhook_signature(payload, signature, secret):
+            raise ValueError("invalid webhook HMAC signature")
+        if not idempotency_key or not idempotency_key.strip():
+            raise ValueError("missing X-Celia-Idempotency-Key header")
+
+        clean_key = idempotency_key.strip()
+        if clean_key in self._seen:
+            return {
+                "accepted": True,
+                "duplicate": True,
+                "idempotency_key": clean_key,
+                "first_seen_at": self._seen[clean_key],
+            }
+        now_iso = datetime.now(UTC).isoformat()
+        self._seen[clean_key] = now_iso
+        while len(self._seen) > self.max_keys:
+            self._seen.popitem(last=False)
+        return {
+            "accepted": True,
+            "duplicate": False,
+            "idempotency_key": clean_key,
+            "received_at": now_iso,
+        }
+
+
+_SECRET_NAME_TOKENS = ("TOKEN", "SECRET", "KEY", "PASSWORD", "CREDENTIAL", "DSN")
+
+
+def check_deployment_readiness(
+    env: Mapping[str, str] | None = None,
+    *,
+    root: str | Path = ".",
+    strict_production: bool = False,
+) -> dict[str, Any]:
+    """Inspect *env* and *root* and return a credential-scrubbed readiness report."""
+    active_env = dict(os.environ if env is None else env)
+    workspace = Path(root).resolve()
+    errors: list[dict[str, str]] = []
+    warnings: list[dict[str, str]] = []
+
+    for key in sorted(active_env):
+        upper = key.upper()
+        if upper.startswith("NEXT_PUBLIC_") and any(tok in upper for tok in _SECRET_NAME_TOKENS):
+            errors.append(
+                {
+                    "id": "browser_exposed_secret_var",
+                    "variable": key,
+                    "message_ar": (
+                        f"المتغير {key} يبدأ بـ NEXT_PUBLIC_ ويحمل اسم سر/مفتاح، مما يكشفه "
+                        "في متصفح المستخدم. انقله إلى بيئة الخادم فقط."
+                    ),
+                }
+            )
+
+    api_token = active_env.get("CELA_API_TOKEN", "").strip()
+    private_token = active_env.get("CELA_PRIVATE_API_TOKEN", "").strip()
+    store_url = active_env.get("CELA_RUN_STORE_URL", "").strip()
+    is_render = active_env.get("RENDER", "").lower() in {"1", "true", "yes"}
+
+    if strict_production or is_render:
+        if not api_token:
+            errors.append(
+                {
+                    "id": "missing_api_token",
+                    "variable": "CELA_API_TOKEN",
+                    "message_ar": "المتغير CELA_API_TOKEN مطلوب في بيئة الإنتاج.",
+                }
+            )
+        if not private_token:
+            errors.append(
+                {
+                    "id": "missing_private_api_token",
+                    "variable": "CELA_PRIVATE_API_TOKEN",
+                    "message_ar": "المتغير CELA_PRIVATE_API_TOKEN مطلوب في بيئة الإنتاج.",
+                }
+            )
+        if api_token and private_token and api_token == private_token:
+            errors.append(
+                {
+                    "id": "identical_public_and_private_tokens",
+                    "variable": "CELA_PRIVATE_API_TOKEN",
+                    "message_ar": (
+                        "يجب أن يختلف CELA_PRIVATE_API_TOKEN عن CELA_API_TOKEN لعزل المسار الخاص."
+                    ),
+                }
+            )
+
+    if is_render and (not store_url or store_url.startswith("sqlite:")):
+        warnings.append(
+            {
+                "id": "ephemeral_sqlite_on_render",
+                "variable": "CELA_RUN_STORE_URL",
+                "message_ar": (
+                    "قرص Render Free مؤقت ويُمسح عند إعادة التشغيل؛ استخدم رابط "
+                    "postgresql:// (مثل Supabase Postgres Free) لحفظ المهام والتقارير."
+                ),
+            }
+        )
+
+    return {
+        "ready": len(errors) == 0,
+        "strict_production": strict_production or is_render,
+        "store_backend_scheme": (
+            scrub_credentials(store_url.split("://", 1)[0])
+            if "://" in store_url
+            else ("memory" if not store_url else "custom")
+        ),
+        "files": {
+            "render_yaml": (workspace / "render.yaml").is_file(),
+            "env_example": (workspace / ".env.example").is_file(),
+        },
+        "errors": errors,
+        "warnings": warnings,
+    }
+
+
+__all__ = [
+    "ENV_ACTIVEPIECES_DAILY_LIMIT",
+    "ENV_ACTIVEPIECES_MONTHLY_LIMIT",
+    "ENV_ACTIVEPIECES_SECRET",
+    "ENV_ACTIVEPIECES_URL",
+    "ActivepiecesDispatcher",
+    "ActivepiecesQuotaGuard",
+    "InboundWebhookVerifier",
+    "check_deployment_readiness",
+    "default_webhook_egress_policy",
+    "sign_webhook_payload",
+    "verify_webhook_signature",
+]

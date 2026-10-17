@@ -16,7 +16,20 @@ export type PlanStep = {
   status: string;
   attempts: number;
 };
-export type Artifact = { kind: string; filename: string; mime_type: string };
+export type Artifact = {
+  kind: string;
+  filename: string;
+  mime_type: string;
+  sha256?: string;
+  size_bytes?: number;
+};
+export type MissionStageStatus = "idle" | "active" | "done" | "failed";
+export type MissionStage = {
+  id: "understand" | "plan" | "execute" | "deliver";
+  titleAr: string;
+  titleEn: string;
+  status: MissionStageStatus;
+};
 export type Approval = {
   id: string;
   name: string;
@@ -122,4 +135,83 @@ export function parseEvent(value: unknown): AgentEvent {
   )
     invalid();
   return value as AgentEvent;
+}
+export function computeMissionStages(
+  snapshot: Snapshot | null,
+  steps: PlanStep[] = [],
+): MissionStage[] {
+  const hasRun = Boolean(snapshot?.run_id);
+  const failed = Boolean(
+    snapshot && ["failed", "cancelled", "max_steps"].includes(snapshot.status),
+  );
+  const hasPlan = steps.length > 0;
+  const recordedTools =
+    snapshot?.tool_results_summary?.recorded ??
+    snapshot?.recorded_tool_results ??
+    0;
+  const hasArtifacts = (snapshot?.artifacts?.length ?? 0) > 0;
+  const isCompleted = snapshot?.status === "completed";
+
+  const understandStatus: MissionStageStatus = !hasRun
+    ? "idle"
+    : hasPlan || isCompleted
+      ? "done"
+      : failed
+        ? "failed"
+        : "active";
+
+  const planStatus: MissionStageStatus = !hasRun
+    ? "idle"
+    : hasPlan
+      ? "done"
+      : failed
+        ? "failed"
+        : "active";
+
+  const executeStatus: MissionStageStatus = !hasRun
+    ? "idle"
+    : failed
+      ? "failed"
+      : isCompleted && recordedTools > 0
+        ? "done"
+        : hasPlan || snapshot?.status === "running"
+          ? "active"
+          : "idle";
+
+  const deliverStatus: MissionStageStatus = !hasRun
+    ? "idle"
+    : failed
+      ? "failed"
+      : isCompleted && (hasArtifacts || Boolean(snapshot?.final_answer))
+        ? "done"
+        : isCompleted
+          ? "active"
+          : "idle";
+
+  return [
+    {
+      id: "understand",
+      titleAr: "1. فهم المهمة",
+      titleEn: "1. Understand Goal",
+      status: understandStatus,
+    },
+    {
+      id: "plan",
+      titleAr: "2. إنشاء الخطة (3–7 خطوات)",
+      titleEn: "2. Build Plan (3–7 Steps)",
+      status: planStatus,
+    },
+    {
+      id: "execute",
+      titleAr: "3. التنفيذ والتحقق بالأدلة",
+      titleEn: "3. Execute & Verify Evidence",
+      status: executeStatus,
+    },
+    {
+      id: "deliver",
+      titleAr: "4. تسليم النتيجة والتقرير",
+      titleEn: "4. Deliver Verified Report",
+      status: deliverStatus,
+    },
+  ];
 }
