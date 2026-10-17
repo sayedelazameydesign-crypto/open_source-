@@ -35,6 +35,16 @@ from os_tools.local_ai import (
     normalise_arabic,
 )
 from os_tools.mcp import LocalMCPServer, MCPServer, ToolFilter, build_default_registry
+from os_tools.mission import (
+    default_mission_url_policy,
+    generate_deployment_plan_report,
+    generate_deployment_plan_report_tool,
+    inspect_project_files,
+    inspect_project_files_tool,
+    inspect_public_url,
+    inspect_public_url_tool,
+    mission_tools,
+)
 from os_tools.registry import Tool, ToolRegistry
 from os_tools.ssrf import BlockedURLError, SSRFGuard, URLVerdict
 
@@ -67,8 +77,16 @@ __all__ = [
     "browser_tools",
     "build_default_registry",
     "code_exec_backend_from_env",
+    "default_mission_url_policy",
     "detect_language",
+    "generate_deployment_plan_report",
+    "generate_deployment_plan_report_tool",
+    "inspect_project_files",
+    "inspect_project_files_tool",
+    "inspect_public_url",
+    "inspect_public_url_tool",
     "local_ai_tools",
+    "mission_tools",
     "normalise_arabic",
     "parse_http_target",
     "python_execute_tool",

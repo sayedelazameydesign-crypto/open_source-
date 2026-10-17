@@ -79,6 +79,7 @@ def build_registry(
     from os_tools.browser import browser_tools
     from os_tools.code_exec import python_execute_tool
     from os_tools.local_ai import LocalAIEngine, local_ai_tools
+    from os_tools.mission import mission_tools
 
     registry = ToolRegistry(default_timeout=30.0)
     policy = egress_policy if egress_policy is not None else demo_egress_policy()
@@ -88,6 +89,7 @@ def build_registry(
     registry.add(python_execute_tool(code_exec_backend_from_env(), timeout=20.0))
     registry.extend(browser_tools(browser, ssrf_check=policy.for_tool("browser")))
     registry.extend(local_ai_tools(engine))
+    registry.extend(mission_tools(root=os.environ.get("CELA_MISSION_ROOT", ".")))
     if os.environ.get("CELA_REACH_ENABLE") == "1":
         # Reach tools (ADR-0013) are opt-in: they fetch the public internet, so
         # enabling them is a deployment decision rather than a default. They
@@ -313,4 +315,93 @@ def build_demo_platform(*, mode: str = "auto", interactive: bool = False) -> Pla
         approver=QueueApprover(timeout=60.0) if interactive else QueueApprover(timeout=1.0),
         skill_manager=demo_skill_manager(),
         memory_manager=demo_memory_manager(),
+    )
+
+
+def demo_mission_planner_model(
+    *,
+    project_name: str = "Celia.sh",
+    goal: str = "افحص مشروعي، واكتشف نقاط الضعف، ثم أنشئ خطة نشر مجانية وآمنة",
+    path: str = ".",
+    url: str | None = None,
+) -> ScriptedModel:
+    """Deterministic 3-step Mission OS DAG plan (offline, zero API keys)."""
+    steps: list[dict[str, Any]] = [
+        {
+            "id": "s1",
+            "title": "فحص بنية المشروع وملفات الإعداد فحصًا ساكنًا",
+            "tool": "inspect_project_files",
+            "args": {"path": path},
+            "depends_on": [],
+        }
+    ]
+    report_deps = ["s1"]
+    report_args: dict[str, Any] = {
+        "project_name": project_name,
+        "goal": goal,
+        "inspection_summary": "{{s1.raw}}",
+    }
+    if url:
+        steps.append(
+            {
+                "id": "s2",
+                "title": "فحص الرابط العام وترويسات الأمان",
+                "tool": "inspect_public_url",
+                "args": {"url": url},
+                "depends_on": [],
+            }
+        )
+        report_deps.append("s2")
+        report_args["url_check_summary"] = "{{s2.raw}}"
+    steps.append(
+        {
+            "id": "s3",
+            "title": "توليد تقرير المهمة وخطة النشر المجانية (MD / JSON / HTML)",
+            "tool": "generate_deployment_plan_report",
+            "args": report_args,
+            "depends_on": report_deps,
+        }
+    )
+    return ScriptedModel(
+        name="demo-mission-planner",
+        script=[
+            ModelResponse(
+                content=json.dumps(steps, ensure_ascii=False),
+                usage=Usage(prompt_tokens=260, completion_tokens=140),
+            )
+        ],
+        final_content=(
+            "اكتمل الفحص الساكن وتوليد التقارير الثلاثة (MD / JSON / HTML) ببصمة SHA-256. "
+            "راجع الأدلة المسجلة؛ لم يتم ادعاء تشغيل اختبارات لم تُنفَّذ."
+        ),
+    )
+
+
+def build_mission_platform(
+    *,
+    root: str = ".",
+    project_name: str = "Celia.sh",
+    goal: str = "افحص مشروعي، واكتشف نقاط الضعف، ثم أنشئ خطة نشر مجانية وآمنة",
+    url: str | None = None,
+    url_policy: EgressPolicy | None = None,
+    transport: Any = None,
+    interactive: bool = False,
+) -> Platform:
+    """Build a deterministic Mission OS platform (offline-capable, no API keys)."""
+    from os_tools.mission import mission_tools
+
+    registry, _guard, _browser = build_registry()
+    registry.extend(mission_tools(root=root, url_policy=url_policy, transport=transport))
+    model = demo_mission_planner_model(
+        project_name=project_name,
+        goal=goal,
+        path=".",
+        url=url,
+    )
+    return Platform(
+        model=model,
+        registry=registry,
+        config=PlatformConfig(mode="flow", max_steps=8, token_budget=50_000),
+        router=ModelRouter(config=RouterConfig(token_budget=50_000)),
+        approver=QueueApprover(timeout=60.0) if interactive else QueueApprover(timeout=1.0),
     )

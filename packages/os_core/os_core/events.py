@@ -155,17 +155,22 @@ class EventBus(BaseModel):
         )
 
     async def artifact(self, art: Artifact, step_id: str | None = None) -> None:
+        data: dict[str, Any] = {
+            "kind": art.kind,
+            "filename": art.filename,
+            "mime_type": art.mime_type,
+            "size": len(art.content),
+        }
+        if "sha256" in art.metadata:
+            data["sha256"] = art.metadata["sha256"]
+        if "size_bytes" in art.metadata:
+            data["size_bytes"] = art.metadata["size_bytes"]
         await self.publish(
             Event(
                 type=EventType.ARTIFACT,
                 run_id=self.run_id,
                 step_id=step_id,
-                data={
-                    "kind": art.kind,
-                    "filename": art.filename,
-                    "mime_type": art.mime_type,
-                    "size": len(art.content),
-                },
+                data=data,
             )
         )
 

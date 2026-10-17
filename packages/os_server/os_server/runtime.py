@@ -13,6 +13,7 @@ record of how each execution ended.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import secrets
 import time
@@ -25,6 +26,7 @@ from os_core.events import EventBus, EventType, replay_and_stream
 from os_core.hitl import ApprovalDecision, QueueApprover
 from os_core.ledger import RunLedger, resolve_ledger
 from os_core.models import describe_execution
+from os_core.redact import contains_secret, scrub_credentials
 from os_core.state import RunState, RunStatus
 from os_orchestration.platform import Platform
 from os_tools.egress import EgressPolicy
@@ -42,6 +44,10 @@ PLATFORM_TOKEN_ENV_VARS: tuple[str, ...] = ("CELA_API_TOKEN", "OS_API_TOKEN")
 PRIVATE_TOKEN_ENV_VARS: tuple[str, ...] = ("CELA_PRIVATE_API_TOKEN",)
 
 PlatformFactory = Callable[[str, int], Platform]
+
+
+class ArtifactIntegrityError(RuntimeError):
+    """Raised when an artifact's stored SHA-256 does not match its content bytes."""
 
 
 class RunHandle(BaseModel):
@@ -259,11 +265,11 @@ class ApiRuntime:
         result: list[dict[str, Any]] = []
         seen: set[str] = set()
         for run_id in [*self.runs, *self.store.list_run_ids()]:
-            if run_id in seen:
+            if run_id in seen or run_id.startswith("doc_"):
                 continue
             seen.add(run_id)
             snap = self.get_run_snapshot(run_id)
-            if snap is not None:
+            if snap is not None and snap.get("mode") != "document":
                 result.append(snap)
         return result
 
@@ -341,6 +347,54 @@ class ApiRuntime:
             return None
         cached = list(self.artifacts.get(run_id, {}).values())
         return cached if cached else self.store.list_artifacts(run_id)
+
+    def download_artifact(self, run_id: str, filename: str) -> dict[str, Any]:
+        """Return downloadable bytes + SHA-256 verification for a run artifact.
+
+        Document runs (``doc_...``) are served exclusively by ``/document-runs``
+        and are refused here so retention/isolation rules stay uniform.
+        """
+        if run_id.startswith("doc_") or not self.has_run(run_id):
+            raise KeyError(run_id)
+        if not filename or "/" in filename or "\\" in filename or ".." in filename:
+            raise KeyError(filename)
+
+        state = self.states.get(run_id) or self.store.get_state(run_id)
+        if state is not None and state.mode == "document":
+            raise KeyError(run_id)
+
+        art = next(
+            (a for a in (state.artifacts if state is not None else []) if a.filename == filename),
+            None,
+        )
+        meta = self.get_artifact(run_id, filename)
+
+        if art is not None:
+            content_text = art.content
+            mime_type = art.mime_type or "text/plain; charset=utf-8"
+            expected_sha256 = (meta or {}).get("sha256") or art.metadata.get("sha256")
+        elif meta is not None and "content" in meta:
+            content_text = str(meta["content"])
+            mime_type = str(meta.get("mime_type") or "text/plain; charset=utf-8")
+            expected_sha256 = meta.get("sha256")
+        else:
+            raise KeyError(filename)
+
+        if contains_secret(content_text):
+            content_text = scrub_credentials(content_text)
+
+        raw_bytes = content_text.encode("utf-8")
+        actual_sha256 = hashlib.sha256(raw_bytes).hexdigest()
+        if expected_sha256 and actual_sha256 != expected_sha256:
+            raise ArtifactIntegrityError(f"artifact integrity check failed for {filename}")
+
+        return {
+            "filename": filename,
+            "content_bytes": raw_bytes,
+            "mime_type": mime_type,
+            "sha256": actual_sha256,
+            "size_bytes": len(raw_bytes),
+        }
 
     # -- run-outcome ledger -------------------------------------------------
 
