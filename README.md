@@ -7,7 +7,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 
-> **1069 اختبارًا ناجحًا · 1 متخطّى اختياريًا · 0 فشل · دون مفاتيح API ودون شبكة.**
+> **العدد الحالي للاختبارات في [`docs/EVIDENCE.md`](docs/EVIDENCE.md)** — مُولَّد من المجموعة
+> نفسها بأمر (`make evidence`) ولا يُحرَّر يدويًا. المجموعة تعمل دون مفاتيح API ودون شبكة.
 
 ---
 
@@ -132,7 +133,7 @@ packages/
 ## الاختبار
 
 ```bash
-pytest -q          # 1069 passed, 1 skipped (اختبار مخزن موزّع يتخطّى حين يكون psycopg مثبَّت)
+pytest -q          # بلا فشل — العدد في docs/EVIDENCE.md (اختبار المخزن الموزّع يتخطّى مع psycopg)
 ruff check .       # All checks passed
 ruff format .      # تنسيق موحّد
 ```
