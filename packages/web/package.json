@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "build:pages": "CELA_STATIC_EXPORT=1 next build",
     "start": "next start",
     "lint": "eslint app components functions hooks lib",
     "typecheck": "tsc --noEmit",

@@ -37,3 +37,7 @@ jobs:
       - run: npm run test:hooks
       - run: npm run test:deploy
       - run: npm run build
+      # The Cloudflare Pages shape is a different build: static export with the
+      # Next proxy excluded and the edge BFF taking over. Build it in CI so a
+      # change that breaks `output: "export"` fails here, not at deploy time.
+      - run: npm run build:pages

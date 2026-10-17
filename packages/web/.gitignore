@@ -1,5 +1,7 @@
 node_modules/
 .next/
+# static export (CELA_STATIC_EXPORT=1 npm run build:pages)
+out/
 next-env.d.ts
 
 *.tsbuildinfo

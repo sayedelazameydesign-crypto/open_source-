@@ -31,6 +31,7 @@ PAGES_FUNCTION = ROOT / "packages" / "web" / "functions" / "api" / "backend" / "
 NEXT_BFF = ROOT / "packages" / "web" / "app" / "api" / "backend" / "[...path]" / "route.ts"
 WEB_PACKAGE = ROOT / "packages" / "web" / "package.json"
 WEB_CI = ROOT / ".github" / "workflows" / "web-ci.yml"
+NEXT_CONFIG = ROOT / "packages" / "web" / "next.config.ts"
 SECRET_KEYS = {
     "CELA_API_TOKEN",
     "CELA_PRIVATE_API_TOKEN",
@@ -64,9 +65,10 @@ def test_render_service_is_free_and_health_checked(api_service: dict[str, Any]) 
     assert api_service["healthCheckPath"] == "/health"
     assert "--host 0.0.0.0" in api_service["startCommand"]
     assert "$PORT" in api_service["startCommand"]
-    # `server` is the only extra the API needs at runtime; `distributed` would
-    # pull psycopg/redis even when no Postgres store is configured.
-    assert '.[server]' in api_service["buildCommand"]
+    # `distributed` is load-bearing: the blueprint pairs with a Supabase
+    # Postgres URL, and psycopg is imported lazily (the server would start,
+    # answer /health, then 500 on the first run).
+    assert '.[server,distributed]' in api_service["buildCommand"]
 
 
 def test_render_never_carries_a_secret_literal(
@@ -130,6 +132,59 @@ def test_behavioural_suite_is_wired_into_ci() -> None:
     assert "npm run test:deploy" in ci
     assert (ROOT / "tests" / "web" / "deploy-function.cjs").is_file()
     assert (ROOT / "tests" / "web" / "run-deploy-function.cjs").is_file()
+
+
+def test_static_export_build_exists_and_is_ci_covered() -> None:
+    package = json.loads(WEB_PACKAGE.read_text(encoding="utf-8"))
+    assert package["scripts"]["build:pages"] == "CELA_STATIC_EXPORT=1 next build"
+
+    # The export must be opt-in: default builds keep the Next server proxy.
+    config = NEXT_CONFIG.read_text(encoding="utf-8")
+    assert 'process.env.CELA_STATIC_EXPORT === "1"' in config
+    assert 'output: "export"' in config
+    assert 'pageExtensions: ["tsx", "jsx"]' in config
+    assert "unoptimized: true" in config
+
+    ci = WEB_CI.read_text(encoding="utf-8")
+    assert "npm run build:pages" in ci
+    # Build artifacts never belong in Git.
+    assert "out/" in (ROOT / "packages" / "web" / ".gitignore").read_text(encoding="utf-8")
+
+
+def test_runbook_documents_the_three_services() -> None:
+    runbook = ROOT / "docs" / "DEPLOY_FREE_TIER_RUNBOOK.md"
+    text = runbook.read_text(encoding="utf-8")
+    for needle in (
+        "Supabase",
+        "Session pooler",
+        "CELA_RUN_STORE_URL",
+        ".[server,distributed]",
+        "npm run build:pages",
+        "CELA_BACKEND_URL",
+        "deploy_doctor.py",
+    ):
+        assert needle in text, needle
+    # The doc must not contain a real-looking credential.
+    assert "postgresql://postgres:" not in text
+
+
+
+def test_doctor_refuses_postgres_without_psycopg(monkeypatch: pytest.MonkeyPatch) -> None:
+    from os_server import automation
+
+    env = {"CELA_RUN_STORE_URL": "postgresql://u:p@db.supabase.co:5432/postgres"}
+
+    monkeypatch.setattr(automation, "_postgres_driver_available", lambda: False)
+    missing = automation.check_deployment_readiness(env, root=ROOT)
+    assert missing["ready"] is False
+    assert [e["id"] for e in missing["errors"]] == ["postgres_driver_missing"]
+    message = missing["errors"][0]["message_ar"]
+    assert "db.supabase.co" not in message and "postgresql://" not in message
+
+    monkeypatch.setattr(automation, "_postgres_driver_available", lambda: True)
+    installed = automation.check_deployment_readiness(env, root=ROOT)
+    assert installed["ready"] is True
+    assert installed["store_backend_scheme"] == "postgresql"
 
 
 def test_doctor_passes_a_clean_cloudflare_build() -> None:
