@@ -90,7 +90,7 @@ PY
 | **استقبال Webhooks وإرسال إشعارات** | `packages/os_server/os_server/waapi.py` + `waapi_inbox.py` + `waapi_outbox.py` (خاص بـ WhatsApp/WaAPI فقط، مع سر مسار 32+ حرفًا ومنع تكرار SQLite وتنقيح مسار ASGI) | لا يوجد **سطح ويب هوك عام للأتمتة** (`/api/webhooks/automation/...`) يقبل مهام من Activepieces / Windmill / n8n أو يرسل إليها إشعارات انتهاء التشغيل (`RunOutcome`) |
 | **ربط أدوات خارجية بالوكيل** | `packages/os_mcp/` ([ADR-0017](../adr/0017-mcp-transport.md)): عميل `StdioMCPClient` و`HttpMCPClient` + خادم `MCPRegistryServer` + فحص `Guardrails` + `EgressPolicy` | نحتاج **ملفات إعداد ووصفات ربط MCP قياسية** لـ Activepieces وn8n وWindmill دون تعديل نواة `os_mcp` |
 | **أتمتة CI/CD وفحص الأمان** | `.github/workflows/{ci,web-ci,launcher-ci,eval-real-model,codeql,codacy}.yml` + اختبار الحماية `tests/test_eval_workflow_security.py` | ينقصنا مسار نشر التوثيق/التقارير إلى `GitHub Pages` ومسار فحص جاهزية النشر (`deploy_doctor`) |
-| **نشر الواجهة (`packages/web`)** | Next.js 15 مع وكيل Node.js في `app/api/backend/[...path]/route.ts` | ينقصنا **وكيل Cloudflare Worker / Pages Function** يحافظ على نفس عقد الأمان (عدم كشف الرموز للمتصفح + تمرير SSE `?after_seq=N`) عند النشر على Cloudflare Pages |
+| **نشر الواجهة (`packages/web`)** | Next.js 15 مع وكيل Node.js في `app/api/backend/[...path]/route.ts` **ووكيل حافة مكتمل** في `functions/api/backend/[[path]].ts` (14 اختبار سلوكي في `npm run test:deploy`) | ✅ **اكتمل الوكيل**. المتبقي: وضع بناء ثابت (`output: "export"`) يستثني مسار Next الخادمي كي تُنشر الصفحات على Pages بجانب الوكيل — التفاصيل في القسم 6.1 |
 | **نشر الخادم (`os_server`)** | `docs/publish-runbook.md` يوثّق متغيرات Render وVercel | ينقصنا ملف **`render.yaml`** مضبوط بحواجز الأمان وفحص جاهزية يمنع تشغيل الخادم بقرص مؤقت دون علم المشغّل |
 
 ---
@@ -259,6 +259,21 @@ PY
     3. يمرّر تدفق SSE (`GET /runs/{id}/events?after_seq=N`) مباشرةً (`Cache-Control: no-store, no-transform`) دون تخزين مؤقت يكسر البث اللحظي.
     4. عند نوم خادم Render الخلفي (تأخر الرد أثناء الاستيقاظ)، يعيد رسالة حالة مهذّبة قابلة لإعادة المحاولة بدل خطأ 502 خام.
 
+**حالة التنفيذ (✅ مكتمل):** الملف موجود في `packages/web/functions/api/backend/[[path]].ts` وهو مرآة أمنية لوكيل Next.js، مع فروق مقصودة ومُختبرة:
+
+* يقرأ `CELA_BACKEND_URL` و`CELA_API_TOKEN` و`CELA_PRIVATE_API_TOKEN` من **Worker Secrets** فقط، ويحذف أي `Authorization` قادم من المتصفح قبل الحقن.
+* `/api/backend/cela/*` يُوقَّع بالرمز الخاص، وبقية المسارات بالرمز العام — نفس قاعدة `PRIVATE_PREFIX = "cela/"` في وكيل Next.
+* **يرفض** `http://` خارج loopback (الرموز لا تعبر الشبكة مكشوفة)، وأي اعتماد مضمَّن في الرابط (`https://user:pass@host`)، وأي `..` مُرمَّز في المسار.
+* **لا يتبع** إعادة توجيه خارج أصل الخادم (كي لا يُعاد إرسال `Authorization` إلى مضيف آخر)، لكنه يتبع إعادة التوجيه الداخلية (`/runs/` → `/runs`) مرتين كحد أقصى.
+* عند تجاوز مهلة `CELA_BACKEND_TIMEOUT_MS` (افتراضي 25 ثانية، وأقصى 60) يعيد `503 backend_starting` مع `Retry-After: 5`، وعند فشل الاتصال يعيد `502 backend_unreachable`، وكلاهما `retryable: true` بدل صفحة 502 الخام.
+* يمرّر بث SSE كما هو مع `Cache-Control: no-store, no-transform` و`X-Accel-Buffering: no`، ويحافظ على `?after_seq=N` حرفيًا.
+
+**التحقق:** `tests/test_deploy_config.py` (15 اختبارًا في CI البايثوني) + `npm run test:deploy` (14 اختبارًا سلوكيًا بدالة `fetch` مُستبدلة، بلا شبكة) موصولة بـ `.github/workflows/web-ci.yml`. ويضيف `deploy_doctor.py` الفحص `files.cloudflare_bff_proxy` ويُفشل بناء Pages إذا كان `CELA_BACKEND_URL` غير مشفّر (`insecure_backend_url`) مع تحذير صريح بأن أسرار **وقت تشغيل** Pages Function لا تُرى من بيئة البناء.
+
+**المتبقي كي يصبح النشر بضغطة واحدة:** وضع بناء ثابت (`output: "export"`) يستثني مسار `app/api/backend/[...path]/route.ts` (الذي لا يدعمه التصدير الثابت) — أما وكيل الحافة واختباراته فهي جاهزة. وبديل آخر هو `@opennextjs/cloudflare` الذي يُبقي مسار Next الخادمي ويعمل على Workers، وعندها لا يُستخدم وكيل الحافة أصلًا.
+
+**متغيرات Pages المطلوبة** (Settings → Variables and Secrets، بنوع *Secret*): `CELA_BACKEND_URL` (https) و`CELA_API_TOKEN` و`CELA_PRIVATE_API_TOKEN` (مختلفان)، واختياريًا `CELA_BACKEND_TIMEOUT_MS`. **لا** تضبط أيًّا منها باسم يبدأ بـ `NEXT_PUBLIC_` — `deploy_doctor.py` يعتبر ذلك خطأً مانعًا.
+
 ### 6.2 Render — استضافة خادم `os_server` (FastAPI) للتجربة
 
 **كيف نُعدّ `os_server` للعمل على Render بأمان رغم قيوده الثلاثة:**
@@ -312,7 +327,7 @@ PY
 |---|---|---|---|
 | **0 — الاعتماد (الحالية)** | توثيق الخطة وفحص التراخيص وتحديد الاستخدام الأساسي | `docs/AUTOMATION_AND_DEPLOYMENT_PLAN.md` | مراجعة المالك واختيار مسار البدء (القسم 9)؛ لا تغيير في الكود التنفيذي |
 | **1 — موصّل الأتمتة الموحّد (`os_server/automation.py`)** | استقبال Webhooks من Activepieces/Windmill/n8n (`POST /api/webhooks/automation/{secret}`) + منع التكرار `idempotency_key` + فحص `Guardrails` و`EgressPolicy` المسبق لـ `callback_url` + إرسال النتيجة الموقّعة والمنقّاة (`scrub_credentials`) + أداة `automation_trigger` + سقف الرصيد اليومي | `packages/os_server/os_server/automation.py`, `packages/os_server/os_server/app.py`, `.env.example`, `tests/test_automation.py` | **+35 اختبارًا حتميًا دون شبكة (`MockTransport`)** تغطي: سر المسار الخاطئ (`401`/`404`)، تكرار `idempotency_key` بنفس الحمولة (`202` بلا تشغيل مزدوج) وبحمولة مختلفة (`409`)، رفض `callback_url` داخلي (`169.254.169.254` → `403` قبل بدء التشغيل)، تنقيح مسار ASGI، وحجب الأسرار في الـ callback |
-| **2 — حزمة النشر الصفرية (Cloudflare + Render + Doctor)** | وكيل حافة Cloudflare Pages Function (`packages/web/functions/api/backend/[[path]].ts`) لحماية الرموز وتمرير SSE + ملف `render.yaml` + فحص التحذير من القرص المؤقت عند الإقلاع + أداة `scripts/deploy_doctor.py` | `render.yaml`, `packages/web/functions/api/backend/[[path]].ts`, `scripts/deploy_doctor.py`, `tests/test_deploy_config.py` | اختبار يتحقق من أن `render.yaml` لا يحتوي على أسرار مضمّنة، وأن وكيل Cloudflare لا يسرّب `CELA_API_TOKEN` للمتصفح ويمرّر `after_seq`، وأن `deploy_doctor.py` يكتشف غياب المتغيرات أو تطابق الرمزين |
+| **2 — حزمة النشر الصفرية (Cloudflare + Render + Doctor)** ✅ **منفَّذة** | وكيل حافة Cloudflare Pages Function (`packages/web/functions/api/backend/[[path]].ts`) لحماية الرموز وتمرير SSE + ملف `render.yaml` + فحص التحذير من القرص المؤقت/العنوان غير المشفّر + أداة `scripts/deploy_doctor.py` | `render.yaml`, `packages/web/functions/api/backend/[[path]].ts`, `scripts/deploy_doctor.py`, `tests/test_deploy_config.py`, `tests/web/deploy-function.cjs` | ✅ 15 اختبارًا في `tests/test_deploy_config.py` (لا أسرار في `render.yaml`، رفض `http://` خارج loopback، عدم تسريب الرموز في تقرير الطبيب، بقاء الاختبارات موصولة بـ CI) + **14 اختبارًا سلوكيًا** في `npm run test:deploy` (حقن الرمز العام/الخاص، تمرير `after_seq`، بث SSE، حجب تجاوز المسار، رفض إعادة التوجيه خارج الأصل، وترجمة نوم Render إلى `503 backend_starting` قابل لإعادة المحاولة) |
 | **3 — قوالب التكامل الجاهزة + جسر MCP** | قوالب JSON قياسية جاهزة للاستيراد في Activepieces وWindmill وn8n + مثال إعداد `mcp.json` لربطها عبر `os_mcp` + دليل تشغيل خطوة بخطوة | `docs/automation-templates/{activepieces-flow,windmill-script,n8n-workflow}.json`, `docs/AUTOMATION_GUIDE_AR.md` | اختبار يتحقق من سلامة بنية JSON للقوالب وخلوّها من أي مفاتيح حقيقية أو عناوين غير آمنة |
 | **4 — النشر التلقائي للتوثيق والتقارير (`GitHub Pages`)** | مسار GitHub Actions ينشر `docs/` وتقارير `os_evals` الثابتة إلى GitHub Pages مع حماية مسارات التنفيذ | `.github/workflows/docs-pages.yml`, `tests/test_eval_workflow_security.py` | نجاح فحص YAML وأذونات `permissions: contents: read, pages: write, id-token: write` فقط دون وصول لأسرار النماذج |
 

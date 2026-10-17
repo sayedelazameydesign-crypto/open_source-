@@ -6,10 +6,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint app components hooks lib",
+    "lint": "eslint app components functions hooks lib",
     "typecheck": "tsc --noEmit",
     "test:components": "node ../../tests/web/run-components.cjs",
-    "test:hooks": "node ../../tests/web/run-hooks.cjs"
+    "test:hooks": "node ../../tests/web/run-hooks.cjs",
+    "test:deploy": "node ../../tests/web/run-deploy-function.cjs"
   },
   "dependencies": {
     "next": "^15.1.0",
