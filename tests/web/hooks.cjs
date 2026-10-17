@@ -165,3 +165,14 @@ test('reset ignores late responses and stops all periodic requests', async () =>
   assert.equal(intervals.size, 0);
   assert.equal(requests.length, 1);
 });
+
+test('start persists ?run_id= in URL and loadRun restores a run by id', async () => {
+  await start();
+  assert.equal(new URL(window.location.href).searchParams.get('run_id'), 'run_1');
+  await act(async () => run.loadRun('run_9'));
+  assert.equal(run.runId, 'run_9');
+  assert.equal(new URL(window.location.href).searchParams.get('run_id'), 'run_9');
+  assert.equal(run.snapshot.run_id, 'run_9');
+  await act(async () => run.reset());
+  assert.equal(new URL(window.location.href).searchParams.get('run_id'), null);
+});

@@ -15,12 +15,14 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Sequence
 from typing import Any
 
 from os_core.hitl import QueueApprover
-from os_core.models import ModelResponse, ScriptedModel, Usage
+from os_core.models import ChatModel, ModelResponse, OpenAICompatModel, ScriptedModel, Usage
+from os_core.redact import scrub_credentials
 from os_core.router import ModelRouter, RouterConfig
-from os_core.types import ToolCall
+from os_core.types import Message, ToolCall
 from os_orchestration.platform import Platform, PlatformConfig
 from os_tools.browser import BrowserTool, FakeBrowser, PageSnapshot, RetryPolicy
 from os_tools.code_exec import code_exec_backend_from_env
@@ -175,9 +177,32 @@ def demo_react_model(task: str) -> ScriptedModel:
     return ScriptedModel(name="demo-react", responder=responder)
 
 
+def _extract_user_task(messages: Sequence[Message], fallback: str = "") -> str:
+    for msg in messages:
+        if msg.role == "user" and "Task:" in msg.content:
+            return msg.content.split("Task:", 1)[1].strip()
+    for msg in messages:
+        if msg.role == "user":
+            return msg.content.strip()
+    return fallback
+
+
+def _is_mission_task(text: str) -> bool:
+    lowered = text.lower()
+    return any(
+        kw in lowered
+        for kw in (
+            "افحص",
+            "خطة نشر",
+            "تقرير مهمة",
+            "mission os",
+        )
+    )
+
+
 def demo_planner_model(task: str) -> ScriptedModel:
     """Deterministic DAG plan + synthesis, for the flow mode."""
-    plan = json.dumps(
+    default_plan = json.dumps(
         [
             {
                 "id": "s1",
@@ -202,13 +227,80 @@ def demo_planner_model(task: str) -> ScriptedModel:
             },
         ]
     )
+    default_final = (
+        "Demo transcript finished. Inspect the recorded tool results and their statuses. "
+        "This scripted response does not verify the user's goal or real browser access."
+    )
+    planned = False
+    mission_mode = False
+
+    def responder(messages: Sequence[Message]) -> ModelResponse:
+        nonlocal planned, mission_mode
+        extracted_task = _extract_user_task(messages, task)
+        if not planned:
+            planned = True
+            mission_mode = _is_mission_task(task or extracted_task)
+            if mission_mode:
+                first_user = extracted_task or "افحص مشروعي وأنشئ خطة نشر مجانية وآمنة"
+                mission_steps = [
+                    {
+                        "id": "s1",
+                        "title": "فحص بنية المشروع وملفات الإعداد فحصًا ساكنًا",
+                        "tool": "inspect_project_files",
+                        "args": {"path": "."},
+                        "depends_on": [],
+                    },
+                    {
+                        "id": "s2",
+                        "title": "فحص حزمة الإعدادات ومسارات التكامل المستمر",
+                        "tool": "inspect_project_files",
+                        "args": {"path": ".", "max_files": 50},
+                        "depends_on": ["s1"],
+                    },
+                    {
+                        "id": "s3",
+                        "title": "توليد تقرير المهمة وخطة النشر المجانية (MD / JSON / HTML)",
+                        "tool": "generate_deployment_plan_report",
+                        "args": {
+                            "project_name": "Celia.sh Workspace",
+                            "goal": first_user[:240],
+                            "inspection_summary": "{{s1.raw}}",
+                        },
+                        "depends_on": ["s1", "s2"],
+                    },
+                ]
+                return ModelResponse(
+                    content=json.dumps(mission_steps, ensure_ascii=False),
+                    usage=Usage(prompt_tokens=260, completion_tokens=140),
+                )
+            return ModelResponse(
+                content=default_plan,
+                usage=Usage(prompt_tokens=400, completion_tokens=150),
+            )
+        if mission_mode:
+            return ModelResponse(
+                content=(
+                    "اكتمل الفحص الساكن وتوليد التقارير الثلاثة (mission-report.md / "
+                    "mission-report.json / mission-report.html) ببصمة SHA-256. راجع "
+                    "الأدلة المسجلة وتنزيل الملفات؛ لم يتم ادعاء تشغيل اختبارات لم تُنفَّذ."
+                ),
+                usage=Usage(prompt_tokens=300, completion_tokens=90),
+            )
+        return ModelResponse(
+            content=default_final,
+            usage=Usage(prompt_tokens=300, completion_tokens=80),
+        )
+
     return ScriptedModel(
         name="demo-planner",
-        script=[ModelResponse(content=plan, usage=Usage(prompt_tokens=400, completion_tokens=150))],
-        final_content=(
-            "Demo transcript finished. Inspect the recorded tool results and their statuses. "
-            "This scripted response does not verify the user's goal or real browser access."
-        ),
+        script=[
+            ModelResponse(
+                content=default_plan,
+                usage=Usage(prompt_tokens=400, completion_tokens=150),
+            )
+        ],
+        final_content=default_final,
+        responder=responder,
     )
 
 
@@ -377,6 +469,105 @@ def demo_mission_planner_model(
     )
 
 
+def free_tier_model_from_env(*, transport: Any = None) -> OpenAICompatModel | None:
+    """Configure a free-tier OpenAI-compatible provider from env if present.
+
+    Secrets remain in ``os.environ`` and are referenced only via ``api_key_env``
+    (ADR-0011). Priority order: Gemini 2.5 Flash -> Groq -> OpenRouter Free.
+    """
+    candidates = (
+        (
+            "GEMINI_API_KEY",
+            "gemini-2.5-flash",
+            "gemini-2.5-flash",
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+        ),
+        (
+            "GROQ_API_KEY",
+            "groq-llama-3.3-70b",
+            "llama-3.3-70b-versatile",
+            "https://api.groq.com/openai/v1",
+        ),
+        (
+            "OPENROUTER_API_KEY",
+            "openrouter-free",
+            "meta-llama/llama-3.3-70b-instruct:free",
+            "https://openrouter.ai/api/v1",
+        ),
+    )
+    for env_var, name, model_id, base_url in candidates:
+        if os.environ.get(env_var, "").strip():
+            return OpenAICompatModel(
+                name=name,
+                model_id=model_id,
+                base_url=base_url,
+                api_key_env=env_var,
+                timeout=30.0,
+                transport=transport,
+            )
+    return None
+
+
+class ResilientMissionModel:
+    """Wraps an optional LLM provider with honest fallback to the deterministic core.
+
+    When ``primary`` is ``None`` or raises (e.g. HTTP 429 free-tier quota exceeded
+    or network error), execution switches cleanly to ``fallback`` (a
+    :class:`~os_core.models.ScriptedModel` driving the real inspection tools)
+    and records ``fallback_reason`` so ``describe_execution`` honestly reports
+    ``kind="scripted"`` instead of pretending an LLM answered.
+    """
+
+    def __init__(
+        self,
+        *,
+        fallback: ScriptedModel,
+        primary: ChatModel | None = None,
+    ) -> None:
+        self.fallback = fallback
+        self.primary = primary
+        self.fallback_triggered: bool = primary is None
+        self.fallback_reason: str | None = (
+            "no_provider_configured" if primary is None else None
+        )
+
+    @property
+    def active_model(self) -> ChatModel:
+        if self.primary is not None and not self.fallback_triggered:
+            return self.primary
+        return self.fallback
+
+    @property
+    def name(self) -> str:
+        return self.active_model.name
+
+    async def complete(
+        self,
+        messages: Sequence[Message],
+        *,
+        tools: Sequence[dict[str, Any]] | None = None,
+        temperature: float = 0.2,
+        max_tokens: int = 1024,
+    ) -> ModelResponse:
+        if self.primary is not None and not self.fallback_triggered:
+            try:
+                return await self.primary.complete(
+                    messages,
+                    tools=tools,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+            except Exception as exc:
+                self.fallback_triggered = True
+                self.fallback_reason = scrub_credentials(f"{type(exc).__name__}: {exc}")
+        return await self.fallback.complete(
+            messages,
+            tools=tools,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+
+
 def build_mission_platform(
     *,
     root: str = ".",
@@ -386,17 +577,27 @@ def build_mission_platform(
     url_policy: EgressPolicy | None = None,
     transport: Any = None,
     interactive: bool = False,
+    primary_model: ChatModel | None = None,
+    use_env_provider: bool = False,
 ) -> Platform:
     """Build a deterministic Mission OS platform (offline-capable, no API keys)."""
     from os_tools.mission import mission_tools
 
     registry, _guard, _browser = build_registry()
     registry.extend(mission_tools(root=root, url_policy=url_policy, transport=transport))
-    model = demo_mission_planner_model(
+    fallback = demo_mission_planner_model(
         project_name=project_name,
         goal=goal,
         path=".",
         url=url,
+    )
+    chosen_primary = primary_model or (
+        free_tier_model_from_env(transport=transport) if use_env_provider else None
+    )
+    model: ChatModel = (
+        ResilientMissionModel(fallback=fallback, primary=chosen_primary)
+        if chosen_primary is not None
+        else fallback
     )
     return Platform(
         model=model,

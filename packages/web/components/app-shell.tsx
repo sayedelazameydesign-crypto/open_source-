@@ -38,6 +38,13 @@ function Navigation({ onNavigate }: { onNavigate?: () => void }) {
         >
           <Icon name="file" /> المستندات النصية
         </a>
+        <a
+          href="/status"
+          aria-current={pathname === "/status" ? "page" : undefined}
+          onClick={onNavigate}
+        >
+          <Icon name="shield" /> حالة المنصة
+        </a>
       </nav>
       <div className="sidebar-note">
         <span className="small-icon">
@@ -67,21 +74,47 @@ function Navigation({ onNavigate }: { onNavigate?: () => void }) {
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [locale, setLocale] = useState<"ar" | "en">("ar");
   const dialog = useRef<HTMLDialogElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem("cela:locale");
+      if (saved === "en" || saved === "ar") {
+        setLocale(saved);
+        document.documentElement.dir = saved === "ar" ? "rtl" : "ltr";
+        document.documentElement.lang = saved;
+      }
+    } catch {
+      /* localStorage optional */
+    }
     const resize = () => {
       if (window.innerWidth > 760) dialog.current?.close();
     };
     window.addEventListener("resize", resize);
     return () => window.removeEventListener("resize", resize);
   }, []);
+  const toggleLocale = () => {
+    const next = locale === "ar" ? "en" : "ar";
+    setLocale(next);
+    if (typeof document !== "undefined") {
+      document.documentElement.dir = next === "ar" ? "rtl" : "ltr";
+      document.documentElement.lang = next;
+    }
+    try {
+      window.localStorage.setItem("cela:locale", next);
+    } catch {
+      /* localStorage optional */
+    }
+  };
   const title =
     pathname === "/documents"
       ? "المستندات النصية"
-      : pathname === "/"
-        ? "مساحة العمل"
-        : "أدوات المشروع";
+      : pathname === "/status"
+        ? "حالة المنصة الحية"
+        : pathname === "/"
+          ? "مساحة العمل · Mission OS"
+          : "أدوات المشروع";
   return (
     <div className="app-frame">
       <a className="skip-link" href="#main-content">
@@ -150,10 +183,21 @@ export function AppShell({ children }: { children: ReactNode }) {
             <span className="crumb-divider">/</span>
             <span>{title}</span>
           </div>
-          <span className="topbar-note">
-            <span className="static-dot" />
-            بيئة تطوير محلية
-          </span>
+          <div className="heading-actions">
+            <button
+              type="button"
+              className="secondary-button locale-toggle"
+              onClick={toggleLocale}
+              aria-label="تبديل اتجاه ولغة الواجهة"
+              dir="ltr"
+            >
+              {locale === "ar" ? "EN / LTR" : "عربي / RTL"}
+            </button>
+            <span className="topbar-note">
+              <span className="static-dot" />
+              بيئة تطوير محلية
+            </span>
+          </div>
         </header>
         <div id="main-content" tabIndex={-1} className="app-content">
           {children}

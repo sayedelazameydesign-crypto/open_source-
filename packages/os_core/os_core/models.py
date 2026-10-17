@@ -226,8 +226,9 @@ def describe_execution(model: object) -> ExecutionInfo:
     An adapter describes configuration, not independently verified model identity
     or successful task completion. Unknown implementations remain unknown.
     """
-    if isinstance(model, ScriptedModel):
-        return ExecutionInfo(kind="scripted", model_name=model.name)
-    if isinstance(model, OpenAICompatModel):
-        return ExecutionInfo(kind="provider_adapter", model_name=model.name)
+    active = getattr(model, "active_model", model)
+    if isinstance(active, ScriptedModel):
+        return ExecutionInfo(kind="scripted", model_name=active.name)
+    if isinstance(active, OpenAICompatModel):
+        return ExecutionInfo(kind="provider_adapter", model_name=active.name)
     return ExecutionInfo()

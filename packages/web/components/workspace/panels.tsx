@@ -1,6 +1,11 @@
 import { Icon } from "../icon";
 import { EmptyState, StatusPill } from "./ui";
-import type { AgentEvent, PlanStep, Snapshot } from "../../lib/contracts";
+import {
+  computeMissionStages,
+  type AgentEvent,
+  type PlanStep,
+  type Snapshot,
+} from "../../lib/contracts";
 
 const eventLabels: Record<string, string> = {
   run_started: "بدأت دورة المهمة",
@@ -137,6 +142,58 @@ export function ActivityPanel({ events }: { events: AgentEvent[] }) {
     </section>
   );
 }
+export function MissionStagesBar({
+  snapshot,
+  steps = [],
+}: {
+  snapshot: Snapshot | null;
+  steps?: PlanStep[];
+}) {
+  const stages = computeMissionStages(snapshot, steps);
+  const stageStatusLabel: Record<string, string> = {
+    idle: "لم تبدأ",
+    active: "جارية",
+    done: "مكتملة",
+    failed: "توقفت",
+  };
+  return (
+    <section
+      className="panel mission-stages-bar"
+      aria-label="مراحل مهمة Celia.sh — Mission OS"
+    >
+      <div className="panel-heading">
+        <div>
+          <span className="eyebrow">Celia.sh — Mission OS</span>
+          <h2>مسار المهمة من الفهم إلى التقرير الموثّق</h2>
+        </div>
+        <span className="count-label">4 مراحل</span>
+      </div>
+      <ol className="mission-stage-list">
+        {stages.map((stage, idx) => (
+          <li
+            key={stage.id}
+            className={`mission-stage-item stage-${stage.status}`}
+          >
+            <span className="mission-stage-index">
+              {stage.status === "done" ? (
+                <Icon name="check" width="15" />
+              ) : (
+                idx + 1
+              )}
+            </span>
+            <div>
+              <strong>{stage.titleAr}</strong>
+              <small dir="ltr">{stage.titleEn}</small>
+            </div>
+            <span className="mission-stage-badge">
+              {stageStatusLabel[stage.status]}
+            </span>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
 export function EvidencePanel({
   snapshot,
   runId,
@@ -169,15 +226,30 @@ export function EvidencePanel({
                 <div>
                   <strong className="technical">{artifact.filename}</strong>
                   <small>{artifact.mime_type}</small>
+                  {artifact.sha256 && (
+                    <small dir="ltr" className="technical">
+                      sha256:{artifact.sha256.slice(0, 12)}…
+                    </small>
+                  )}
                   {runId && (
-                    <a
-                      className="text-link"
-                      href={`/api/backend/artifacts/${encodeURIComponent(runId)}/${encodeURIComponent(artifact.filename)}`}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      فتح بيانات الملف <Icon name="link" width="13" />
-                    </a>
+                    <div className="artifact-links">
+                      <a
+                        className="text-link"
+                        href={`/api/backend/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(artifact.filename)}/download`}
+                        download={artifact.filename}
+                      >
+                        تنزيل الملف الموثّق (SHA-256){" "}
+                        <Icon name="arrow" width="13" />
+                      </a>
+                      <a
+                        className="text-link"
+                        href={`/api/backend/artifacts/${encodeURIComponent(runId)}/${encodeURIComponent(artifact.filename)}`}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        فتح بيانات الملف <Icon name="link" width="13" />
+                      </a>
+                    </div>
                   )}
                 </div>
               </li>
@@ -199,7 +271,8 @@ export function EvidencePanel({
         {artifacts.length > 0 && (
           <p className="section-note">
             المسار العام يعيد بيانات الملف بصيغة JSON؛ ليس رابط تنزيل مباشر.
-            تنزيل Markdown متاح في رحلة TXT.
+            تنزيل Markdown متاح في رحلة TXT، أو عبر رابط التنزيل الموثّق بـ
+            SHA-256 أعلاه.
           </p>
         )}
       </section>

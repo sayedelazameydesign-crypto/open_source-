@@ -31,3 +31,32 @@ test('malformed SSE rejected; unknown typed events remain safe', () => { assert.
 
 test('prototype-like unknown status gets a safe label', () => assert.match(view(ui.StatusPill, { status: 'constructor' }), /حالة غير معروفة/));
 test('prototype-like event type is safe and not rendered as a function', () => assert.match(view(panels.ActivityPanel, { events: [{ seq: 1, type: 'constructor', data: {} }] }), /حدث من الخادم/));
+test('mission stages bar renders all 4 Mission OS stages and honest status', () => {
+  const idleHtml = view(panels.MissionStagesBar, { snapshot: null, steps: [] });
+  assert.match(idleHtml, /1\. فهم المهمة/);
+  assert.match(idleHtml, /2\. إنشاء الخطة/);
+  assert.match(idleHtml, /3\. التنفيذ والتحقق بالأدلة/);
+  assert.match(idleHtml, /4\. تسليم النتيجة والتقرير/);
+  const stages = contracts.computeMissionStages(
+    {
+      run_id: 'run_1',
+      status: 'completed',
+      tool_results_summary: { recorded: 3, successful: 3, unsuccessful: 0 },
+      artifacts: [{ filename: 'mission-report.md', mime_type: 'text/markdown', kind: 'markdown', sha256: 'abcdef1234567890' }],
+    },
+    [{ id: 's1', title: 'Inspect', tool: 'inspect_project_files', status: 'done', attempts: 1 }],
+  );
+  assert.deepEqual(stages.map((s) => s.status), ['done', 'done', 'done', 'done']);
+});
+test('evidence panel includes SHA-256 verified download link alongside metadata route', () => {
+  const html = view(panels.EvidencePanel, {
+    runId: 'run_1',
+    snapshot: {
+      artifacts: [
+        { filename: 'mission-report.md', mime_type: 'text/markdown', kind: 'markdown', sha256: '1234567890abcdef1234' },
+      ],
+    },
+  });
+  assert.match(html, /\/api\/backend\/runs\/run_1\/artifacts\/mission-report\.md\/download/);
+  assert.match(html, /sha256:1234567890ab/);
+});

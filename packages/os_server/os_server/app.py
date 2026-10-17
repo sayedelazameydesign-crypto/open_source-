@@ -66,7 +66,7 @@ from collections.abc import AsyncIterator
 from contextlib import aclosing, asynccontextmanager, suppress
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from os_core.events import EventType, replay_and_stream
@@ -78,12 +78,14 @@ from os_orchestration.platform import Platform
 from os_tools.egress import EgressPolicy
 from pydantic import BaseModel
 
+from os_server.automation import ActivepiecesDispatcher, InboundWebhookVerifier
 from os_server.cela import (
     CelaBrowser,
     create_local_ai_router,
     create_private_router,
     private_auth_dependency,
 )
+from os_server.demo import build_demo_platform_for, free_tier_model_from_env
 from os_server.launcher_api import (
     LAUNCHER_API_PREFIX,
     LAUNCHER_PRIVATE_PREFIX,
@@ -127,7 +129,7 @@ class ApproveRequest(BaseModel):
 
 
 def create_app(
-    platform_or_factory: Platform | PlatformFactory,
+    platform_or_factory: Platform | PlatformFactory | None = None,
     *,
     api_token: str | None = None,
     private_api_token: str | None = None,
@@ -158,11 +160,16 @@ def create_app(
     ):
         raise ValueError("private_api_token must differ from api_token")
 
+    resolved_factory: Platform | PlatformFactory = (
+        platform_or_factory
+        if platform_or_factory is not None
+        else (lambda mode, max_steps: build_demo_platform_for(mode, max_steps=max_steps))
+    )
     rt = (
         runtime
         if runtime is not None
         else ApiRuntime(
-            platform_or_factory,
+            resolved_factory,
             egress_policy=egress_policy,
             ws_ticket_ttl=ws_ticket_ttl,
             store_url=store_url,
@@ -238,14 +245,80 @@ def create_app(
 
     app.include_router(document_router(rt.store, require_api_auth))
     cela_browser = CelaBrowser(runtime=rt)
+    webhook_dispatcher = ActivepiecesDispatcher()
+    webhook_verifier = InboundWebhookVerifier()
     app.state.runtime = rt
     app.state.cela = cela_browser
     app.state.mcp = None
     app.state.waapi = waapi
+    app.state.webhook_dispatcher = webhook_dispatcher
+    app.state.webhook_verifier = webhook_verifier
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
         return {"status": "ok"}
+
+    @app.get("/mission/status", dependencies=[Depends(require_api_auth)])
+    async def mission_status() -> dict[str, Any]:
+        model_obj = getattr(rt.platform, "model", None)
+        env_provider = free_tier_model_from_env()
+        return {
+            "status": "ok",
+            "product": "Celia.sh — Mission OS",
+            "version": PRODUCT_VERSION,
+            "core_capabilities": {
+                "deterministic_inspector_core": {
+                    "active": True,
+                    "requires_api_key": False,
+                    "tools": [
+                        "inspect_public_url",
+                        "inspect_project_files",
+                        "generate_deployment_plan_report",
+                    ],
+                },
+                "ssrf_and_egress_guard": {
+                    "active": True,
+                    "blocks_private_ip_and_metadata": True,
+                },
+                "durable_run_store": {
+                    "active": True,
+                    "backend": type(rt.store).__name__,
+                },
+                "verified_report_downloads": {
+                    "active": True,
+                    "formats": ["md", "json", "html"],
+                    "sha256_verified": True,
+                },
+            },
+            "optional_integrations": {
+                "llm_provider": {
+                    "configured": env_provider is not None,
+                    "provider_name": env_provider.name if env_provider is not None else None,
+                    "execution": describe_execution(model_obj).model_dump(),
+                    "fallback_mode": "deterministic_mission_core",
+                },
+                "activepieces_webhook": {
+                    "configured": webhook_dispatcher.enabled,
+                    "quota": webhook_dispatcher.quota_guard.snapshot(),
+                },
+            },
+        }
+
+    @app.post("/webhooks/activepieces")
+    async def receive_activepieces_webhook(request: Request) -> dict[str, Any]:
+        raw_body = await request.body()
+        sig = request.headers.get("x-celia-signature-256")
+        idem = request.headers.get("x-celia-idempotency-key")
+        try:
+            return webhook_verifier.verify_and_record(
+                payload=raw_body,
+                signature=sig,
+                idempotency_key=idem,
+            )
+        except PermissionError as exc:
+            raise HTTPException(503, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(401, str(exc)) from exc
 
     @app.get("/runtime-info", dependencies=[Depends(require_api_auth)])
     async def runtime_info() -> dict[str, Any]:

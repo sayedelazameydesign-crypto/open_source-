@@ -1,0 +1,29 @@
+# Celia.sh — Mission OS ($0 Free-Tier Deployment Blueprint for Render)
+# Pair with:
+# - Supabase Postgres Free (500 MB) via CELA_RUN_STORE_URL="postgresql://..."
+# - Cloudflare Pages / Workers for packages/web (with CELA_API_TOKEN kept server-side)
+# Secrets are marked sync: false and must NEVER be committed to Git.
+
+services:
+  - type: web
+    name: celia-mission-os-api
+    runtime: python
+    plan: free
+    buildCommand: pip install --upgrade pip && pip install -e ".[server]"
+    startCommand: uvicorn os_server.app:create_app --factory --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: CELA_API_TOKEN
+        sync: false
+      - key: CELA_PRIVATE_API_TOKEN
+        sync: false
+      - key: CELA_RUN_STORE_URL
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: CELA_ACTIVEPIECES_WEBHOOK_URL
+        sync: false
+      - key: CELA_ACTIVEPIECES_WEBHOOK_SECRET
+        sync: false

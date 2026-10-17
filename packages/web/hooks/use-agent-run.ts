@@ -220,6 +220,13 @@ export function useAgentRun() {
         if (!alive.current) return;
         activeRun.current = data.run_id;
         setRunId(data.run_id);
+        try {
+          const url = new URL(window.location.href);
+          url.searchParams.set("run_id", data.run_id);
+          window.history.replaceState(null, "", url.toString());
+        } catch {
+          /* history update optional */
+        }
         setBackend("available");
         void refreshSnapshot(data.run_id);
         void stream(data.run_id);
@@ -235,6 +242,39 @@ export function useAgentRun() {
     },
     [refreshSnapshot, stream],
   );
+  const loadRun = useCallback(
+    (id: string) => {
+      if (!/^run_[a-zA-Z0-9_-]+$/.test(id)) return;
+      abort.current?.abort();
+      activeRun.current = id;
+      seq.current = 0;
+      setRunId(id);
+      snapshotRef.current = null;
+      setSnapshot(null);
+      setEvents([]);
+      setNotice("");
+      try {
+        const url = new URL(window.location.href);
+        url.searchParams.set("run_id", id);
+        window.history.replaceState(null, "", url.toString());
+      } catch {
+        /* history update optional */
+      }
+      void refreshSnapshot(id);
+      void stream(id);
+    },
+    [refreshSnapshot, stream],
+  );
+  useEffect(() => {
+    try {
+      const param = new URLSearchParams(window.location.search).get("run_id");
+      if (param && /^run_[a-zA-Z0-9_-]+$/.test(param) && !activeRun.current) {
+        loadRun(param);
+      }
+    } catch {
+      /* URLSearchParams optional */
+    }
+  }, [loadRun]);
   const approve = useCallback(
     async (id: string, decision: "approved" | "denied") => {
       const current = activeRun.current;
@@ -274,6 +314,13 @@ export function useAgentRun() {
     setEvents([]);
     setNotice("");
     setConnection("idle");
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("run_id");
+      window.history.replaceState(null, "", url.toString());
+    } catch {
+      /* history update optional */
+    }
   }, []);
   useEffect(() => {
     if (!runId) return;
@@ -296,6 +343,7 @@ export function useAgentRun() {
     approving,
     execution: runId ? parseExecution(snapshot?.execution) : runtimeExecution,
     start,
+    loadRun,
     approve,
     reset,
     reconnect: () => {
