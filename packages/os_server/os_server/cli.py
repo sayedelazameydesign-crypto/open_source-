@@ -632,23 +632,20 @@ def _memory_forget(manager, memory_id: str, *, assume_yes: bool) -> int:
 
 
 def _know_index_file(store, path: str, *, corpus_id: str) -> int:
-    from os_know import DocumentInput
+    from os_know import read_document
 
     target = pathlib.Path(path)
     if not target.is_file():
         print(f"error: not a file: {path}", file=sys.stderr)
         return 1
-    text = target.read_text(encoding="utf-8", errors="replace")
-    document = store.index_document(
-        DocumentInput(
-            text=text,
-            corpus_id=corpus_id,
-            title=target.stem,
-            source_uri=f"file://{target.resolve()}",
-            mime="text/markdown" if target.suffix in {".md", ".markdown"} else "text/plain",
-            language="python" if target.suffix == ".py" else "",
-        )
-    )
+    try:
+        # The reader stage (ADR-0020): PDF/HTML/PNG get their text extracted
+        # locally (builtin OCR path), everything else is read verbatim — so one
+        # command indexes the formats a project's documentation actually ships in.
+        document = store.index_document(read_document(target, corpus_id=corpus_id))
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     print(f"indexed {document.doc_id} in corpus={document.corpus_id} chunks={document.chunk_count}")
     return 0
 
