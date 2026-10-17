@@ -54,6 +54,8 @@ const MIN_TIMEOUT_MS = 100;
 const MAX_TIMEOUT_MS = 60_000;
 const MAX_REDIRECTS = 2;
 const MAX_PATH_LENGTH = 2_048;
+/** JSON payloads only (a task string, an approval decision) — never uploads. */
+const MAX_BODY_BYTES = 1_048_576;
 const ALLOWED_METHODS = new Set(["GET", "HEAD", "POST"]);
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
@@ -158,6 +160,41 @@ function hasBody(request: Request): boolean {
   return request.method !== "GET" && request.method !== "HEAD" && request.body !== null;
 }
 
+/**
+ * Buffer the request body, refusing anything above {@link MAX_BODY_BYTES}.
+ *
+ * The body is buffered rather than streamed for two reasons: Workers and Node's
+ * undici disagree about whether a streamed body needs `duplex: "half"` (undici
+ * throws without it, and passing it is not portable everywhere), and buffering
+ * is what makes an upper bound enforceable before the bytes reach the backend.
+ */
+async function readBody(request: Request): Promise<ArrayBuffer | null | "too_large"> {
+  if (!hasBody(request)) return null;
+  const declared = Number.parseInt(request.headers.get("content-length") ?? "", 10);
+  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) return "too_large";
+
+  const reader = request.body!.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_BODY_BYTES) {
+      await reader.cancel();
+      return "too_large";
+    }
+    chunks.push(value);
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return merged.buffer as ArrayBuffer;
+}
+
 /** Strip a body where HTTP forbids one (Workers rejects 204/304 bodies). */
 function bodiless(status: number): boolean {
   return status === 204 || status === 205 || status === 304;
@@ -204,6 +241,11 @@ export async function onRequest({ request, env }: PagesContext): Promise<Respons
     return jsonError(503, "token_not_configured", `server is missing ${tokenVariable}`);
   }
 
+  const payload = await readBody(request);
+  if (payload === "too_large") {
+    return jsonError(413, "payload_too_large", "request body exceeds the 1 MiB proxy limit");
+  }
+
   const backendOrigin = new URL(backend.base).origin;
   const search = new URL(request.url).search;
   const deadline = Date.now() + timeoutFromEnv(env.CELA_BACKEND_TIMEOUT_MS);
@@ -216,7 +258,7 @@ export async function onRequest({ request, env }: PagesContext): Promise<Respons
       response = await fetch(target, {
         method: request.method,
         headers: upstreamHeaders(request, token),
-        body: hasBody(request) ? request.body : undefined,
+        body: payload ?? undefined,
         redirect: "manual",
         signal: AbortSignal.timeout(remaining),
       });

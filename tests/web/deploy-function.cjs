@@ -120,7 +120,10 @@ test('POST body and JSON content type are forwarded', async () => {
 
   assert.equal(calls[0].init.method, 'POST');
   assert.equal(calls[0].init.headers.get('content-type'), 'application/json');
-  assert.equal(await new Response(calls[0].init.body).text(), '{"task":"sum 0..100"}');
+  // The body is buffered, not streamed: `duplex` is not portable across
+  // Workers and Node's undici, and buffering is what makes the size cap real.
+  assert.ok(calls[0].init.body instanceof ArrayBuffer);
+  assert.equal(new TextDecoder().decode(calls[0].init.body), '{"task":"sum 0..100"}');
   assert.equal(res.status, 201);
   assert.equal(await res.text(), '{"run_id":"run_1"}');
 });
@@ -211,6 +214,18 @@ test('same-origin redirects are followed, cross-origin ones are refused', async 
   assert.equal(refused.status, 502);
   assert.equal(JSON.parse(await refused.text()).code, 'backend_redirect_refused');
   assert.equal(calls.length, 1);
+});
+
+test('oversized bodies are refused before reaching the backend', async () => {
+  stubFetch(() => jsonResponse({}));
+  const res = await call('/api/backend/runs', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: 'x'.repeat(1_048_577),
+  });
+  assert.equal(res.status, 413);
+  assert.equal(JSON.parse(await res.text()).code, 'payload_too_large');
+  assert.equal(calls.length, 0);
 });
 
 test('unsupported methods and empty paths are rejected before any fetch', async () => {
