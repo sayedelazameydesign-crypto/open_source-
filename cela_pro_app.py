@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 import gradio as gr
@@ -316,7 +317,18 @@ def _import_skill_resource(skill_text, skill_file, token):
             )
             if not file_path:
                 raise ValueError("ملف غير صالح")
-            path = Path(file_path)
+
+            upload_root = Path(tempfile.gettempdir()).resolve()
+            path = Path(file_path).resolve()
+
+            try:
+                path.relative_to(upload_root)
+            except ValueError as exc:
+                raise ValueError("مسار ملف غير مسموح") from exc
+
+            if not path.is_file():
+                raise ValueError("ملف غير صالح")
+
             if path.stat().st_size > MAX_SKILL_FILE_BYTES:
                 raise ValueError("ملف المهارة أكبر من الحد المسموح")
             text = path.read_text(encoding="utf-8", errors="strict")
