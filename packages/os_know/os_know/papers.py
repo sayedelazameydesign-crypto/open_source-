@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import tempfile
 from collections.abc import Iterable
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -130,6 +131,14 @@ def index_research_paper(
     )
 
 
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
 def read_research_paper(path: str | Path) -> str:
     """Read UTF-8 text/Markdown or extract text from a PDF using optional pypdf.
 
@@ -137,7 +146,15 @@ def read_research_paper(path: str | Path) -> str:
     extractable text is usually scanned; this helper intentionally does not start
     OCR or download a model behind the operator's back.
     """
-    target = Path(path)
+    target = Path(path).expanduser().resolve(strict=False)
+    safe_roots = (
+        Path(tempfile.gettempdir()).resolve(strict=False),
+        Path.cwd().resolve(strict=False),
+    )
+    if not any(
+        target == root or _is_relative_to(target, root) for root in safe_roots
+    ):
+        raise ValueError(f"path is outside allowed locations: {target}")
     if not target.is_file():
         raise ValueError(f"not a file: {target}")
     suffix = target.suffix.lower()
