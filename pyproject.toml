@@ -32,6 +32,11 @@ dev = [
     "pytest-asyncio>=0.24",
     "pytest-cov>=5.0",
     "ruff>=0.6",
+    # tests/test_eval_workflow_security.py parses the workflow YAML to
+    # assert the eval job cannot be given a free-text destination;
+    # the `reach` extra also pulls PyYAML, but CI installs only
+    # `[dev,server]`, so the test dependency is declared here.
+    "pyyaml>=6.0",
 ]
 server = [
     "fastapi>=0.115",
