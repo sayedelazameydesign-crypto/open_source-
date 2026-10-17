@@ -7,11 +7,14 @@ the cheapest tier that can plausibly do the job, under a hard token budget.
 
 from __future__ import annotations
 
+import os
 import re
+from collections.abc import Mapping
 from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from os_core.tokens import ESTIMATORS, LEGACY_CHARS_PER_TOKEN, TokenEstimator, estimate
 from os_core.types import ModelChoice
 
 ModelRole = Literal["planner", "fast", "vision", "critic"]
@@ -49,6 +52,9 @@ class TaskProfile(BaseModel):
     expected_tool_calls: bool = True
     complexity_hint: Literal["trivial", "normal", "complex"] = "normal"
     task_text: str = ""
+    #: Which rule produced ``prompt_tokens``. A budget decision that cannot name its
+    #: unit is unfalsifiable, and this field is the whole reason the unit is auditable.
+    token_source: str = "chars/4[legacy]"
 
 
 class RouterConfig(BaseModel):
@@ -59,6 +65,56 @@ class RouterConfig(BaseModel):
     cheap_planner_max_tokens: int = 6_000  # short prompts go to the fast tier
     force_role: ModelRole | None = None
     allow_fallback: bool = True
+    # Which rule turns a prompt into "tokens" for every threshold above. The
+    # default is the historical ``len(text) // 4`` — not because it is good, but
+    # because every budget number already published for this platform was
+    # produced with it, and silently re-basing a routing threshold on a different
+    # unit would make a tier change look like a quality change. ``"platform"`` is
+    # the language-aware estimate (Arabic is counted at 2.6 chars/token instead of
+    # 4.0), which stops a mixed-language run from being routed as if it were English.
+    token_estimator: TokenEstimator = "chars4"
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] | None = None) -> RouterConfig:
+        """Build from ``CELA_TOKEN_*``; an unknown estimator is fatal, never defaulted.
+
+        Falling back quietly here would be the worst possible failure mode: the run
+        would route correctly, bill correctly, and attribute any difference in tier
+        mix to the models instead of to the typo in the environment.
+        """
+        values = os.environ if env is None else env
+        config = cls()
+        raw_budget = str(values.get("CELA_TOKEN_BUDGET", "") or "").strip()
+        if raw_budget:
+            try:
+                config.token_budget = int(raw_budget)
+            except ValueError as exc:
+                raise ValueError(f"CELA_TOKEN_BUDGET={raw_budget!r} is not an integer") from exc
+        raw_estimator = str(values.get("CELA_TOKEN_ESTIMATOR", "") or "").strip()
+        if raw_estimator:
+            if raw_estimator not in ESTIMATORS:
+                raise ValueError(
+                    f"CELA_TOKEN_ESTIMATOR={raw_estimator!r} is not a token estimator; "
+                    f"expected one of {list(ESTIMATORS)}"
+                )
+            config.token_estimator = raw_estimator  # type: ignore[assignment]
+        return config
+
+    def estimator_info(self) -> dict[str, object]:
+        """How prompt sizes are counted here, and how far that is from being measured."""
+        return {
+            "estimator": self.token_estimator,
+            "chars_per_token": (
+                float(LEGACY_CHARS_PER_TOKEN)
+                if self.token_estimator == "chars4"
+                else None  # language-aware: the divisor depends on the text
+            ),
+            "counts_billed_tokens": False,
+            "note": (
+                "routing estimates only; the billed number is the provider's "
+                "usage.prompt_tokens, tracked by os_core.tokens.TokenCalibration"
+            ),
+        }
 
 
 class ModelRegistry(BaseModel):
@@ -131,7 +187,12 @@ class ModelRouter(BaseModel):
         is_review: bool = False,
         complexity_hint: Literal["trivial", "normal", "complex"] = "normal",
     ) -> TaskProfile:
-        prompt_tokens = max(1, len(text) // 4)
+        counted, token_source = estimate(text, self.config.token_estimator)
+        # Re-clamped here rather than inside ``estimate`` because the floor means
+        # different things in the two places: an empty *chunk* really is zero tokens,
+        # while an empty *task* must still cost something or it slips to the cheap
+        # tier through every threshold below.
+        prompt_tokens = max(1, counted)
         is_planning = (
             complexity_hint == "complex"
             or bool(_PLANNING_SIGNALS.search(text))
@@ -139,6 +200,7 @@ class ModelRouter(BaseModel):
         )
         return TaskProfile(
             prompt_tokens=prompt_tokens,
+            token_source=token_source,
             needs_vision=has_image,
             is_planning=is_planning,
             is_review=is_review,
