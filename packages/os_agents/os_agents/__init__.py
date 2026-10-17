@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from os_agents.budget import Budget, BudgetConfig, StopReason
 from os_agents.dag import PlanError, PlanGraph, parse_plan, validate
+from os_agents.escalation import DEFAULT_MAX_TASK_TOKENS, EscalationDecision, EscalationPolicy
 from os_agents.flow import FlowResult, PlanningFlow
 from os_agents.react import AgentResult, ReActAgent
 from os_agents.reviewer import HeuristicReviewer, ModelReviewer
@@ -31,11 +32,14 @@ from os_agents.validation import (
 )
 
 __all__ = [
+    "DEFAULT_MAX_TASK_TOKENS",
     "AgentResult",
     "Budget",
     "BudgetConfig",
     "CorrectionAttempt",
     "CorrectionResult",
+    "EscalationDecision",
+    "EscalationPolicy",
     "FlowResult",
     "HeuristicReviewer",
     "ModelReviewer",

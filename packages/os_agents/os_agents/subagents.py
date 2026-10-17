@@ -17,6 +17,11 @@ Three hard boundaries, all enforced in code rather than prompt text:
 3. **Bounds** — ``max_steps`` × ``max_seconds``. A sub-agent that cannot finish
    in bounds reports what it has; it does not negotiate for more.
 
+On top of them sits the *routing* layer (ADR-0021, :mod:`os_agents.escalation`):
+an :class:`EscalationPolicy` refuses tasks that do not fit the sub-agent before
+any inference happens, and marks exhausted runs as escalations so the
+orchestrator takes them over instead of re-delegating unchanged.
+
 Configs live in ``agents/sub_agents/`` as JSON *or* the plan's ``key: value``
 Markdown form (both parsed here), and the layer is wired to the orchestrator
 the same way memory and corpus tools are: the presence of a config directory
@@ -39,7 +44,9 @@ from os_core.resources import (
 )
 from os_core.types import Message, ToolCall, ToolResult, ToolStatus
 from os_tools.registry import Tool, ToolRegistry
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
+
+from os_agents.escalation import EscalationDecision, EscalationPolicy
 
 #: Where a local Ollama (or any OpenAI-compatible server) usually listens.
 DEFAULT_LOCAL_BASE_URL = "http://localhost:11434/v1"
@@ -86,6 +93,14 @@ class SubAgentResult(BaseModel):
     error: str | None = None
     elapsed_seconds: float = 0.0
     resource: ResourceCheck | None = None
+    #: Set when the escalation policy refused the delegation up front, or
+    #: escalated after a failed run (ADR-0021). ``None`` means "fit to task".
+    escalation: EscalationDecision | None = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def escalated(self) -> bool:
+        return self.escalation is not None and self.escalation.escalate
 
 
 # -- config loading ---------------------------------------------------------
@@ -259,10 +274,18 @@ class SubAgent(BaseModel):
 
 
 class SubAgentHub(BaseModel):
-    """The roster the orchestrator delegates to. Planning stays upstairs."""
+    """The roster the orchestrator delegates to. Planning stays upstairs.
+
+    ``policy`` is the measured-fit layer (ADR-0021): pre-delegation it refuses
+    planner-shaped / mutation-shaped / oversized tasks, and post-run it marks
+    exhausted runs as escalations so the orchestrator takes them over instead
+    of re-delegating unchanged. ``force=True`` bypasses *only* the precheck —
+    the tool allow-list is not a policy, so it never bypasses.
+    """
 
     agents: dict[str, SubAgent] = Field(default_factory=dict)
     default_agent: str = ""
+    policy: EscalationPolicy = Field(default_factory=EscalationPolicy)
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -293,10 +316,38 @@ class SubAgentHub(BaseModel):
             raise ValueError("no sub-agents configured")
         return self.agents[self.names()[0]]
 
-    async def delegate(self, task: str, *, agent: str = "") -> SubAgentResult:
+    async def delegate(self, task: str, *, agent: str = "", force: bool = False) -> SubAgentResult:
+        """Delegate *task*, escalating when the policy says it does not fit.
+
+        ``force=True`` skips the *precheck* only — an operator (or an
+        orchestrator that has already split the task) may insist a sub-agent
+        tries; the allow-list, the bounds and the resource gate stay exactly as
+        they are, and a failed forced run is still escalated afterwards.
+        """
         if not task.strip():
             raise ValueError("task is required")
-        return await self.pick(agent).run(task)
+        sub = self.pick(agent)
+        if not force:
+            decision = self.policy.precheck(task)
+            if decision.escalate:
+                return SubAgentResult(
+                    agent=sub.config.name,
+                    task=task,
+                    ok=False,
+                    stopped_reason="escalated",
+                    error=decision.reason,
+                    escalation=decision,
+                )
+        result = await sub.run(task)
+        if not result.ok:
+            post = self.policy.postcheck(
+                ok=result.ok,
+                stopped_reason=result.stopped_reason,
+                error=result.error or "",
+            )
+            if post.escalate:
+                result.escalation = post
+        return result
 
 
 def restricted_registry(parent: ToolRegistry, allowed: list[str]) -> ToolRegistry:
@@ -351,7 +402,10 @@ def subagent_tools(hub: SubAgentHub) -> list[Tool]:
 
     Registered onto the *main* agent's registry like ``memory_*``/``know_*``
     are — the orchestrator plans and directs, the sub-agent gathers. Both tools
-    are READ_ONLY because everything beneath them is.
+    are READ_ONLY because everything beneath them is. ``delegate_subagent``
+    reports escalations explicitly (``escalated`` + ``instruction``): an
+    escalated result is the tool telling the orchestrator *it* is the right
+    level for this task now (ADR-0021).
     """
     from os_core.types import RiskLevel
 
@@ -359,9 +413,16 @@ def subagent_tools(hub: SubAgentHub) -> list[Tool]:
         """List configured sub-agents (name, model, role, allowed tools)."""
         return {"agents": hub.describe()}
 
-    async def delegate_subagent(task: str, agent: str = "") -> dict[str, Any]:
-        """Delegate a read-only exploration task to a local sub-agent."""
-        result = await hub.delegate(task, agent=agent)
+    async def delegate_subagent(task: str, agent: str = "", force: bool = False) -> dict[str, Any]:
+        """Delegate a bounded read-only exploration task to a local sub-agent.
+
+        Returns escalation fields when the policy refused or the sub-agent
+        exhausted its attempts — follow ``instruction`` (usually: handle it in
+        the main loop). ``force`` skips the difficulty precheck only; the
+        read-only allow-list always applies.
+        """
+        result = await hub.delegate(task, agent=agent, force=force)
+        escalation = result.escalation
         return {
             "agent": result.agent,
             "ok": result.ok,
@@ -371,6 +432,9 @@ def subagent_tools(hub: SubAgentHub) -> list[Tool]:
             "tool_results": result.tool_results,
             "denied_tools": result.denied_tools,
             "error": result.error,
+            "escalated": result.escalated,
+            "escalation_signal": escalation.signal if escalation else "",
+            "instruction": escalation.instruction if escalation else "",
         }
 
     return [
@@ -385,7 +449,9 @@ def subagent_tools(hub: SubAgentHub) -> list[Tool]:
             name="delegate_subagent",
             description=(
                 "Delegate a bounded read-only exploration task (search/read/report) "
-                "to a local sub-agent. Planning stays with you; this is for data gathering."
+                "to a local sub-agent. Planning stays with you; this is for data "
+                "gathering. If the result carries escalated=true, follow its "
+                "instruction and handle the task in the main loop yourself."
             ),
             parameters={
                 "type": "object",
@@ -394,6 +460,12 @@ def subagent_tools(hub: SubAgentHub) -> list[Tool]:
                     "agent": {
                         "type": "string",
                         "description": "sub-agent name (default: the hub's default)",
+                    },
+                    "force": {
+                        "type": "boolean",
+                        "description": (
+                            "skip the difficulty precheck (allow-list and bounds still apply)"
+                        ),
                     },
                 },
                 "required": ["task"],
@@ -406,6 +478,8 @@ def subagent_tools(hub: SubAgentHub) -> list[Tool]:
 
 __all__ = [
     "DEFAULT_LOCAL_BASE_URL",
+    "EscalationDecision",
+    "EscalationPolicy",
     "SubAgent",
     "SubAgentConfig",
     "SubAgentHub",

@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 
-> **1069 اختبارًا ناجحًا · 1 متخطّى اختياريًا · 0 فشل · دون مفاتيح API ودون شبكة.**
+> **1086 اختبارًا ناجحًا · 1 متخطّى اختياريًا · 0 فشل · دون مفاتيح API ودون شبكة.**
 
 ---
 
@@ -132,7 +132,7 @@ packages/
 ## الاختبار
 
 ```bash
-pytest -q          # 1069 passed, 1 skipped (اختبار مخزن موزّع يتخطّى حين يكون psycopg مثبَّت)
+pytest -q          # 1086 passed, 1 skipped (اختبار مخزن موزّع يتخطّى حين يكون psycopg مثبَّت)
 ruff check .       # All checks passed
 ruff format .      # تنسيق موحّد
 ```
@@ -340,6 +340,7 @@ python -m os_server.cli run --demo "Sum the integers from 0 to 100"   # بلا �
 | `os_core.resources` | فحص RAM/CPU **قبل** أول استدعاء استدلال (`/proc/meminfo` ← `sysconf` ← `psutil` اختياريًا) | نقص ⇒ `LocalResourceError` ونتيجة `resource shortage` — لا OOM في منتصف تشغيل |
 | `os_know.reader` | `read_document`/`index_path`: PDF وPNG وHTML تُستخرج محليًا عبر `document_ocr` ثم تدخل المتجر المتجهي المحلي (‏`SQLiteKnowStore`) | سقف 5 MiB عند الحافة، وإعادة الاستخدام لا استيراد مكدّس OCR جديد |
 | `os_agents.validation` | `OutputContract` (‏Pydantic + أنماط + `compile()` لكود المخرج) و`SelfCorrectionLoop` يعيد الإنتاج مع سرد المخالفات | قبول بمحاولات مُوثَّقة، رفض عند `max_attempts` — التحقق لا يرمي أبدًا، المخالفات بيانات |
+| `os_agents.escalation` | تصعيد آلي قبل التفويض (`ModelRouter.profile` + إشارة قدرة + سقف توكنات) وبعده (حدود/موارد مُنهكة) — ADR-0021 | مهمة غير ملائمة تُرفض **قبل** أي استدلال وتُسلَّم للمنسّق بـ`instruction` صريح؛ `force` يتجاوز الفحص وحده لا السياج |
 
 أدوات الاستكشاف نفسها (`file_reader`/`grep_search`) مُحتوَية على جذر مساحة عمل، وقائمة رفض
 لملفات الأسرار، وتمرّ عليها `scrub_credentials` طبقةً ثانية. القرارات والحدود والمؤجَّل:
