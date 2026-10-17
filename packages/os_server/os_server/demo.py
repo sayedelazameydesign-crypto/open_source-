@@ -118,6 +118,16 @@ def build_registry(
         from os_know import know_tools
 
         registry.extend(know_tools(*know))
+    # Sub-agents (ADR-0020) are opt-in the same way: the config directory's
+    # presence *is* the switch. Point CELA_SUBAGENTS_DIR at agents/sub_agents
+    # and the orchestrator gains delegate_subagent/subagent_list over local
+    # read-only workers; unset, no roster exists and nothing changes.
+    subagents_dir = os.environ.get("CELA_SUBAGENTS_DIR")
+    if subagents_dir:
+        from os_agents.subagents import hub_from_directory, subagent_tools
+
+        hub = hub_from_directory(subagents_dir, root=os.environ.get("CELA_SUBAGENTS_ROOT", "."))
+        registry.extend(subagent_tools(hub))
     # MCP tools (ADR-0017) join the registry only after the process-wide layer
     # has *discovered* its servers — an async step the server performs in its
     # lifespan hook and the CLI performs before a run. Before discovery there

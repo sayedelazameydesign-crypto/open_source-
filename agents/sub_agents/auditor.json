@@ -1,0 +1,10 @@
+{
+  "name": "auditor",
+  "model": "deepseek-r1:1.5b",
+  "role": "Read-only audit: locate code/doc claims to verify before acceptance",
+  "allowed_tools": ["file_reader", "grep_search"],
+  "required_ram_gb": 2,
+  "max_steps": 8,
+  "max_seconds": 180,
+  "description": "JSON-form config twin of explorer.md — same allow-list, smaller model, longer bound. Used by the self-correction pass to gather evidence before a payload is accepted."
+}

@@ -8,11 +8,15 @@ works. That is this package.
 
 LlamaIndex is the obvious dependency here and is deliberately **not** taken: what
 is worth keeping from it is the pipeline shape (``reader → node → index →
-retriever`` as four swappable stages), not 52k stars of surface area.
+retriever`` as four swappable stages), not 52k stars of surface area. All four
+stages are now present: :mod:`os_know.reader` is the document reader (ADR-0020),
+the chunkers are the node stage, :class:`SQLiteKnowStore` the index, and
+:class:`KnowRetriever` the retriever.
 """
 
 from os_know.chunking import chunk_code, chunk_for, chunk_markdown, chunk_python, chunk_text
 from os_know.metrics import evaluate, mrr, recall_at_k
+from os_know.reader import index_path, mime_for, read_document
 from os_know.retrieve import KnowRetriever
 from os_know.store import (
     InMemoryKnowStore,
@@ -39,8 +43,11 @@ __all__ = [
     "chunk_python",
     "chunk_text",
     "evaluate",
+    "index_path",
     "know_store_from_url",
     "know_tools",
+    "mime_for",
     "mrr",
+    "read_document",
     "recall_at_k",
 ]

@@ -73,6 +73,12 @@ ai = [
     "paddleocr>=2.8",
     "faster-whisper>=1.0",
 ]
+# Resource preflight (ADR-0020) runs fine without psutil — procfs/sysconf cover
+# Linux and POSIX. Install this extra only where the richer psutil reading is
+# wanted (e.g. macOS process-level accounting for capacity planning).
+local = [
+    "psutil>=5.9",
+]
 
 [project.urls]
 Homepage = "https://github.com/sayedelazameydesign-crypto/open_source-"

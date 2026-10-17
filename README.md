@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 
-> **967 اختبارًا ناجحًا · 1 متخطّى اختياريًا · 0 فشل · دون مفاتيح API ودون شبكة.**
+> **1069 اختبارًا ناجحًا · 1 متخطّى اختياريًا · 0 فشل · دون مفاتيح API ودون شبكة.**
 
 ---
 
@@ -132,7 +132,7 @@ packages/
 ## الاختبار
 
 ```bash
-pytest -q          # 967 passed, 1 skipped (اختبار مخزن موزّع يتخطّى حين يكون psycopg مثبَّت)
+pytest -q          # 1069 passed, 1 skipped (اختبار مخزن موزّع يتخطّى حين يكون psycopg مثبَّت)
 ruff check .       # All checks passed
 ruff format .      # تنسيق موحّد
 ```
@@ -317,6 +317,33 @@ cela telemetry export --out trace.json     # OTLP/JSON بلا مجموعة جم�
 لعرض المشغّل عبر الفضاءات. أدوات `memory_*` **لا تكشف** الفضاء للنموذج، فلا يختار وكيلٌ ذاكرةَ مَن يقرأ.
 اسم فضاء غير صالح **خطأ إعداد** (رمز خروج 2) لا انزلاق صامت إلى `default`. الملفات المخزَّنة قبل هذا
 العمود تُرحَّل في مكانها (`ADD COLUMN`) وتُقرأ صفوفها في `default`.
+
+---
+
+## الوكلاء الفرعيون المحليون والتحقق الذاتي (`os_agents.subagents` — ADR-0020)
+
+تفويض روتيني **محدود ومغلق افتراضيًا**: المنسّق يخطّط، ووكيل خفيف محلي (‏`llama3:8b` عبر Ollama
+أي نقطة OpenAI-متوافقة) يجمع البيانات — بلا تكاليف API وبلا تبعيات نواة جديدة.
+
+```bash
+export CELA_SUBAGENTS_DIR=./agents/sub_agents   # الغياب = التعطيل
+export CELA_SUBAGENTS_ROOT=.                    # جذر أدوات القراءة
+python -m os_server.cli run --demo "Sum the integers from 0 to 100"   # بلا مفاتيح
+
+# ولنموذج محلي حقيقي عبر Ollama (نفس السجل نفسه، بلا تغيير في الوكلاء):
+#   OpenAICompatModel(base_url="http://localhost:11434/v1", model_id="llama3:8b")
+```
+
+| المكوّن | ما يفعله | الحدّ الذي يفرضه |
+|---|---|---|
+| `SubAgent` + `agents/sub_agents/*` | إعداد بصيغة JSON أو `key: value` (‏`explorer.md` صيغة الخطة حرفيًا)، وتفويض عبر `delegate_subagent`/`subagent_list` | قائمة أدوات صارمة (قراءة+بحث فقط) تُرفض **وتسجَّل** خارجها + حدود `max_steps`/`max_seconds` |
+| `os_core.resources` | فحص RAM/CPU **قبل** أول استدعاء استدلال (`/proc/meminfo` ← `sysconf` ← `psutil` اختياريًا) | نقص ⇒ `LocalResourceError` ونتيجة `resource shortage` — لا OOM في منتصف تشغيل |
+| `os_know.reader` | `read_document`/`index_path`: PDF وPNG وHTML تُستخرج محليًا عبر `document_ocr` ثم تدخل المتجر المتجهي المحلي (‏`SQLiteKnowStore`) | سقف 5 MiB عند الحافة، وإعادة الاستخدام لا استيراد مكدّس OCR جديد |
+| `os_agents.validation` | `OutputContract` (‏Pydantic + أنماط + `compile()` لكود المخرج) و`SelfCorrectionLoop` يعيد الإنتاج مع سرد المخالفات | قبول بمحاولات مُوثَّقة، رفض عند `max_attempts` — التحقق لا يرمي أبدًا، المخالفات بيانات |
+
+أدوات الاستكشاف نفسها (`file_reader`/`grep_search`) مُحتوَية على جذر مساحة عمل، وقائمة رفض
+لملفات الأسرار، وتمرّ عليها `scrub_credentials` طبقةً ثانية. القرارات والحدود والمؤجَّل:
+[`adr/0020-local-sub-agents-and-guardrails.md`](adr/0020-local-sub-agents-and-guardrails.md).
 
 ---
 
