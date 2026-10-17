@@ -176,6 +176,15 @@ CELA_EVAL_API_KEY="<token>" python -m os_evals run --suite builtin \
   حالة/تراجع، `2` لا قياس (تشغيل A/B انهارت فيه كل الحالات في الذراعين).
   التقرير يُكتب قبل رمز الخروج في كل الحالات.
 
+تقرير تشغيلي محلّيّ (دون نموذج) — يقيس **آلات التشغيل** لا النموذج: تنفيذ
+الصندوق في ReAct، تنفيذ خطوات الـDAG في PlanningFlow، وتوجيه `auto` في
+الاتجاهين. لا يقبل `--model-url` ولا `--dataset` بحكم التصميم حتى لا يُقرأ
+رقمه كأرقام جودة ([ADR-0012](adr/0012-real-model-eval-verification.md)):
+
+```bash
+python -m os_evals operations --out operations-report.json
+```
+
 ## قنوات المحتوى (`os_reach` — ADR-0013)
 
 طبقة قراءة للإنترنت العام: كل قناة تعلن ما تستطيع قراءته ومدى صحتها، والمنصة تحتفظ

@@ -4,6 +4,10 @@ Real-model example (vLLM on :8000):
 ``CELA_EVAL_MODEL_ID=deepseek-ai/DeepSeek-R1 python -m os_evals run
 --dataset gaia.jsonl --model-url http://localhost:8000/v1 --out report.json``
 
+Offline operational report (demo platform only — no ``--model-url``/
+``--dataset`` by design, see ``suites.operations_cases``):
+``python -m os_evals operations --out operations-report.json``
+
 Exit codes — the report is written *before* any of these is returned, so a
 non-zero run still leaves evidence on disk:
 
@@ -15,6 +19,8 @@ non-zero run still leaves evidence on disk:
 * ``2`` — nothing was measured at all: bad arguments/dataset, or every case in
   **both** A/B arms errored (wrong URL, key not injected). A zero delta there
   would be an artefact, not a result.
+* ``operations`` — ``0`` every case passed, ``1`` a case failed, ``2`` every
+  case errored (no measurement); same report-first rule as above.
 """
 
 from __future__ import annotations
@@ -27,7 +33,7 @@ import sys
 from pathlib import Path
 
 from os_evals.harness import EvalReport, EvalRunner, load_jsonl
-from os_evals.suites import builtin_cases
+from os_evals.suites import builtin_cases, operations_cases
 
 
 def _all_errored(report: EvalReport) -> bool:
@@ -71,6 +77,36 @@ def _real_factory(
     return factory
 
 
+def _operations(out: str | None) -> int:
+    """Run the offline operations suite and write/report it like ``run`` does.
+
+    Deliberately its own command rather than a ``--suite`` choice: there is no
+    dataset, no model URL and no A/B flag to reach for here, so the plumbing
+    report cannot be dressed up as model-quality numbers (ADR-0012).
+    """
+    print(
+        "note: operations is an offline operational check of the platform machinery "
+        "(sandbox execution, DAG flow, auto routing) on the demo platform — a "
+        "plumbing report, not a model-quality benchmark (ADR-0012)",
+        file=sys.stderr,
+    )
+    report = asyncio.run(EvalRunner(_demo_factory).run_suite(operations_cases()))
+    payload = report.model_dump_json(indent=2)
+    print(payload)
+    if out:
+        Path(out).write_text(payload, encoding="utf-8")
+    if _all_errored(report):
+        # Same false-signal class as `run`: every case crashed, so "0 passed"
+        # would measure nothing. The report stays on disk for inspection.
+        print(
+            "error: every operations case errored — the report was still written "
+            "but contains no measurement",
+            file=sys.stderr,
+        )
+        return 2
+    return 0 if report.passed == report.total else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="os-evals", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -97,7 +133,21 @@ def main(argv: list[str] | None = None) -> int:
         "Exit 0 here means 'no regression from skills', not 'all cases passed' "
         "— read the pass rates in the report for that",
     )
+    ops = sub.add_parser(
+        "operations",
+        help="offline operational report: sandbox/DAG/routing plumbing on the "
+        "demo platform (not a model-quality benchmark)",
+        description="Offline operations report. Runs the deterministic "
+        "`operations` suite against the demo platform — sandbox execution, "
+        "DAG flow, and both auto-routing directions. No --model-url/--dataset "
+        "exist here by design: these are machinery checks, not model numbers "
+        "(ADR-0012). Exit 0 all passed, 1 a case failed, 2 no measurement.",
+    )
+    ops.add_argument("--out", default=None, help="write the JSON report here")
     args = parser.parse_args(argv)
+
+    if args.command == "operations":
+        return _operations(args.out)
 
     if args.dataset:
         cases = load_jsonl(args.dataset)

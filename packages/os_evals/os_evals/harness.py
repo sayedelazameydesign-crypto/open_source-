@@ -132,6 +132,12 @@ class EvalRunner:
 
     async def run_case(self, case: EvalCase) -> CaseResult:
         platform = self.platform_factory(case.mode, case.max_steps)
+        if case.mode == "auto" and platform.config.mode == "auto":
+            # Mirror ``ApiRuntime.start_run``: a mode-specific factory must
+            # receive the *resolved* mode before its transcript/model is bound
+            # (the demo ships one scripted transcript per mode). Resolve the
+            # route, rebuild once, then run — the task executes exactly once.
+            platform = self.platform_factory(platform.choose_mode(case.task), case.max_steps)
         started = time.perf_counter()
         try:
             state = await platform.run(case.task)

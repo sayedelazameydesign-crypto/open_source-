@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from os_core.types import ModelResponse, Usage
 from os_evals.cli import main as eval_main
 from os_server.demo import build_demo_platform_for
 
-from os_evals import Checker, EvalRunner, builtin_cases, load_jsonl
+from os_evals import Checker, EvalRunner, builtin_cases, load_jsonl, operations_cases
 
 
 class _StubModel:
@@ -250,3 +251,62 @@ def test_cli_missing_key_names_the_env_var(tmp_path, monkeypatch, capsys) -> Non
     assert "CELA_MISSING_KEY_XYZ is not set" in payload["results"][0]["error"]
     # ...and the operator is told on stderr, not left to diff the report.
     assert "CELA_MISSING_KEY_XYZ" in capsys.readouterr().err
+
+
+async def test_operations_suite_runs_offline_end_to_end() -> None:
+    runner = EvalRunner(lambda mode, max_steps: build_demo_platform_for(mode))
+    report = await runner.run_suite(operations_cases())
+    assert report.total == 4
+    assert report.passed == 4, report.model_dump_json()
+    assert report.by_suite["operations"]["pass_rate"] == 1.0
+    # The suite covers both modes plus auto routing in both directions.
+    assert [c.mode for c in operations_cases()] == ["react", "flow", "auto", "auto"]
+
+
+async def test_eval_runner_resolves_auto_before_binding_the_factory() -> None:
+    """``mode=auto`` must reach a mode-specific factory as the resolved mode.
+
+    Same rule as ``ApiRuntime.start_run``: the demo ships one scripted
+    transcript per mode, so building for ``auto`` and only then routing leaves
+    a planning task with a ReAct transcript (and no executable plan).
+    """
+    seen: list[str] = []
+
+    def factory(mode: str, max_steps: int):
+        seen.append(mode)
+        return build_demo_platform_for(mode, max_steps=max_steps)
+
+    case = next(c for c in operations_cases() if c.id == "operations-auto-routes-flow")
+    report = await EvalRunner(factory).run_suite([case])
+    assert report.passed == 1, report.model_dump_json()
+    assert seen == ["auto", "flow"]  # probe for the route, then rebuild resolved
+
+
+def test_cli_operations_writes_report(tmp_path, capsys) -> None:
+    """The operational command: exit 0, report on disk, honesty note on stderr."""
+    out = tmp_path / "operations-report.json"
+    code = eval_main(["operations", "--out", str(out)])
+    assert code == 0
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["pass_rate"] == 1.0
+    assert set(payload["by_suite"]) == {"operations"}
+    assert {r["id"] for r in payload["results"]} == {
+        "operations-react-sandbox",
+        "operations-flow-dag",
+        "operations-auto-routes-react",
+        "operations-auto-routes-flow",
+    }
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["total"] == 4  # stdout stays pure JSON
+    # The report must not be readable as a model-quality benchmark.
+    assert "not a model-quality benchmark" in captured.err
+
+
+def test_cli_operations_refuses_model_and_dataset_flags() -> None:
+    """ADR-0012 by construction: machinery checks can never cite a model."""
+    with pytest.raises(SystemExit) as excinfo:
+        eval_main(["operations", "--model-url", "http://localhost:8000/v1"])
+    assert excinfo.value.code == 2
+    with pytest.raises(SystemExit) as excinfo:
+        eval_main(["operations", "--dataset", "gaia.jsonl"])
+    assert excinfo.value.code == 2
