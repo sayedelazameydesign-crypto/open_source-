@@ -122,7 +122,10 @@ packages = [
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]
-addopts = "-ra --strict-markers"
+# ``-m "not network"``: live-channel tests (ADR-0013) never run in the default
+# suite — the promise is ``pytest -q`` with no network and no keys. Run them
+# explicitly with ``pytest -m network`` (CLI -m overrides this default).
+addopts = "-ra --strict-markers -m \"not network\""
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 pythonpath = [

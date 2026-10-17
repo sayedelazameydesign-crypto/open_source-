@@ -9,7 +9,7 @@ from os_evals.harness import (
     compare_reports,
     load_jsonl,
 )
-from os_evals.suites import builtin_cases
+from os_evals.suites import builtin_cases, operations_cases, reach_cases
 
 __all__ = [
     "CaseResult",
@@ -20,4 +20,6 @@ __all__ = [
     "builtin_cases",
     "compare_reports",
     "load_jsonl",
+    "operations_cases",
+    "reach_cases",
 ]

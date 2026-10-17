@@ -176,6 +176,31 @@ CELA_EVAL_API_KEY="<token>" python -m os_evals run --suite builtin \
   حالة/تراجع، `2` لا قياس (تشغيل A/B انهارت فيه كل الحالات في الذراعين).
   التقرير يُكتب قبل رمز الخروج في كل الحالات.
 
+تقرير تشغيلي محلّيّ (دون نموذج) — يقيس **آلات التشغيل** لا النموذج: تنفيذ
+الصندوق في ReAct، تنفيذ خطوات الـDAG في PlanningFlow، وتوجيه `auto` في
+الاتجاهين. لا يقبل `--model-url` ولا `--dataset` بحكم التصميم حتى لا يُقرأ
+رقمه كأرقام جودة ([ADR-0012](adr/0012-real-model-eval-verification.md)):
+
+```bash
+python -m os_evals operations --out operations-report.json
+```
+
+مجموعة القنوات الحيّة (`reach` — [ADR-0013](adr/0013-reach-channels.md)): أربع
+حالات تجلب فعليًا عبر `web_read`/`rss_read`/`github_repo`/`github_search`، والفحص
+يقرأ **ملاحظة الأداة المسجّلة** — حقيقة لا تتغيّر (`full_name`، شكل رابط commit،
+`Example Domain`) — لا صياغة الجواب. تُشترط شبكة حقيقية ونموذج حقيقي وقنوات
+مسجّلة؛ يرفض الأمر التنفيذ برمز `2` قبل أي قياس إن نقص أحدهما، و`--ab-skills`
+يقيس على الحالات نفسها أثر المهارات على القنوات:
+
+```bash
+CELA_REACH_ENABLE=1 CELA_EVAL_API_KEY="<token>" python -m os_evals run --suite reach \
+  --model-url https://gateway.example.com/v1 --model-id <model> \
+  --out reach-report.json
+```
+
+فحوص الانحراف الحيّة (تُعيد الفحوص على القنوات الحقيقية) بعلامة `network`
+ومُستثناة من `pytest -q` بحكم `addopts`: تشغيلها `pytest -m network`.
+
 ## قنوات المحتوى (`os_reach` — ADR-0013)
 
 طبقة قراءة للإنترنت العام: كل قناة تعلن ما تستطيع قراءته ومدى صحتها، والمنصة تحتفظ
