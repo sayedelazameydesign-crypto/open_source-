@@ -1,9 +1,13 @@
-"""Built-in offline suites (``builtin``, ``operations``): deterministic, no models, no network.
+"""Built-in suites: offline (``builtin``, ``operations``) and live (``reach``).
 
-These cases run against the demo platform, so they validate the harness
-end-to-end in CI. Real GAIA / SWE-bench numbers come from supplying the
-dataset JSONL plus a real model server (see cli.py) — the harness is the
-same; only the platform factory changes.
+The offline two run against the demo platform with no models and no network,
+so they validate the harness end-to-end in CI. ``reach_cases`` is the deliberate
+exception: live fetches through a real model (ADR-0013), refused unless
+``--model-url`` and ``CELA_REACH_ENABLE=1`` are both present.
+
+Real GAIA / SWE-bench numbers come from supplying the dataset JSONL plus a real
+model server (see cli.py) — the harness is the same; only the platform factory
+changes.
 
 The same suite is what ``--model-url`` smoke-tests a live endpoint with,
 so its checkers must stay **model-agnostic**: they may assert answer content,
@@ -104,5 +108,73 @@ def operations_cases() -> list[EvalCase]:
             # auto must pick the DAG for a planning-shaped task: routed to
             # ReAct by mistake, no DAG step ever prints this observation.
             checker=Checker(kind="regex", expected=flow_observations),
+        ),
+    ]
+
+
+def reach_cases() -> list[EvalCase]:
+    """Live channel suite (ADR-0013 stage 4): fetch it or the case fails.
+
+    Each case instructs the model to call one reach channel and checks the
+    **recorded tool observation** for an immutable fact of the live response —
+    a repository's ``full_name``, a commit-link shape, ``Example Domain``.
+    That is deliberately stronger than asking the model to repeat the fact in
+    its answer: the checker then verifies what the *channel* returned, never
+    how the model phrased anything (the answer-content half of ADR-0012), and
+    a model that skips the tool cannot pass by reciting training data in the
+    JSON shape the tool emits.
+
+    Facts are chosen for half-life: identifiers GitHub cannot rename and a
+    page that has said ``Example Domain`` for decades — never star counts,
+    titles or search rankings. Live by construction (``web_read`` /
+    ``rss_read`` / ``github_*`` open real sockets), so the CLI refuses this
+    suite without ``--model-url`` and without ``CELA_REACH_ENABLE=1``; the
+    drift-guard tests that replay these checkers against the real channels
+    carry the pytest ``network`` marker and stay out of ``pytest -q``.
+    """
+    return [
+        EvalCase(
+            id="reach-web-example-org",
+            suite="reach",
+            task=(
+                "Use the web_read tool to fetch https://example.org/ and then "
+                "state the title of the page you received."
+            ),
+            mode="react",
+            checker=Checker(kind="substring", expected="Example Domain"),
+        ),
+        EvalCase(
+            id="reach-rss-cpython-commits",
+            suite="reach",
+            task=(
+                "Use the rss_read tool to read the feed "
+                "https://github.com/python/cpython/commits.atom and report the "
+                "latest entry's title and link."
+            ),
+            mode="react",
+            checker=Checker(
+                kind="regex",
+                expected=r'"link": "https://github\.com/python/cpython/commit/[0-9a-f]{7,64}"',
+            ),
+        ),
+        EvalCase(
+            id="reach-github-repo-cpython",
+            suite="reach",
+            task=(
+                "Use the github_repo tool on the repository python/cpython and "
+                "report its full name, primary language and star count."
+            ),
+            mode="react",
+            checker=Checker(kind="substring", expected='"full_name": "python/cpython"'),
+        ),
+        EvalCase(
+            id="reach-github-search-static-analysis",
+            suite="reach",
+            task=(
+                'Use the github_search tool to search for "static analysis" '
+                "repositories with limit 3, and report the top result's full name."
+            ),
+            mode="react",
+            checker=Checker(kind="regex", expected=r'"full_name": "[^"]+/[^"]+"'),
         ),
     ]

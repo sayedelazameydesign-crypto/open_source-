@@ -185,6 +185,22 @@ CELA_EVAL_API_KEY="<token>" python -m os_evals run --suite builtin \
 python -m os_evals operations --out operations-report.json
 ```
 
+مجموعة القنوات الحيّة (`reach` — [ADR-0013](adr/0013-reach-channels.md)): أربع
+حالات تجلب فعليًا عبر `web_read`/`rss_read`/`github_repo`/`github_search`، والفحص
+يقرأ **ملاحظة الأداة المسجّلة** — حقيقة لا تتغيّر (`full_name`، شكل رابط commit،
+`Example Domain`) — لا صياغة الجواب. تُشترط شبكة حقيقية ونموذج حقيقي وقنوات
+مسجّلة؛ يرفض الأمر التنفيذ برمز `2` قبل أي قياس إن نقص أحدهما، و`--ab-skills`
+يقيس على الحالات نفسها أثر المهارات على القنوات:
+
+```bash
+CELA_REACH_ENABLE=1 CELA_EVAL_API_KEY="<token>" python -m os_evals run --suite reach \
+  --model-url https://gateway.example.com/v1 --model-id <model> \
+  --out reach-report.json
+```
+
+فحوص الانحراف الحيّة (تُعيد الفحوص على القنوات الحقيقية) بعلامة `network`
+ومُستثناة من `pytest -q` بحكم `addopts`: تشغيلها `pytest -m network`.
+
 ## قنوات المحتوى (`os_reach` — ADR-0013)
 
 طبقة قراءة للإنترنت العام: كل قناة تعلن ما تستطيع قراءته ومدى صحتها، والمنصة تحتفظ

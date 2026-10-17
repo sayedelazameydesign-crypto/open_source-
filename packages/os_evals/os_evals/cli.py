@@ -8,6 +8,11 @@ Offline operational report (demo platform only — no ``--model-url``/
 ``--dataset`` by design, see ``suites.operations_cases``):
 ``python -m os_evals operations --out operations-report.json``
 
+Live channel suite (ADR-0013): ``run --suite reach`` fetches through
+``web_read``/``rss_read``/``github_*`` — requires ``--model-url`` and
+``CELA_REACH_ENABLE=1``, both refused by the CLI when missing, because the
+offline demo transcript never calls a reach tool.
+
 Exit codes — the report is written *before* any of these is returned, so a
 non-zero run still leaves evidence on disk:
 
@@ -33,7 +38,7 @@ import sys
 from pathlib import Path
 
 from os_evals.harness import EvalReport, EvalRunner, load_jsonl
-from os_evals.suites import builtin_cases, operations_cases
+from os_evals.suites import builtin_cases, operations_cases, reach_cases
 
 
 def _all_errored(report: EvalReport) -> bool:
@@ -111,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="os-evals", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     run = sub.add_parser("run", help="run an evaluation suite")
-    run.add_argument("--suite", default="builtin", choices=["builtin", "custom"])
+    run.add_argument("--suite", default="builtin", choices=["builtin", "custom", "reach"])
     run.add_argument("--dataset", default=None, help="GAIA/SWE-bench-style JSONL")
     run.add_argument("--model-url", default=os.environ.get("CELA_EVAL_MODEL_URL"))
     run.add_argument("--model-id", default=os.environ.get("CELA_EVAL_MODEL_ID", ""))
@@ -156,9 +161,34 @@ def main(argv: list[str] | None = None) -> int:
             return 2
     elif args.suite == "builtin":
         cases = builtin_cases()
+    elif args.suite == "reach":
+        cases = reach_cases()
     else:
         print("error: --suite custom requires --dataset", file=sys.stderr)
         return 2
+
+    if args.suite == "reach":
+        # Both gates are measurements-or-nothing, not advice: without a real
+        # model the demo transcript never calls a reach tool (every case would
+        # "fail" without fetching), and without the registration the tools do
+        # not exist in the registry. Exit 2 before running: no measurement.
+        if not args.model_url:
+            print(
+                "error: --suite reach performs live fetches and needs a real model "
+                "(--model-url/--model-id); the offline demo transcript never calls "
+                "reach tools",
+                file=sys.stderr,
+            )
+            return 2
+        if os.environ.get("CELA_REACH_ENABLE") != "1":
+            print(
+                "error: --suite reach needs the reach channels registered — export "
+                "CELA_REACH_ENABLE=1 (optionally narrow hosts via "
+                "CELA_REACH_ALLOW_HOSTS) so web_read/rss_read/github_* exist in the "
+                "tool registry",
+                file=sys.stderr,
+            )
+            return 2
 
     if args.model_url:
         if not args.model_id:
@@ -192,6 +222,18 @@ def main(argv: list[str] | None = None) -> int:
             "note: --suite builtin against a live model is a plumbing smoke test "
             "(2 cases), not a model-quality benchmark; pass --dataset <jsonl> "
             "with GAIA/SWE-bench rows for real numbers",
+            file=sys.stderr,
+        )
+
+    if args.suite == "reach" and args.model_url:
+        # Said out loud (stdout stays pure JSON): what a green reach run means
+        # is "the channels fetched live data", not "the model is good" — the
+        # checkers read the recorded tool observation, not the phrasing.
+        print(
+            "note: --suite reach performs live network fetches through "
+            "web_read/rss_read/github_*; checkers pin immutable facts in the "
+            "recorded tool observation — what the channel returned, never how "
+            "the model phrased the answer (ADR-0012/ADR-0013)",
             file=sys.stderr,
         )
 

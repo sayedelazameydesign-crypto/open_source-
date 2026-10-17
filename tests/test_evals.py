@@ -9,7 +9,7 @@ from os_core.types import ModelResponse, Usage
 from os_evals.cli import main as eval_main
 from os_server.demo import build_demo_platform_for
 
-from os_evals import Checker, EvalRunner, builtin_cases, load_jsonl, operations_cases
+from os_evals import Checker, EvalRunner, builtin_cases, load_jsonl, operations_cases, reach_cases
 
 
 class _StubModel:
@@ -310,3 +310,144 @@ def test_cli_operations_refuses_model_and_dataset_flags() -> None:
     with pytest.raises(SystemExit) as excinfo:
         eval_main(["operations", "--dataset", "gaia.jsonl"])
     assert excinfo.value.code == 2
+
+
+def test_reach_suite_checkers_match_the_tools_json_shape() -> None:
+    """Offline contract: checkers accept the exact serialization the tools emit.
+
+    ``os_reach.tools`` returns ``json.dumps(..., ensure_ascii=False, indent=2)``
+    (and ``web_read`` plain text), so a live run's observation must satisfy
+    these checkers — and a wrong fact must not.
+    """
+    cases = {c.id: c for c in reach_cases()}
+    assert set(cases) == {
+        "reach-web-example-org",
+        "reach-rss-cpython-commits",
+        "reach-github-repo-cpython",
+        "reach-github-search-static-analysis",
+    }
+    assert all(c.suite == "reach" and c.mode == "react" for c in cases.values())
+
+    repo = json.dumps(
+        {"full_name": "python/cpython", "language": "Python", "stars": 1},
+        ensure_ascii=False,
+        indent=2,
+    )
+    assert cases["reach-github-repo-cpython"].checker.check(repo)
+    other = json.dumps({"full_name": "python/docs"}, ensure_ascii=False, indent=2)
+    assert not cases["reach-github-repo-cpython"].checker.check(other)
+
+    search = json.dumps(
+        [{"full_name": "koalaman/shellcheck", "stars": 1}], ensure_ascii=False, indent=2
+    )
+    assert cases["reach-github-search-static-analysis"].checker.check(search)
+    assert not cases["reach-github-search-static-analysis"].checker.check("[]")
+
+    feed = json.dumps(
+        [{"title": "x", "link": "https://github.com/python/cpython/commit/" + "0" * 40}],
+        ensure_ascii=False,
+        indent=2,
+    )
+    assert cases["reach-rss-cpython-commits"].checker.check(feed)
+
+    assert cases["reach-web-example-org"].checker.check("<title>Example Domain</title>")
+    # A confident answer with no fetch must not pass.
+    assert not cases["reach-web-example-org"].checker.check("The page is about examples.")
+
+
+def test_cli_reach_suite_requires_a_real_model(capsys) -> None:
+    """No model, no run: the demo transcript never calls a reach tool."""
+    assert eval_main(["run", "--suite", "reach"]) == 2
+    err = capsys.readouterr().err
+    assert "--model-url" in err and "reach tools" in err
+
+
+def test_cli_reach_suite_requires_reach_registration(capsys, monkeypatch) -> None:
+    """No registration, no run: the tools must exist in the registry first."""
+    monkeypatch.delenv("CELA_REACH_ENABLE", raising=False)
+    code = eval_main(
+        [
+            "run",
+            "--suite",
+            "reach",
+            "--model-url",
+            "https://gateway.example.com/v1",
+            "--model-id",
+            "some-model",
+        ]
+    )
+    assert code == 2
+    assert "CELA_REACH_ENABLE" in capsys.readouterr().err
+
+
+def test_cli_reach_suite_runs_and_records_a_tool_skipping_model(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """Wiring proof without a network: a model that fetches nothing fails 4/4.
+
+    Exit 1 (not 2): every case *measured* — the platform ran to completion —
+    the model just never called a channel, so no checker passed. The report
+    keeps the evidence and the stderr note says what a green run would mean.
+    """
+    monkeypatch.setenv("CELA_REACH_ENABLE", "1")
+    monkeypatch.setenv("CELA_EVAL_API_KEY", "never-sent-anywhere")
+    monkeypatch.setattr("os_core.models.OpenAICompatModel", _StubModel)
+    out = tmp_path / "reach-report.json"
+    code = eval_main(
+        [
+            "run",
+            "--suite",
+            "reach",
+            "--model-url",
+            "https://gateway.example.com/v1",
+            "--model-id",
+            "stub-model",
+            "--out",
+            str(out),
+        ]
+    )
+    assert code == 1
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["total"] == 4 and payload["passed"] == 0
+    assert payload["by_suite"]["reach"]["total"] == 4
+    assert all(r["status"] == "completed" for r in payload["results"])
+    captured = capsys.readouterr()
+    assert "live network fetches" in captured.err
+    assert "never-sent-anywhere" not in captured.out
+    assert "never-sent-anywhere" not in str(payload)
+
+
+async def _reach_tool(name: str):
+    from os_reach.registry import build_native_registry
+    from os_reach.tools import reach_tools
+
+    tools = {t.name: t for t in reach_tools(build_native_registry())}
+    return tools[name]
+
+
+@pytest.mark.network
+async def test_reach_checker_facts_still_hold_live_github_channels() -> None:
+    """Drift guard (live): the checker facts are what the real channels return.
+
+    Deselected from ``pytest -q`` by addopts; run with ``pytest -m network``.
+    Needs outbound access to github.com/api.github.com only.
+    """
+    cases = {c.id: c for c in reach_cases()}
+    repo_out = await (await _reach_tool("github_repo")).fn(repo="python/cpython")
+    assert cases["reach-github-repo-cpython"].checker.check(repo_out), repo_out[:300]
+    search_out = await (await _reach_tool("github_search")).fn(query="static analysis", limit=3)
+    assert cases["reach-github-search-static-analysis"].checker.check(search_out), str(search_out)[
+        :300
+    ]
+    feed_out = await (await _reach_tool("rss_read")).fn(
+        url="https://github.com/python/cpython/commits.atom", limit=3
+    )
+    assert cases["reach-rss-cpython-commits"].checker.check(feed_out), str(feed_out)[:300]
+
+
+@pytest.mark.network
+async def test_reach_checker_fact_still_holds_live_example_org() -> None:
+    """Drift guard (live) for the web channel: example.org keeps its title."""
+    cases = {c.id: c for c in reach_cases()}
+    page = await (await _reach_tool("web_read")).fn(url="https://example.org/")
+    assert cases["reach-web-example-org"].checker.check(page), str(page)[:300]
