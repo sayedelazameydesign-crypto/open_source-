@@ -335,6 +335,12 @@ class PostgresRunStore:
         self._lock = threading.RLock()
         self._schema_ready = False
 
+    def __repr__(self) -> str:
+        from os_core.redact import scrub_credentials
+
+        safe_dsn = scrub_credentials(self.dsn) if self.dsn else ""
+        return f"PostgresRunStore(dsn={safe_dsn!r})"
+
     def _connection(self) -> Any:
         if self._conn is None:
             if self._factory is not None:
@@ -346,7 +352,14 @@ class PostgresRunStore:
                     raise RuntimeError(
                         "psycopg is not installed; run: pip install 'cela-use-browser[distributed]'"
                     ) from None
-                self._conn = psycopg.connect(self.dsn) if self.dsn else psycopg.connect()
+                try:
+                    self._conn = psycopg.connect(self.dsn) if self.dsn else psycopg.connect()
+                except Exception as exc:
+                    from os_core.redact import scrub_credentials
+
+                    raise RuntimeError(
+                        scrub_credentials(f"PostgreSQL connection failed: {exc}")
+                    ) from None
             self._ensure_schema()
         return self._conn
 
@@ -607,24 +620,26 @@ class DistributedRunStore:
         self.durable.close()
 
 
-def run_store_from_url(url: str | None) -> RunStore:
+def run_store_from_url(url: str | None, *, connection_factory: Any = None) -> RunStore:
     """Build a store from ``memory://`` / ``sqlite:///<path>`` / a bare path.
 
-    ``postgres://`` selects :class:`PostgresRunStore`; ``distributed://``
-    (with ``CELA_POSTGRES_URL`` + ``CELA_REDIS_URL``) selects the Postgres +
-    Redis Streams composition. A bare ``redis://`` is rejected loudly:
-    silently downgrading it to memory would fake a durability guarantee.
+    ``postgres://`` and ``postgresql://`` select :class:`PostgresRunStore`;
+    ``distributed://`` (with ``CELA_POSTGRES_URL`` + ``CELA_REDIS_URL``)
+    selects the Postgres + Redis Streams composition. A bare ``redis://`` is
+    rejected loudly: silently downgrading it to memory would fake a durability
+    guarantee.
     """
     if not url or url == "memory://":
         return InMemoryRunStore()
     if url.startswith(("postgres://", "postgresql://")):
-        return PostgresRunStore(url)
+        return PostgresRunStore(url, connection_factory=connection_factory)
     if url in {"distributed://", "distributed"}:
         pg_url = os.environ.get("CELA_POSTGRES_URL")
         if not pg_url:
             raise RuntimeError("distributed:// requires CELA_POSTGRES_URL (and CELA_REDIS_URL)")
         return DistributedRunStore(
-            PostgresRunStore(pg_url), redis_url=os.environ.get("CELA_REDIS_URL")
+            PostgresRunStore(pg_url, connection_factory=connection_factory),
+            redis_url=os.environ.get("CELA_REDIS_URL"),
         )
     if url.startswith(("redis://", "rediss://")):
         raise RuntimeError(

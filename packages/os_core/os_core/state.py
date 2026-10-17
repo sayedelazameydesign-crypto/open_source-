@@ -132,7 +132,17 @@ class RunState(BaseModel):
                 for s in self.steps
             ],
             "artifacts": [
-                {"kind": a.kind, "filename": a.filename, "mime_type": a.mime_type}
+                {
+                    "kind": a.kind,
+                    "filename": a.filename,
+                    "mime_type": a.mime_type,
+                    **({"sha256": a.metadata["sha256"]} if "sha256" in a.metadata else {}),
+                    **(
+                        {"size_bytes": a.metadata["size_bytes"]}
+                        if "size_bytes" in a.metadata
+                        else {}
+                    ),
+                }
                 for a in self.artifacts
             ],
             "results": [

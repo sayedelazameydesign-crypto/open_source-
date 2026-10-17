@@ -38,6 +38,7 @@ from os_server.runtime import (
     PRODUCT_NAME,
     PRODUCT_VERSION,
     ApiRuntime,
+    ArtifactIntegrityError,
     PlatformFactory,
     resolve_private_token,
     resolve_token,
@@ -248,6 +249,9 @@ class CelaBrowser:
         if meta is None:
             raise KeyError(f"{run_id}/{filename}")
         return meta
+
+    def download_artifact(self, run_id: str, filename: str) -> dict[str, Any]:
+        return self.runtime.download_artifact(run_id, filename)
 
     # --- Run-outcome ledger -------------------------------------------------
 
@@ -567,6 +571,25 @@ def create_private_router(
         except KeyError as exc:
             raise HTTPException(404, "no such artifact") from exc
         return Response(content=json.dumps(meta), media_type="application/json")
+
+    @router.get("/runs/{run_id}/artifacts/{filename}/download")
+    async def download_run_artifact(run_id: str, filename: str) -> Response:
+        try:
+            dl = browser.download_artifact(run_id, filename)
+        except KeyError as exc:
+            raise HTTPException(404, "no such artifact") from exc
+        except ArtifactIntegrityError as exc:
+            raise HTTPException(409, "artifact integrity check failed") from exc
+        return Response(
+            content=dl["content_bytes"],
+            media_type=dl["mime_type"],
+            headers={
+                "Content-Disposition": f'attachment; filename="{dl["filename"]}"',
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+                "X-Artifact-SHA256": dl["sha256"],
+            },
+        )
 
     @router.get("/ledger")
     async def run_outcome_ledger(

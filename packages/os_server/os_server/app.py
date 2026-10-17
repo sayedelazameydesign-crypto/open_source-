@@ -101,7 +101,8 @@ from os_server.reach_api import (
 from os_server.runtime import (
     DEFAULT_WS_TICKET_TTL,
     PRODUCT_VERSION,
-    ApiRuntime,
+     ApiRuntime,
+    ArtifactIntegrityError,
     PlatformFactory,
     RunHandle,
     resolve_private_token,
@@ -251,6 +252,10 @@ def create_app(
         # Reference configuration only. Each run carries its own executor info.
         return {"execution": describe_execution(getattr(rt.platform, "model", None)).model_dump()}
 
+    @app.get("/runs", dependencies=[Depends(require_api_auth)])
+    async def list_runs() -> dict[str, Any]:
+        return {"runs": rt.list_runs()}
+
     @app.post("/runs", status_code=202, dependencies=[Depends(require_api_auth)])
     async def start_run(req: StartRunRequest) -> dict[str, str]:
         handle, chosen_mode = rt.start_run(req.task, mode=req.mode, max_steps=req.max_steps)
@@ -347,6 +352,38 @@ def create_app(
         if meta is None:
             raise HTTPException(404, "no such artifact")
         return Response(content=json.dumps(meta), media_type="application/json")
+
+    def _download_artifact_response(run_id: str, filename: str) -> Response:
+        try:
+            dl = rt.download_artifact(run_id, filename)
+        except KeyError as exc:
+            raise HTTPException(404, "no such artifact") from exc
+        except ArtifactIntegrityError as exc:
+            raise HTTPException(409, "artifact integrity check failed") from exc
+        return Response(
+            content=dl["content_bytes"],
+            media_type=dl["mime_type"],
+            headers={
+                "Content-Disposition": f'attachment; filename="{dl["filename"]}"',
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+                "X-Artifact-SHA256": dl["sha256"],
+            },
+        )
+
+    @app.get(
+        "/runs/{run_id}/artifacts/{filename}/download",
+        dependencies=[Depends(require_api_auth)],
+    )
+    async def download_run_artifact(run_id: str, filename: str) -> Response:
+        return _download_artifact_response(run_id, filename)
+
+    @app.get(
+        "/artifacts/{run_id}/{filename}/download",
+        dependencies=[Depends(require_api_auth)],
+    )
+    async def download_artifact(run_id: str, filename: str) -> Response:
+        return _download_artifact_response(run_id, filename)
 
     reach = (
         reach_service
