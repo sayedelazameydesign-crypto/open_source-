@@ -3,16 +3,20 @@ name: Real-model eval (manual, secrets-injected)
 # Manual only: repository secrets are available to workflow_dispatch runs
 # from collaborators, never to fork PRs. The API key travels exactly one
 # path — secret -> env var -> model client — and is never printed.
+#
+# Destination pinning (security): the endpoint is NOT a free-text input.
+# It comes from the CELA_MODEL_BASE_URL secret alone, so a collaborator
+# cannot be talked into dispatching the run against an attacker-chosen
+# host with the repository's token in hand. The run additionally requires
+# ALLOW_LIVE_EXTERNAL_CALLS=true — a kill switch that blocks every paid
+# external call until it is flipped on purpose.
 on:
   workflow_dispatch:
     inputs:
-      model_url:
-        description: "Private API base URL (OpenAI-compatible, e.g. https://gateway.example.com/v1)"
-        required: true
-        type: string
       model_id:
-        description: "Model identifier on that API"
-        required: true
+        description: "Model identifier (optional override; defaults to the CELA_MODEL_ID secret)"
+        required: false
+        default: ""
         type: string
       auth_header:
         description: "How the gateway expects the key"
@@ -38,28 +42,59 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev,server]"
-      - name: Check the secret reached the runner
+      - name: Preflight — kill switch, secret, pinned destination
         env:
           CELA_EVAL_API_KEY: ${{ secrets.APIDOG_ACCESS_TOKEN }}
+          ALLOW_LIVE_EXTERNAL_CALLS: ${{ secrets.ALLOW_LIVE_EXTERNAL_CALLS }}
+          CELA_MODEL_BASE_URL: ${{ secrets.CELA_MODEL_BASE_URL }}
+          CELA_MODEL_ID: ${{ secrets.CELA_MODEL_ID }}
         run: |
+          set -euo pipefail
+          fail() { echo "::error title=Preflight::$1" >&2; exit 1; }
           if [ -z "${CELA_EVAL_API_KEY:-}" ]; then
-            echo "::error title=Missing secret::Repository secret APIDOG_ACCESS_TOKEN is empty or unset — add it in Settings > Secrets and variables > Actions, then re-run."
-            exit 1
+            fail "Repository secret APIDOG_ACCESS_TOKEN is empty or unset — add it in Settings > Secrets and variables > Actions, then re-run."
           fi
-      - name: Run eval against the private API
+          # Kill switch: no paid external call happens unless this is
+          # explicitly the literal string "true".
+          if [ "${ALLOW_LIVE_EXTERNAL_CALLS:-}" != "true" ]; then
+            fail "ALLOW_LIVE_EXTERNAL_CALLS is not 'true'. This run sends a live paid request — set that secret to 'true' on purpose first."
+          fi
+          # The destination is pinned to a secret, never typed at dispatch.
+          if [ -z "${CELA_MODEL_BASE_URL:-}" ]; then
+            fail "Repository secret CELA_MODEL_BASE_URL is unset — the destination is pinned to it and cannot be entered by hand."
+          fi
+          case "$CELA_MODEL_BASE_URL" in
+            https://*) ;;
+            *) fail "CELA_MODEL_BASE_URL must be an https:// URL (a plain-http host would carry the token in the clear)." ;;
+          esac
+          if [ -z "${CELA_MODEL_ID:-}" ]; then
+            fail "Repository secret CELA_MODEL_ID is unset — set it (or pass the optional model_id input) so the run knows what to test."
+          fi
+      - name: Run eval against the pinned private API
         env:
           # The secret value exists only inside this step's environment.
           CELA_EVAL_API_KEY: ${{ secrets.APIDOG_ACCESS_TOKEN }}
-          # Inputs reach the shell as environment variables, never spliced into
-          # the script text: a '${{ inputs.model_url }}' placeholder expanded
-          # inside quotes would hand argparse the URL with its quote
-          # characters still attached, and fail every case.
-          MODEL_URL: ${{ inputs.model_url }}
+          # Destination and model come from secrets only — never from a
+          # free-text input — so the token cannot be redirected to a host
+          # chosen at dispatch time.
+          MODEL_URL: ${{ secrets.CELA_MODEL_BASE_URL }}
           MODEL_ID: ${{ inputs.model_id }}
+          DEFAULT_MODEL_ID: ${{ secrets.CELA_MODEL_ID }}
           AUTH_HEADER: ${{ inputs.auth_header }}
           AB_SKILLS: ${{ inputs.ab_skills }}
         run: |
           set -euo pipefail
+          # Defense in depth: re-check the pin inside the runner, in case
+          # this file and the secret ever drift apart.
+          case "$MODEL_URL" in
+            https://*) ;;
+            *) echo "::error::MODEL_URL is not https — refusing to send the key" >&2; exit 1 ;;
+          esac
+          MODEL_ID="${MODEL_ID:-$DEFAULT_MODEL_ID}"
+          if [ -z "$MODEL_ID" ]; then
+            echo "::error::model_id input and CELA_MODEL_ID secret are both empty" >&2
+            exit 1
+          fi
           args=(run --suite builtin
             --model-url "$MODEL_URL"
             --model-id "$MODEL_ID"
@@ -67,10 +102,11 @@ jobs:
             --api-key-env CELA_EVAL_API_KEY
             --out eval-report.json)
           if [ "$AB_SKILLS" = "true" ]; then args+=(--ab-skills); fi
-          # Safe to echo: every argument is non-secret by construction — the
-          # key travels only through $CELA_EVAL_API_KEY, and argparse receives
-          # the *name* of that variable, never its value.
-          echo "running: python -m os_evals ${args[*]}"
+          # Safe to echo: the URL and model are repository secrets the
+          # operator already controls, and GitHub masks secret values in
+          # logs; the API key itself never appears in any argument — the
+          # client receives the *name* of $CELA_EVAL_API_KEY, not its value.
+          echo "running: python -m os_evals run --suite builtin --model-url <pinned-secret> --model-id <secret-or-input> --auth-header $AUTH_HEADER --api-key-env CELA_EVAL_API_KEY --out eval-report.json${AB_SKILLS:+ --ab-skills}"
           python -m os_evals "${args[@]}"
       - name: Upload report
         # Always: even a failed run (A/B regression, unreachable endpoint)

@@ -64,8 +64,13 @@ CELA_EVAL_API_KEY="<token>" python -m os_evals run --suite builtin \
 
 ## ما ينقص للتشغيل الفعلي
 
-* من المالك: `model_url` و`model_id` (غير سريين) + السر `APIDOG_ACCESS_TOKEN`
-  محفوظ في Repository Secrets — يمرّ في مسار واحد: secret ← متغيّر بيئة ← عميل النموذج.
+* من المالك: النموذج والوجهة محفوظان كأسرار (`CELA_MODEL_BASE_URL` و
+  `CELA_MODEL_ID`) — لا كمدخلات حرة — والسر `APIDOG_ACCESS_TOKEN` يمرّ في
+  مسار واحد: secret ← متغيّر بيئة ← عميل النموذج. **تدعيم أمني
+  (2026-10-16):** الوجهة صارت مثبّتة على السر وحده (أُزيل مدخل `model_url`
+  الحر الذي كان يسمح بإرسال الرمز إلى أي مضيف يُدخله المشغّل)، وقاطع
+  `ALLOW_LIVE_EXTERNAL_CALLS=true` مطلوب قبل أي طلب مدفوع، والمسار يُعاد
+  التحقق منه داخل العدّاد أيضًا. الاختبار الحارس: `tests/test_eval_workflow_security.py`.
 * أرقام منشورة تحتاج `--dataset` بصيغة GAIA/SWE-bench، لا `--suite builtin`
   (راجع البوابة 2 في `docs/ROADMAP.md`).
 * الاختبارات: `tests/test_evals.py` يغطي الآن صياغة النموذج الحقيقي، وتشغيل

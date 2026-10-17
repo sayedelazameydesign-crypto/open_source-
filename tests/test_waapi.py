@@ -56,6 +56,20 @@ def test_waapi_env_defaults_closed_and_hides_secrets() -> None:
     assert SECRET not in json.dumps(config.safe_status())
 
 
+def test_waapi_config_rejects_misnamed_secrets_loudly() -> None:
+    """A secret under the wrong name is a trap, not a default to fall back to.
+
+    The code reads exact names; a token stored as ``WAAPI_API_TOKEN`` (or a
+    webhook secret as ``WAAPI_WEBHOOK_SECRET``) is silently ignored, and the
+    integration then looks broken hours later with no hint that a rename is
+    all it needs. Failing loudly at config time is the fix.
+    """
+    with pytest.raises(WaapiNotConfigured, match="rename it to WAAPI_BEARER_TOKEN"):
+        WaapiConfig.from_env({"WAAPI_API_TOKEN": SECRET})
+    with pytest.raises(WaapiNotConfigured, match="WAAPI_WEBHOOK_PATH_SECRET"):
+        WaapiConfig.from_env({"WAAPI_WEBHOOK_SECRET": "x" * 40})
+
+
 def test_waapi_config_requires_explicit_enable_and_reads_outbox_path() -> None:
     config = WaapiConfig.from_env(
         {

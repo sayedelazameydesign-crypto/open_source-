@@ -43,6 +43,15 @@ WAAPI_API_BASE_URL = "https://waapi.app/api/v1"
 WAAPI_OUTBOX_DEFAULT_PATH = ".cela/waapi-outbox.sqlite3"
 _INSTANCE_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
+#: A secret stored under a *different* name than the code reads is silently
+#: ignored — the integration then looks broken hours later, with no hint
+#: that a rename is all it needs. The misnaming is therefore fatal and
+#: self-explaining, never a warning nobody reads.
+_MISNAMED_ENV_VARS: dict[str, str] = {
+    "WAAPI_API_TOKEN": "WAAPI_BEARER_TOKEN",
+    "WAAPI_WEBHOOK_SECRET": "WAAPI_WEBHOOK_PATH_SECRET",
+}
+
 
 class WaapiError(RuntimeError):
     """Base error with safe, non-provider-controlled messages."""
@@ -74,6 +83,13 @@ class WaapiConfig:
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> WaapiConfig:
         source = os.environ if env is None else env
+        for stored, expected in _MISNAMED_ENV_VARS.items():
+            if _optional_env(source, stored):
+                raise WaapiNotConfigured(
+                    f"{stored} is set but never read by this server; rename it "
+                    f"to {expected}. The webhook path secret must also be "
+                    "independent of the API token and 32+ characters long."
+                )
         return cls(
             enabled=source.get("CELA_WAAPI_ENABLE", "0").strip() == "1",
             bearer_token=_optional_env(source, "WAAPI_BEARER_TOKEN"),
