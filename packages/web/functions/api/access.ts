@@ -1,23 +1,27 @@
 /**
  * Cloudflare Pages Function twin of `app/api/access/route.ts`.
  *
- * Same contract (see `lib/access-gate.ts`): `GET` reports gate state, `POST`
- * unlocks by setting the `HttpOnly` operator cookie, `DELETE` locks again.
- * Kept in lockstep with the Next.js twin so either deployment shape offers the
- * same operator access gate (authentication review Finding 1).
+ * Same contract (see `lib/access-gate.ts`): `GET` reports the full gate state
+ * (`required`, `authorized`, `configured`, `mode`), `POST` unlocks by setting
+ * the `HttpOnly` operator cookie, `DELETE` locks again. Kept in lockstep with
+ * the Next.js twin so either deployment shape offers the same operator access
+ * gate (authentication review Finding 1).
  */
 
 import {
   ACCESS_HEADER,
   accessCookieHeader,
+  accessStatus,
   clearAccessCookieHeader,
   constantTimeEqual,
-  hasValidAccess,
   normalizeSecret,
+  runtimeNodeEnv,
 } from "../../lib/access-gate";
 
 export interface CeliaAccessEnv {
   CELA_WEB_ACCESS_SECRET?: string;
+  /** `1` = require the secret explicitly; `0` = intentionally open local mode. */
+  CELA_WEB_GATE_REQUIRED?: string;
 }
 
 interface PagesContext {
@@ -43,7 +47,7 @@ export async function onRequest({ request, env }: PagesContext): Promise<Respons
 
   if (request.method === "GET" || request.method === "HEAD") {
     return json(
-      { required: Boolean(secret), authorized: await hasValidAccess(request, secret) },
+      await accessStatus(request, secret, runtimeNodeEnv(), env.CELA_WEB_GATE_REQUIRED),
       200,
     );
   }

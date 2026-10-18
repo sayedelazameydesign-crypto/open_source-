@@ -316,7 +316,34 @@ test('access function twin: GET/POST/DELETE keep the same contract', async () =>
   const env = { CELA_WEB_ACCESS_SECRET: GATE_SECRET };
 
   const status = await access.onRequest({ request: new Request('https://celia.pages.dev/api/access'), env });
-  assert.deepEqual(await status.json(), { required: true, authorized: false });
+  assert.deepEqual(await status.json(), {
+    required: true,
+    authorized: false,
+    configured: true,
+    mode: 'enforced',
+  });
+
+  const unconfigured = await access.onRequest({
+    request: new Request('https://celia.pages.dev/api/access'),
+    env: { CELA_WEB_GATE_REQUIRED: '1' },
+  });
+  assert.deepEqual(await unconfigured.json(), {
+    required: true,
+    authorized: false,
+    configured: false,
+    mode: 'unconfigured',
+  });
+
+  const open = await access.onRequest({
+    request: new Request('https://celia.pages.dev/api/access'),
+    env: { CELA_WEB_GATE_REQUIRED: '0' },
+  });
+  assert.deepEqual(await open.json(), {
+    required: false,
+    authorized: true,
+    configured: false,
+    mode: 'open',
+  });
 
   const wrong = await access.onRequest({
     request: new Request('https://celia.pages.dev/api/access', { method: 'POST', body: '{"secret":"guess"}' }),

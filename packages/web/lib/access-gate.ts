@@ -160,6 +160,35 @@ export async function hasValidAccess(request: Request, secret: string): Promise<
   return verifyAccessProof(cookieValue(request, ACCESS_COOKIE), secret);
 }
 
+export interface AccessStatus {
+  required: boolean;
+  authorized: boolean;
+  configured: boolean;
+  mode: GateMode;
+}
+
+/**
+ * Status payload shared by both `GET /api/access` twins. `required` means the
+ * deployment is not in open local mode; in `unconfigured` mode it is therefore
+ * true while `authorized` stays false, matching the proxies' fail-closed 503
+ * instead of telling the UI that everything is open and authorized.
+ */
+export async function accessStatus(
+  request: Request,
+  secret: string,
+  nodeEnv: string | undefined,
+  gateRequired: string | undefined,
+): Promise<AccessStatus> {
+  const mode = gateMode(secret, nodeEnv, gateRequired);
+  return {
+    required: mode !== "open",
+    authorized:
+      mode === "open" ? true : mode === "enforced" ? await hasValidAccess(request, secret) : false,
+    configured: Boolean(secret),
+    mode,
+  };
+}
+
 /** Uniform refusal: reveals nothing about backend or token configuration. */
 export function accessDeniedResponse(bffMarker: string): Response {
   return new Response(

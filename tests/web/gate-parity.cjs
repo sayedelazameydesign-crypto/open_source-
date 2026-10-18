@@ -14,6 +14,8 @@ const path = require('node:path');
 const tree = path.join(__dirname, '../../.cache/gate-parity');
 const nextProxy = require(path.join(tree, 'app/api/backend/[...path]/route.js'));
 const cfProxy = require(path.join(tree, 'functions/api/backend/[[path]].js'));
+const nextAccess = require(path.join(tree, 'app/api/access/route.js'));
+const cfAccess = require(path.join(tree, 'functions/api/access.js'));
 const gate = require(path.join(tree, 'lib/access-gate.js'));
 
 const realFetch = globalThis.fetch;
@@ -92,6 +94,20 @@ async function assertParity(req, env) {
   return viaNext;
 }
 
+async function assertAccessStatusParity(env, headers) {
+  setEnv(env);
+  const viaNext = await nextAccess.GET(request('/api/access', { headers }));
+  const nextBody = JSON.parse(await viaNext.text());
+
+  setEnv(env);
+  const viaCf = await cfAccess.onRequest({ request: request('/api/access', { headers }), env });
+  const cfBody = JSON.parse(await viaCf.text());
+
+  assert.equal(viaCf.status, viaNext.status);
+  assert.deepEqual(cfBody, nextBody);
+  return nextBody;
+}
+
 async function cookieHeader(secret = GATE_SECRET, ttlSeconds) {
   const proof = await gate.issueAccessProof(secret, ttlSeconds);
   return { cookie: `celia_access=${encodeURIComponent(proof)}` };
@@ -155,4 +171,44 @@ test('parity: open local mode passes identically', async () => {
   const result = await assertParity(request('/api/backend/health'), BASE_ENV);
   assert.equal(result.status, 200);
   assert.equal(result.upstream.url, 'https://celia-api.onrender.com/health');
+});
+
+test('parity: GET /api/access reports identical gate modes on both twins', async () => {
+  assert.deepEqual(await assertAccessStatusParity(BASE_ENV), {
+    required: false,
+    authorized: true,
+    configured: false,
+    mode: 'open',
+  });
+
+  assert.deepEqual(await assertAccessStatusParity({
+    ...BASE_ENV,
+    NODE_ENV: 'production',
+    CELA_WEB_GATE_REQUIRED: '1',
+  }), {
+    required: true,
+    authorized: false,
+    configured: false,
+    mode: 'unconfigured',
+  });
+
+  assert.deepEqual(await assertAccessStatusParity({
+    ...BASE_ENV,
+    CELA_WEB_ACCESS_SECRET: GATE_SECRET,
+  }), {
+    required: true,
+    authorized: false,
+    configured: true,
+    mode: 'enforced',
+  });
+
+  assert.deepEqual(await assertAccessStatusParity(
+    { ...BASE_ENV, CELA_WEB_ACCESS_SECRET: GATE_SECRET },
+    await cookieHeader(),
+  ), {
+    required: true,
+    authorized: true,
+    configured: true,
+    mode: 'enforced',
+  });
 });

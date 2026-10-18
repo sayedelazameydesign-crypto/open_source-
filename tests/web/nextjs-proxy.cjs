@@ -455,24 +455,55 @@ test('gate: upstream failure logs never contain the access secret', async () => 
   for (const line of logged) assert.ok(!line.includes(GATE_SECRET), line);
 });
 
-test('access endpoint: GET reports whether the gate is required and unlocked', async () => {
-  setEnv({});
+test('access endpoint: GET reports required, authorized, configured and mode', async () => {
+  setEnv({ NODE_ENV: 'development' });
   let res = await access.GET(new Request('https://celia.example/api/access'));
-  assert.deepEqual(await res.json(), { required: false, authorized: true });
+  assert.deepEqual(await res.json(), {
+    required: false,
+    authorized: true,
+    configured: false,
+    mode: 'open',
+  });
+
+  // The status endpoint must agree with the proxy's fail-closed behavior:
+  // production without a secret is not "not required and authorized".
+  setEnv({ NODE_ENV: 'production' });
+  res = await access.GET(new Request('https://celia.example/api/access'));
+  assert.deepEqual(await res.json(), {
+    required: true,
+    authorized: false,
+    configured: false,
+    mode: 'unconfigured',
+  });
 
   setEnv({ CELA_WEB_ACCESS_SECRET: GATE_SECRET });
   res = await access.GET(new Request('https://celia.example/api/access'));
-  assert.deepEqual(await res.json(), { required: true, authorized: false });
+  assert.deepEqual(await res.json(), {
+    required: true,
+    authorized: false,
+    configured: true,
+    mode: 'enforced',
+  });
 
   res = await access.GET(new Request('https://celia.example/api/access', {
     headers: { cookie: await gateCookie() },
   }));
-  assert.deepEqual(await res.json(), { required: true, authorized: true });
+  assert.deepEqual(await res.json(), {
+    required: true,
+    authorized: true,
+    configured: true,
+    mode: 'enforced',
+  });
 
   res = await access.GET(new Request('https://celia.example/api/access', {
     headers: { cookie: await gateCookie(GATE_SECRET, -5) },
   }));
-  assert.deepEqual(await res.json(), { required: true, authorized: false });
+  assert.deepEqual(await res.json(), {
+    required: true,
+    authorized: false,
+    configured: true,
+    mode: 'enforced',
+  });
 });
 
 test('access endpoint: POST sets the signed HttpOnly cookie only for the right secret', async () => {
