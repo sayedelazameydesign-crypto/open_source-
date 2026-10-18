@@ -12,7 +12,8 @@
     "test:components": "node ../../tests/web/run-components.cjs",
     "test:hooks": "node ../../tests/web/run-hooks.cjs",
     "test:deploy": "node ../../tests/web/run-deploy-function.cjs",
-    "test:next-proxy": "node ../../tests/web/run-nextjs-proxy.cjs"
+    "test:next-proxy": "node ../../tests/web/run-nextjs-proxy.cjs",
+    "test:gate-parity": "node ../../tests/web/run-gate-parity.cjs"
   },
   "dependencies": {
     "next": "^15.5.28",

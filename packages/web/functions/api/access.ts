@@ -43,7 +43,7 @@ export async function onRequest({ request, env }: PagesContext): Promise<Respons
 
   if (request.method === "GET" || request.method === "HEAD") {
     return json(
-      { required: Boolean(secret), authorized: hasValidAccess(request, secret) },
+      { required: Boolean(secret), authorized: await hasValidAccess(request, secret) },
       200,
     );
   }
@@ -62,7 +62,8 @@ export async function onRequest({ request, env }: PagesContext): Promise<Respons
     if (!supplied || !constantTimeEqual(supplied, secret)) {
       return json({ detail: "invalid access secret" }, 401);
     }
-    return json({ ok: true }, 200, { "Set-Cookie": accessCookieHeader(secret) });
+    // The cookie carries a signed, expiring proof — never the secret itself.
+    return json({ ok: true }, 200, { "Set-Cookie": await accessCookieHeader(secret) });
   }
 
   if (request.method === "DELETE") {

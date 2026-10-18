@@ -21,20 +21,21 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-function status(secret: string, request: Request): Response {
+function baseHeaders(): Record<string, string> {
+  return {
+    "Cache-Control": "no-store, no-transform",
+    "X-Content-Type-Options": "nosniff",
+    "Content-Type": "application/json; charset=utf-8",
+  };
+}
+
+async function status(secret: string, request: Request): Promise<Response> {
   return new Response(
     JSON.stringify({
       required: Boolean(secret),
-      authorized: hasValidAccess(request, secret),
+      authorized: await hasValidAccess(request, secret),
     }),
-    {
-      status: 200,
-      headers: {
-        "Cache-Control": "no-store, no-transform",
-        "X-Content-Type-Options": "nosniff",
-        "Content-Type": "application/json; charset=utf-8",
-      },
-    },
+    { status: 200, headers: baseHeaders() },
   );
 }
 
@@ -45,14 +46,10 @@ export async function GET(request: Request): Promise<Response> {
 export async function POST(request: Request): Promise<Response> {
   const secret = normalizeSecret(process.env.CELA_WEB_ACCESS_SECRET);
   if (!secret) {
-    return new Response(JSON.stringify({ detail: "access gate is not configured" }), {
-      status: 409,
-      headers: {
-        "Cache-Control": "no-store, no-transform",
-        "X-Content-Type-Options": "nosniff",
-        "Content-Type": "application/json; charset=utf-8",
-      },
-    });
+    return new Response(
+      JSON.stringify({ detail: "access gate is not configured" }),
+      { status: 409, headers: baseHeaders() },
+    );
   }
 
   let supplied = request.headers.get(ACCESS_HEADER)?.trim() ?? "";
@@ -68,33 +65,20 @@ export async function POST(request: Request): Promise<Response> {
   if (!supplied || !constantTimeEqual(supplied, secret)) {
     return new Response(JSON.stringify({ detail: "invalid access secret" }), {
       status: 401,
-      headers: {
-        "Cache-Control": "no-store, no-transform",
-        "X-Content-Type-Options": "nosniff",
-        "Content-Type": "application/json; charset=utf-8",
-      },
+      headers: baseHeaders(),
     });
   }
 
+  // The cookie carries a signed, expiring proof — never the secret itself.
   return new Response(JSON.stringify({ ok: true }), {
     status: 200,
-    headers: {
-      "Cache-Control": "no-store, no-transform",
-      "X-Content-Type-Options": "nosniff",
-      "Content-Type": "application/json; charset=utf-8",
-      "Set-Cookie": accessCookieHeader(secret),
-    },
+    headers: { ...baseHeaders(), "Set-Cookie": await accessCookieHeader(secret) },
   });
 }
 
 export async function DELETE(): Promise<Response> {
   return new Response(JSON.stringify({ ok: true }), {
     status: 200,
-    headers: {
-      "Cache-Control": "no-store, no-transform",
-      "X-Content-Type-Options": "nosniff",
-      "Content-Type": "application/json; charset=utf-8",
-      "Set-Cookie": clearAccessCookieHeader(),
-    },
+    headers: { ...baseHeaders(), "Set-Cookie": clearAccessCookieHeader() },
   });
 }
