@@ -534,19 +534,46 @@ class E2BBackend(BaseModel):
                     await asyncio.to_thread(kill)
 
 
+class DisabledBackend(BaseModel):
+    """Fail-closed backend that never executes anything (``disabled`` mode).
+
+    Selected by ``CELA_CODE_EXEC_MODE=disabled``. It is the safe choice for a
+    hosted/cloud deployment where untrusted code must never reach the host:
+    there is no local subprocess path to fall back to and no remote microVM to
+    dial, so every request is refused up front instead of executed. The g1a
+    Cloud deploy bundle (``deploy/g1a``) sets exactly this mode.
+    """
+
+    async def execute(
+        self,
+        code: str,
+        *,
+        language: str = "python",
+        files: dict[str, str] | None = None,
+        timeout: float | None = None,
+    ) -> ToolResult:
+        return _denied(
+            "disabled",
+            "code execution is disabled (CELA_CODE_EXEC_MODE=disabled)",
+        )
+
+
 def code_exec_backend_from_env(env: dict[str, str] | None = None) -> CodeExecBackend:
     """Select the code-execution backend from the environment.
 
     ``CELA_CODE_EXEC_MODE``: ``local`` (default) | ``production`` | ``e2b`` |
-    ``firecracker``. Production refuses to construct a local backend: it
-    requires ``CELA_CODE_EXEC_BACKEND=e2b|firecracker`` and raises otherwise,
-    so a misconfigured production deployment fails at startup instead of
-    silently executing untrusted code on the host.
+    ``firecracker`` | ``disabled``. Production refuses to construct a local
+    backend: it requires ``CELA_CODE_EXEC_BACKEND=e2b|firecracker`` and raises
+    otherwise, so a misconfigured production deployment fails at startup instead
+    of silently executing untrusted code on the host. ``disabled`` is the
+    fail-closed, never-executes choice for hosted/cloud deployments.
     """
     cfg = os.environ if env is None else env
     mode = cfg.get("CELA_CODE_EXEC_MODE", "local").lower()
     if mode == "local":
         return LocalSubprocessBackend()
+    if mode == "disabled":
+        return DisabledBackend()
     if mode in {"e2b", "production"} and (
         mode == "e2b" or cfg.get("CELA_CODE_EXEC_BACKEND") == "e2b"
     ):

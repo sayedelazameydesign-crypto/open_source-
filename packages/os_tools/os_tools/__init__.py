@@ -52,6 +52,7 @@ __all__ = [
     "BlockedURLError",
     "BrowserTool",
     "CodeExecBackend",
+    "DisabledBackend",
     "E2BBackend",
     "EgressPolicy",
     "EgressPolicyError",
