@@ -1,4 +1,4 @@
-# دليل النشر المجاني — Render + Supabase + Cloudflare Pages
+# دليل النشر المجاني — Render + Supabase + Cloudflare Pages (أو Vercel)
 
 > **الهدف:** نشر `Celia.sh — Mission OS` بتكلفة **صفر دولار وبلا بطاقة ائتمان**، مع بقاء `CELA_API_TOKEN` و`CELA_PRIVATE_API_TOKEN` على الخادم فقط.
 > **المكوّنات الثلاثة** موصوفة هنا بالترتيب الذي تُنشأ به: قاعدة البيانات، ثم الخادم، ثم الواجهة.
@@ -19,7 +19,7 @@
 | حساب GitHub + المستودع | المصدر الوحيد لبناء الخدمتين |
 | حساب Supabase (Free) | تخزين دائم؛ قرص Render المجاني **مؤقت** ويُمسح عند كل نوم |
 | حساب Render (Free) | تشغيل `os_server` (Python حقيقي: subprocess + SQLite WAL + ملفات) |
-| حساب Cloudflare (Free) | استضافة الواجهة + وكيل الحافة |
+| حساب Cloudflare (Free) | استضافة الواجهة + وكيل الحافة — **أو** حساب Vercel (Free) إن كان نشر الواجهة عندك يدور عبر Actions (انظر §3.5) |
 | رمزان **مختلفان** بطول 32+ حرفًا | فصل السطح العام عن `/cela/v1` الخاص |
 
 لتوليد رمزين:
@@ -178,6 +178,62 @@ curl -sS -o /dev/null -w "%{http_code}\n" $SITE/status
 grep -c "CELA_API_TOKEN\|local-dev-token" <(curl -sS $SITE/) || true        # 0 — لا رمز في HTML
 ```
 
+### 3.5 بديل Cloudflare Pages: الواجهة على Vercel (Next.js حيّ)
+
+شكل Cloudflare أعلاه **تصدير ساكن** + Pages Function على الحافة. الشكل البديل
+يشغّل Next.js حيًّا على Vercel (نفس `packages/web`، ونفس وكيل `app/api/backend/*`،
+بل توأم Cloudflare). اختر هذا الشكل إذا كان نشر الواجهة عندك **يدور عبر GitHub
+Actions** — عندها يكون مفتاح Vercel سرًّا في Actions، فالمتغيّرات تُحقن في
+مشروع Vercel نفسه لا في واجهة Vercel.
+
+الفرق الجوهري: على Vercel يعمل الوكيل بـ `NODE_ENV=production` دائمًا، فإذا غاب
+`CELA_WEB_ACCESS_SECRET` **يفشل مغلقًا**: كل طلب `/api/backend/*` يعيد
+`503 access_gate_unconfigured`، والواجهة المنشورة لا تصل إلى الـbackend إطلاقًا
+(آمن، لكنه مكسور).
+
+| المتغير | النطاق | القيمة |
+|---|---|---|
+| `CELA_BACKEND_URL` | Production + Preview | `https://celia-mission-os-api.onrender.com` (**https إلزامي**) |
+| `CELA_API_TOKEN` | Production + Preview | الرمز العام نفسه (سرّ Vercel أو سرّ Actions) |
+| `CELA_PRIVATE_API_TOKEN` | Production + Preview | الرمز الخاص نفسه |
+| `CELA_WEB_ACCESS_SECRET` | Production + Preview | سرّ وصول المشغّل — **إجباري** على Vercel (انظر أعلاه) |
+| `CELA_WEB_GATE_REQUIRED` | Production + Preview | `1` صراحةً لتوثيق الاشتراط في الإعدادات |
+| `CELA_BACKEND_TIMEOUT_MS` | Production + Preview | `25000` افتراضيًا، والحد الأقصى `60000` |
+
+> **أين يوضع السر؟** في مسار Actions: اجعل `CELA_WEB_ACCESS_SECRET` سرًّا في
+> GitHub Actions، ومرّره إلى أمر النشر (`vercel deploy --build-env` أو
+> `--env`). لا تضعه في نصّ الـworkflow ولا في متغيّر `NEXT_PUBLIC_*` — الأخير
+> يُكشف للمتصفح ويعتبره `deploy_doctor` خطأً مانعًا
+> (`browser_exposed_secret_var`).
+
+> **تدوير السر:** تغيير `CELA_WEB_ACCESS_SECRET` يُبطل كل كوكيز الإثبات السارية
+> فورًا (الإثبات موقّع بالسر) — وهو أسرع طريقة لإبطال جلسة مسروقة.
+
+**الفحص قبل النشر** (يرى متغيّرات هذه البيئة فقط، لا أسرار Vercel وقت التشغيل):
+
+```bash
+VERCEL=1 CELA_BACKEND_URL=https://celia-mission-os-api.onrender.com \
+  python scripts/deploy_doctor.py
+```
+
+| النتيجة | الدلالة |
+|---|---|
+| `vercel_web_access_secret_unset` (تحذير) | السر غائب — النشر سيعمل لكن كل طلبات الـbackend ستردّ `503` |
+| `insecure_backend_url` (خطأ) | `CELA_BACKEND_URL` بـ`http://` خارج المضيف المحلي — الوكيل يرفضه |
+| بلا أخطاء ولا تحذير | الإعداد مكتمل |
+
+**التحقق بعد النشر** (على رابط Vercel):
+
+```bash
+SITE=https://<project>.vercel.app
+curl -sS $SITE/api/access
+# المتوقّع مع سرّ مضبوط: {"required":true,"authorized":false,"configured":true,"mode":"enforced"}
+# المتوقّع بلا سرّ:        {"required":true,"authorized":false,"configured":false,"mode":"unconfigured"}
+curl -sS -o /dev/null -w "%{http_code}\n" $SITE/api/backend/health   # 401 بلا إثبات، 200 مع كوكي
+```
+
+`mode` غير `enforced` بعد النشر = انشر بلا سرّ: غيّر السر وأعد النشر.
+
 ---
 
 ## 4) الفحص النهائي قبل الإعلان
@@ -186,6 +242,7 @@ grep -c "CELA_API_TOKEN\|local-dev-token" <(curl -sS $SITE/) || true        # 0 
 |---|---|---|
 | 1 | `python scripts/deploy_doctor.py --strict` ببيئة Render | `ready: true` بلا أخطاء |
 | 2 | `CF_PAGES=1 CELA_BACKEND_URL=https://… python scripts/deploy_doctor.py` | `ready: true` و`cloudflare_bff_proxy: true` |
+| 2ب | `VERCEL=1 CELA_BACKEND_URL=https://… python scripts/deploy_doctor.py` (إن كان النشر على Vercel) | `ready: true` بلا `vercel_web_access_secret_unset` |
 | 3 | `GET /health` على Render | `{"status":"ok"}` |
 | 4 | `POST /api/backend/runs` من موقع Pages | `202` مع `run_id` |
 | 5 | `GET /api/backend/runs/{id}/events?after_seq=0` | `text/event-stream` وأحداث متتابعة |
@@ -202,6 +259,8 @@ grep -c "CELA_API_TOKEN\|local-dev-token" <(curl -sS $SITE/) || true        # 0 
 | `503 backend_starting` | Render نائم (Free) | انتظر 5–60 ثانية؛ الواجهة تعيد المحاولة تلقائيًا |
 | `502 backend_unreachable` | `CELA_BACKEND_URL` خاطئ أو الخدمة متوقفة | تحقّق من الرابط و`/health` |
 | `503 token_not_configured` | سر ناقص في بيئة Pages | أضف `CELA_API_TOKEN` (أو الخاص) في Settings |
+| `503 access_gate_unconfigured` (Vercel) | `CELA_WEB_ACCESS_SECRET` غائب — الوكيل يفشل مغلقًا في الإنتاج | اضبط السر في نطاقَي Production و Preview (أو في سرّ Actions) وأعد النشر |
+| `401 access_required` على Vercel بعد النشر | البوابة مفعّمة ولم يُقدَّم إثبات | افتح الواجهة في المتصفّح وأدخل السر، أو استخدم ترويسة `X-Celia-Access` للأتمتة |
 | `503 backend_not_configured` مع «must use https» | الرابط `http://` | استخدم `https://` (يُسمح بـ `http://127.0.0.1` للتطوير فقط) |
 | `503 backend_not_configured` مع «must not embed credentials» | `https://user:pass@host` | انقل الاعتماد إلى Secrets |
 | `413 payload_too_large` | جسم الطلب > 1 MiB | الوكيل يقبل JSON فقط؛ استخدم مسار رفع مخصصًا |

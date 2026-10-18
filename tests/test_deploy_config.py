@@ -353,3 +353,93 @@ def test_doctor_never_echoes_secrets() -> None:
         assert secret not in rendered
     assert "db-password-777" not in rendered
     assert "leaked-value-666" not in rendered
+
+
+def test_doctor_warns_when_the_vercel_web_gate_is_unconfigured() -> None:
+    """A Vercel deploy without the operator secret is a *broken* deploy.
+
+    The Next.js proxy runs with ``NODE_ENV=production`` on Vercel, so a missing
+    secret makes it fail closed: every ``/api/backend/*`` call answers
+    ``503 access_gate_unconfigured`` and the published UI can never reach the
+    backend. The doctor must say so instead of reporting a deploy that
+    answers 503 on everything as "ready".
+    """
+    from os_server.automation import check_deployment_readiness
+
+    report = check_deployment_readiness(
+        {
+            "VERCEL": "1",
+            "VERCEL_ENV": "production",
+            "CELA_BACKEND_URL": "https://celia-api.onrender.com",
+            "CELA_API_TOKEN": "pub-token-111",
+            "CELA_PRIVATE_API_TOKEN": "priv-token-222",
+        },
+        root=ROOT,
+    )
+    warning_ids = {w["id"] for w in report["warnings"]}
+    assert "vercel_web_access_secret_unset" in warning_ids
+    message = next(
+        w["message_ar"] for w in report["warnings"] if w["id"] == "vercel_web_access_secret_unset"
+    )
+    assert "access_gate_unconfigured" in message
+    assert "CELA_WEB_ACCESS_SECRET" in message
+    # A warning, not an error: the secret may live in the Vercel project's own
+    # settings, which this check cannot see.
+    assert report["errors"] == []
+
+    # A release check must not wave it through.
+    strict = check_deployment_readiness(
+        {"VERCEL": "1", "CELA_BACKEND_URL": "https://celia-api.onrender.com"},
+        root=ROOT,
+        strict_production=True,
+    )
+    assert "vercel_web_access_secret_unset" in {e["id"] for e in strict["errors"]}
+    assert strict["ready"] is False
+
+
+def test_doctor_rejects_a_cleartext_backend_on_vercel() -> None:
+    from os_server.automation import check_deployment_readiness
+
+    report = check_deployment_readiness(
+        {
+            "VERCEL": "1",
+            "CELA_BACKEND_URL": "http://celia-api.onrender.com",
+            "CELA_WEB_ACCESS_SECRET": "operator-secret-333",
+        },
+        root=ROOT,
+    )
+    assert report["ready"] is False
+    assert [e["id"] for e in report["errors"]] == ["insecure_backend_url"]
+    message = report["errors"][0]["message_ar"]
+    assert "https" in message and "cleartext" in message
+
+
+def test_doctor_vercel_gate_warnings_stay_quiet_when_configured() -> None:
+    from os_server.automation import check_deployment_readiness
+
+    report = check_deployment_readiness(
+        {
+            "VERCEL": "1",
+            "CELA_BACKEND_URL": "https://celia-api.onrender.com",
+            "CELA_WEB_ACCESS_SECRET": "operator-secret-333",
+            "CELA_WEB_GATE_REQUIRED": "1",
+        },
+        root=ROOT,
+    )
+    assert report["errors"] == []
+    assert [w["id"] for w in report["warnings"]] == []
+    assert report["files"]["nextjs_bff_proxy"] is True
+
+
+def test_doctor_vercel_warnings_do_not_leak_into_other_deployments() -> None:
+    """The Vercel branch must stay silent outside a Vercel build."""
+    from os_server.automation import check_deployment_readiness
+
+    quiet = check_deployment_readiness(
+        {"CELA_BACKEND_URL": "https://celia-api.onrender.com"}, root=ROOT
+    )
+    assert quiet["warnings"] == []
+    assert quiet["errors"] == []
+
+    pages = check_deployment_readiness({"CF_PAGES": "1"}, root=ROOT)
+    assert {w["id"] for w in pages["warnings"]} == {"cloudflare_backend_url_unset"}
