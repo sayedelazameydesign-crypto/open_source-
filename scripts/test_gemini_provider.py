@@ -51,6 +51,7 @@ sys.path.insert(0, _ROOT)
 
 from os_core.events import EventType  # noqa: E402
 from os_core.models import describe_execution  # noqa: E402
+from os_core.redact import scrub_credentials  # noqa: E402
 
 DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
 DEFAULT_MODEL = "gemini-2.5-flash"
@@ -109,13 +110,6 @@ def record(name: str, ok: bool, detail: str) -> None:
 def assert_no_key_leak(text: str, key: str) -> None:
     if key and key in text:
         raise AssertionError("API key leaked into output!")
-
-
-def _scrub_key(text: str, key: str) -> str:
-    """Scrub the specific API key from diagnostic output."""
-    if not key:
-        return text
-    return text.replace(key, "[REDACTED_API_KEY]")
 
 
 def provider_config() -> tuple[str, str, str]:
@@ -332,7 +326,7 @@ async def main() -> int:
     record(
         "precondition: key present",
         True,
-        f"key length={len(api_key)} (value not printed)",
+        "key present in the environment (value not printed)",
     )
 
     # Pin the environment to the resolved target so the production resolver
@@ -492,7 +486,7 @@ async def main() -> int:
         f"fallback_triggered={fb_triggered}; fallback_active={fallback_active}; "
         f"reason_names_401={reason_names_401}; "
         f"scrubbed={'yes' if scrubbed else 'NO (LEAK)'}; "
-        f"reason={_scrub_key(fb_reason, api_key)[:160]!r}",
+        f"reason={scrub_credentials(fb_reason)[:160]!r}",
     )
 
     # ---- Final status -------------------------------------------------------
