@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from os_core.types import ToolStatus
 from os_tools.code_exec import (
+    DisabledBackend,
     E2BBackend,
     FirecrackerBackend,
     LocalSubprocessBackend,
@@ -97,3 +98,16 @@ def test_env_selection_defaults_local_and_production_never_does() -> None:
         code_exec_backend_from_env({"CELA_CODE_EXEC_MODE": "production"})
     with pytest.raises(RuntimeError, match="unknown"):
         code_exec_backend_from_env({"CELA_CODE_EXEC_MODE": "docker"})
+
+
+def test_env_selection_disabled_returns_disabled_backend() -> None:
+    assert isinstance(
+        code_exec_backend_from_env({"CELA_CODE_EXEC_MODE": "disabled"}), DisabledBackend
+    )
+
+
+async def test_disabled_backend_never_executes() -> None:
+    result = await DisabledBackend().execute("print('must not run')")
+    assert result.status is ToolStatus.DENIED
+    assert result.metadata["executed"] is False
+    assert "disabled" in (result.error or "")

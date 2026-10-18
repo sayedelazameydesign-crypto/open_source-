@@ -1,0 +1,32 @@
+# g1a — self-contained Render deploy for the Celia.sh FastAPI service.
+#
+# Code execution is DISABLED here: CELA_CODE_EXEC_MODE=disabled makes every
+# code-exec request fail closed (os_tools.code_exec.DisabledBackend), so
+# untrusted code never runs on the cloud host. See deploy/g1a/README.md.
+#
+# Pair with Supabase Postgres Free via CELA_RUN_STORE_URL — the `distributed`
+# extra (psycopg) is installed so the first run connects instead of 500ing.
+# Secrets are sync:false and must NEVER be committed to Git.
+
+services:
+  - type: web
+    name: celia-mission-os-g1a
+    runtime: python
+    plan: free
+    buildCommand: pip install --upgrade pip && pip install -e ".[server,distributed]"
+    startCommand: uvicorn --app-dir deploy/g1a main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      # Fail-closed: refuse all code execution for this hosted deployment.
+      - key: CELA_CODE_EXEC_MODE
+        value: disabled
+      - key: CELA_API_TOKEN
+        sync: false
+      - key: CELA_PRIVATE_API_TOKEN
+        sync: false
+      - key: CELA_RUN_STORE_URL
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
