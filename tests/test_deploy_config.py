@@ -90,6 +90,67 @@ def test_render_never_carries_a_secret_literal(
     assert "postgres://" not in declared
 
 
+def test_blueprint_ships_preview_mode_so_it_deploys_without_a_key(
+    env_vars: dict[str, dict[str, Any]],
+) -> None:
+    """A Blueprint deploy must not require GEMINI_API_KEY to boot.
+
+    ``create_app()`` fails fast when live mode is on without a provider, so a
+    blueprint that pre-enables live mode would fail its first deploy for
+    operators who have no key yet. Preview is the default; the flag is a plain
+    (non-secret) value the operator flips after adding the key.
+    """
+    live = env_vars["CELA_USE_LIVE_PROVIDER"]
+    assert live.get("value") == "0"
+    assert "sync" not in live
+    # The endpoint/defaults stay declared so flipping the flag is the only step.
+    assert env_vars["CELA_PROVIDER_MODEL"].get("value")
+    assert env_vars["CELA_PROVIDER_BASE_URL"].get("value", "").startswith("https://")
+
+
+def test_doctor_refuses_live_mode_without_a_provider() -> None:
+    from os_server.automation import check_deployment_readiness
+
+    report = check_deployment_readiness(
+        {
+            "CELA_USE_LIVE_PROVIDER": "1",
+            "CELA_PROVIDER_BASE_URL": "https://generativelanguage.googleapis.com/v1beta/openai",
+            "CELA_PROVIDER_MODEL": "gemini-2.5-flash",
+        },
+        root=ROOT,
+    )
+    assert report["ready"] is False
+    assert [e["id"] for e in report["errors"]] == ["live_provider_unconfigured"]
+    message = report["errors"][0]["message_ar"]
+    assert "GEMINI_API_KEY" in message
+    assert "CELA_USE_LIVE_PROVIDER=0" in message
+    # Never echo a credential-shaped value back in the report.
+    assert "postgresql://" not in message and "https://" not in message
+
+
+def test_doctor_accepts_live_mode_once_the_key_is_present() -> None:
+    from os_server.automation import check_deployment_readiness
+
+    report = check_deployment_readiness(
+        {
+            "CELA_USE_LIVE_PROVIDER": "1",
+            "CELA_PROVIDER_BASE_URL": "https://generativelanguage.googleapis.com/v1beta/openai",
+            "CELA_PROVIDER_MODEL": "gemini-2.5-flash",
+            "GEMINI_API_KEY": "test-key-not-a-real-one",
+        },
+        root=ROOT,
+    )
+    assert report["ready"] is True
+    assert "test-key-not-a-real-one" not in json.dumps(report)
+
+
+def test_doctor_accepts_preview_mode_without_any_provider() -> None:
+    from os_server.automation import check_deployment_readiness
+
+    assert check_deployment_readiness({}, root=ROOT)["ready"] is True
+    assert check_deployment_readiness({"CELA_USE_LIVE_PROVIDER": "0"}, root=ROOT)["ready"] is True
+
+
 def test_cloudflare_proxy_mirrors_the_next_bff_contract() -> None:
     source = PAGES_FUNCTION.read_text(encoding="utf-8")
     next_source = NEXT_BFF.read_text(encoding="utf-8")
@@ -162,6 +223,8 @@ def test_runbook_documents_the_three_services() -> None:
         "npm run build:pages",
         "CELA_BACKEND_URL",
         "deploy_doctor.py",
+        "CELA_USE_LIVE_PROVIDER",
+        "test_postgres_persistence.py",
     ):
         assert needle in text, needle
     # The doc must not contain a real-looking credential.

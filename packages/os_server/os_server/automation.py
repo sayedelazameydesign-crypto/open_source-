@@ -412,6 +412,34 @@ def check_deployment_readiness(
                 }
             )
 
+    # The server fails fast at startup when live mode is requested without a
+    # usable provider (os_server.app.create_app). The doctor must predict that
+    # failure, not report "ready" for a deploy that cannot boot: it resolves the
+    # provider with the *same* function the server uses, against the inspected
+    # environment (never the process environment, and never a network call).
+    live_flag = active_env.get("CELA_USE_LIVE_PROVIDER", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if live_flag:
+        from os_server.demo import free_tier_model_from_env
+
+        if free_tier_model_from_env(env=active_env) is None:
+            errors.append(
+                {
+                    "id": "live_provider_unconfigured",
+                    "variable": "CELA_USE_LIVE_PROVIDER",
+                    "message_ar": (
+                        "CELA_USE_LIVE_PROVIDER مفعّل لكن لا يوجد مزوّد صالح: يجب ضبط "
+                        "CELA_PROVIDER_BASE_URL وCELA_PROVIDER_MODEL ومتغير المفتاح "
+                        "(افتراضيًا GEMINI_API_KEY)، وإلا سيرفض الخادم الإقلاع. إما أضف "
+                        "المفتاح أو اضبط CELA_USE_LIVE_PROVIDER=0 لتشغيل الوضع التجريبي."
+                    ),
+                }
+            )
+
     if is_render and (not store_url or store_url.startswith("sqlite:")):
         warnings.append(
             {

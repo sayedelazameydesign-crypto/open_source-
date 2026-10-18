@@ -538,7 +538,10 @@ def is_live_provider_enabled() -> bool:
 
 
 def _provider_from_env_explicit(
-    *, transport: Any = None, timeout: float = 60.0
+    *,
+    transport: Any = None,
+    timeout: float = 60.0,
+    env: Any = None,
 ) -> OpenAICompatModel | None:
     """Build a provider from explicit CELA_PROVIDER_* env vars (highest priority).
 
@@ -558,24 +561,25 @@ def _provider_from_env_explicit(
     #   1. CELA_PROVIDER_BASE_URL (current canonical name)
     #   2. CELA_MODEL_BASE_URL    (legacy GitHub-secrets name, for existing
     #      deployments that still set it)
+    cfg = os.environ if env is None else env
     base_url = (
-        os.environ.get("CELA_PROVIDER_BASE_URL", "").strip()
-        or os.environ.get("CELA_MODEL_BASE_URL", "").strip()
+        cfg.get("CELA_PROVIDER_BASE_URL", "").strip()
+        or cfg.get("CELA_MODEL_BASE_URL", "").strip()
     )
     model_id = (
-        os.environ.get("CELA_PROVIDER_MODEL", "").strip()
-        or os.environ.get("CELA_MODEL_ID", "").strip()
+        cfg.get("CELA_PROVIDER_MODEL", "").strip()
+        or cfg.get("CELA_MODEL_ID", "").strip()
     )
     # Backwards-compat: accept the original CELA_PROVIDER_API_KEY_ENV if set,
     # preferring CELA_PROVIDER_CREDENTIAL_VAR when both are present.
     api_key_env = (
-        os.environ.get("CELA_PROVIDER_CREDENTIAL_VAR", "").strip()
-        or os.environ.get("CELA_PROVIDER_API_KEY_ENV", "").strip()
+        cfg.get("CELA_PROVIDER_CREDENTIAL_VAR", "").strip()
+        or cfg.get("CELA_PROVIDER_API_KEY_ENV", "").strip()
         or "GEMINI_API_KEY"
     )
     if not base_url or not model_id:
         return None
-    api_key = os.environ.get(api_key_env, "").strip()
+    api_key = cfg.get(api_key_env, "").strip()
     if not api_key:
         return None
     # Derive a human-readable name from the env var / model id.
@@ -590,7 +594,9 @@ def _provider_from_env_explicit(
     )
 
 
-def free_tier_model_from_env(*, transport: Any = None) -> OpenAICompatModel | None:
+def free_tier_model_from_env(
+    *, transport: Any = None, env: Any = None
+) -> OpenAICompatModel | None:
     """Configure a free-tier OpenAI-compatible provider from env if present.
 
     Resolution order:
@@ -599,16 +605,19 @@ def free_tier_model_from_env(*, transport: Any = None) -> OpenAICompatModel | No
 
     Secrets remain in ``os.environ`` and are referenced only via ``api_key_env``
     (ADR-0011). Returns None if no valid provider configuration exists.
+    ``env`` lets a caller inspect a mapping other than the process environment
+    (the readiness doctor does this); the default is ``os.environ``.
     """
-    explicit = _provider_from_env_explicit(transport=transport)
+    cfg = os.environ if env is None else env
+    explicit = _provider_from_env_explicit(transport=transport, env=cfg)
     if explicit is not None:
         return explicit
     candidates = (
         (
             "GEMINI_API_KEY",
             "gemini-2.5-flash",
-            os.environ.get("GEMINI_MODEL", "").strip() or "gemini-2.5-flash",
-            os.environ.get("GEMINI_BASE_URL", "").strip()
+            cfg.get("GEMINI_MODEL", "").strip() or "gemini-2.5-flash",
+            cfg.get("GEMINI_BASE_URL", "").strip()
             or "https://generativelanguage.googleapis.com/v1beta/openai",
         ),
         (
@@ -625,7 +634,7 @@ def free_tier_model_from_env(*, transport: Any = None) -> OpenAICompatModel | No
         ),
     )
     for env_var, name, model_id, base_url in candidates:
-        if os.environ.get(env_var, "").strip():
+        if cfg.get(env_var, "").strip():
             if env_var == "GEMINI_API_KEY":
                 # Gemini only: GEMINI_MODEL / GEMINI_BASE_URL use the same names
                 # CELA.PRO reads (see .env.example). Blank or whitespace counts as

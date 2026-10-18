@@ -4,9 +4,13 @@
 # - Cloudflare Pages / Workers for packages/web (with CELA_API_TOKEN kept server-side)
 # Secrets are marked sync: false and must NEVER be committed to Git.
 #
+# This blueprint ships in PREVIEW mode: CELA_USE_LIVE_PROVIDER=0 keeps the
+# server in the offline scripted demo, so a Blueprint deploy succeeds without
+# any API key and the UI's execution disclosure says "scripted".
 # The server FAILS FAST at startup if CELA_USE_LIVE_PROVIDER=1 is set but no
-# valid provider is configured — this is deliberate so the deploy never
-# silently serves scripted/demo responses under a "live provider" label.
+# valid provider is configured — deliberate, so a deploy never silently serves
+# scripted responses under a "live provider" label. Flip the flag to 1 only
+# after GEMINI_API_KEY is in place (see docs/DEPLOY_FREE_TIER_RUNBOOK.md §2.6).
 
 services:
   - type: web
@@ -21,11 +25,11 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.9"
-      # This blueprint opts into real LLM calls. Remove this key (or set it
-      # to "0") for an offline demo. With it set, startup fails fast unless
-      # GEMINI_API_KEY is supplied below — never silently scripted.
+      # "0" = preview (scripted, no key needed). Set to "1" only after the key
+      # below is configured; with "1" and no key the service refuses to start
+      # instead of pretending to be live.
       - key: CELA_USE_LIVE_PROVIDER
-        value: "1"
+        value: "0"
       # These tokens must be supplied by the operator (and injected into the
       # Pages/Workers build as CELA_API_TOKEN). They are never generated here
       # because the client side needs to know the value to issue requests.

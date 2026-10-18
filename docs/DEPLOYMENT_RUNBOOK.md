@@ -56,8 +56,9 @@ curl -s -H "Authorization: Bearer $CELA_API_TOKEN" http://127.0.0.1:8080/mission
 1. اربط المستودع بـ Render واختر خطة Free.
 2. استخدم `render.yaml` الموجود في جذر المشروع (Blueprint) أو اضبط نفس المتغيرات يدويًا.
 3. **لا تضف** `GEMINI_API_KEY` في القيم العامة (non-secret). أضفه كـ Secret.
-4. `render.yaml` يضبط `CELA_USE_LIVE_PROVIDER=1` و`CELA_PROVIDER_*` مسبقًا. أضف `GEMINI_API_KEY` كسر (Secret) **قبل** أول نشر، لأن الخادم الآن **يفشل سريعًا** (fail fast) إذا رأى العلم ولم يجد مفتاحًا — هذه الميزة تمنع نشرًا يوحي بأنه مباشر وهو في الحقيقة تجريبي. إن أردت نشرًا تجريبيًا بلا مزوّد، أزل العلم صراحةً بدل ترك الإعداد ناقصًا.
-5. بعد اكتمال النشر، اضرب `/health` بدون رمز وتحقق من `{"status":"ok"}` (هذا المسار بسيط عمدًا لفحص موازن الأحمال). استخدم `/runtime-info` بترويسة `Authorization: Bearer $CELA_API_TOKEN` للتحقق من هوية التنفيذ الفعلية:
+4. `render.yaml` يضبط `CELA_USE_LIVE_PROVIDER=0` (وضع معاينة) و`CELA_PROVIDER_*` مسبقًا، لذلك ينشر Blueprint بنجاح **بلا أي مفتاح**. فعّل الوضع الحي بخطوتين: أضف `GEMINI_API_KEY` كسر (Secret)، ثم غيّر العلم إلى `1` وأعد النشر. الخادم **يفشل سريعًا** (fail fast) إذا رأى العلم مفعّلًا بلا مزوّد صالح — وهذه الميزة تمنع نشرًا يوحي بأنه مباشر وهو في الحقيقة تجريبي. قبل النشر يلتقط `scripts/deploy_doctor.py` الحالة نفسها بالخطأ `live_provider_unconfigured`.
+5. اسم النموذج ليس مضمونًا: `CELA_PROVIDER_MODEL` مجرد إعداد، وأهلية المفتاح تحددها Google. إن رفض المزوّد النموذج الافتراضي (`gemini-2.5-flash`)، غيّره وأعد تشغيل A1/A6 وسجّل التغيير بدل افتراض النجاح.
+6. بعد اكتمال النشر، اضرب `/health` بدون رمز وتحقق من `{"status":"ok"}` (هذا المسار بسيط عمدًا لفحص موازن الأحمال). استخدم `/runtime-info` بترويسة `Authorization: Bearer $CELA_API_TOKEN` للتحقق من هوية التنفيذ الفعلية:
    ```json
    {"execution":{"kind":"provider_adapter","model_name":"gemini-gemini-2.5-flash","goal_verification":"not_verified"}}
    ```
@@ -87,7 +88,7 @@ curl -s -H "Authorization: Bearer $CELA_API_TOKEN" http://127.0.0.1:8080/mission
 
 | العَرَض | السبب الأرجح |
 | --- | --- |
-| الخدمة ترفض البدء برسالة `no valid LLM provider` | `CELA_USE_LIVE_PROVIDER=1` بدون `GEMINI_API_KEY` صالح أو بدون `CELA_PROVIDER_BASE_URL`. |
+| الخدمة ترفض البدء برسالة `no valid LLM provider` | `CELA_USE_LIVE_PROVIDER=1` بدون `GEMINI_API_KEY` صالح أو بدون `CELA_PROVIDER_BASE_URL`. شغّل `python scripts/deploy_doctor.py --strict` ليكشفها قبل النشر (`live_provider_unconfigured`)، أو أعد العلم إلى `0` للمعاينة. |
 | `/health` يُبلغ `scripted` مع تمكين العلم | المفتاح موجود لكنه مرفوض (انظر السجلات لأي `fallback_reason`). |
 | أول طلب 500 على Postgres | لم يتم تثبيت `[distributed]` (يؤمّنه `render.yaml` تلقائيًا)، أو DSN خاطئ. |
 | أسماء أحداث تسلسلية `seq` غير متصلة بعد إعادة التشغيل | لم يتم ربط `CELA_RUN_STORE_URL` فالخادم يعمل على مخزن مؤقت في الذاكرة. |
