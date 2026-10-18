@@ -434,6 +434,60 @@ def test_distiller_compresses_a_finished_run(ai: LocalAIEngine) -> None:
     assert "5050" in text and "python_execute→success" in text and len(text) < 900
 
 
+def test_distiller_survives_an_entity_pass_that_raises(ai: LocalAIEngine) -> None:
+    # The entity pass is optional by construction: an episode is still useful
+    # without it, and a memory layer that raises during a run's teardown costs
+    # more than the detail it was trying to recover.
+    class _Broken:
+        def extract_entities(self, text: str):
+            raise RuntimeError("nlp backend unavailable")
+
+    state = RunState(task="Sum the integers from 0 to 100", mode="react")
+    state.mark_finished(RunStatus.COMPLETED, answer="5050")
+    text = distill_run(state, ai=_Broken())
+    assert "5050" in text and "Entities" not in text
+    # No engine at all is the same contract, not a separate code path to guard.
+    assert "Entities" not in distill_run(state)
+
+
+def test_distiller_normalises_dedupes_and_caps_entities(ai: LocalAIEngine) -> None:
+    class _Fake:
+        def extract_entities(self, text: str):
+            return {
+                "entities": [
+                    {"text": "Aramco"},  # dict shapes: text, value, name
+                    {"value": " Cairo "},  # stripped
+                    {"name": "Aramco"},  # duplicate, dropped
+                    "Riyadh",  # bare string
+                    {"text": "   "},  # blank, dropped
+                    None,  # missing, dropped
+                    {"text": "EGX"},
+                    {"text": "Nile"},
+                    {"text": "Delta"},  # beyond the cap of five
+                ]
+            }
+
+    state = RunState(task="Aramco and EGX in Cairo", mode="react")
+    state.mark_finished(RunStatus.COMPLETED, answer="done")
+    text = distill_run(state, ai=_Fake())
+    assert "Entities: Aramco, Cairo, Riyadh, EGX, Nile." in text
+    assert "Delta" not in text
+
+
+def test_distiller_records_artifact_names(ai: LocalAIEngine) -> None:
+    from os_core.types import Artifact
+
+    state = RunState(task="build a report", mode="react")
+    state.artifacts.extend(
+        [
+            Artifact(kind="file", filename="report.csv"),
+            Artifact(kind="html", filename="chart.html"),
+        ]
+    )
+    state.mark_finished(RunStatus.COMPLETED, answer="written")
+    assert "Artifacts: report.csv, chart.html." in distill_run(state, ai=ai)
+
+
 def test_learn_from_run_writes_an_episode_with_run_provenance(manager: MemoryManager) -> None:
     from os_core.types import ToolResult
 
