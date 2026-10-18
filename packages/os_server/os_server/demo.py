@@ -436,8 +436,6 @@ def build_demo_platform(
     registry, _guard, _browser = build_registry()
     if primary_model is not None:
         # Caller supplied an explicit model (tests / forced failure paths).
-        from os_core.models import describe_execution as _describe
-
         if isinstance(primary_model, ResilientModel):
             model: ChatModel = primary_model
         else:
@@ -447,9 +445,8 @@ def build_demo_platform(
             model = ResilientModel(
                 fallback=fallback, primary=primary_model, label="explicit"
             )
-        _mode_info = {"mode": "explicit", "kind": _describe(model).kind}
     else:
-        model, _mode_info = resolve_platform_model(
+        model, _ = resolve_platform_model(
             mode=mode,
             transport=transport,
             require_live=require_live,

@@ -35,27 +35,6 @@ class _RequestRecorder:
     def __init__(self) -> None:
         self.requests: list[dict[str, Any]] = []
 
-    def _tool_response(self, code: str) -> str:
-        # Use a tiny in-process sandbox-safe evaluator only for code like
-        # `print(<expression>)`. Anything else returns a marker so the test
-        # fails loudly rather than silently executing arbitrary stuff.
-        import ast
-
-        try:
-            tree = ast.parse(code)
-            if (
-                len(tree.body) == 1
-                and isinstance(tree.body[0], ast.Expr)
-                and isinstance(tree.body[0].value, ast.Call)
-                and isinstance(tree.body[0].value.func, ast.Name)
-                and tree.body[0].value.func.id == "print"
-            ):
-                args = [ast.literal_eval(a) for a in tree.body[0].value.args]
-                return " ".join(str(a) for a in args)
-        except Exception:
-            pass
-        return f"<unhandled-code> {code!r}"
-
     def handler(self, request: Any) -> Any:
         import httpx
 
@@ -182,8 +161,12 @@ async def _main() -> int:
     # Second request includes the tool observation.
     assert len(recorder.requests) >= 2, "expected at least one tool-result round trip"
     second = recorder.requests[1]
-    assert any(m.get("role") == "tool" for m in second["body"]["messages"]), (
-        "second call must carry the tool observation"
+    tool_messages = [m for m in second["body"]["messages"] if m.get("role") == "tool"]
+    assert tool_messages, "second call must carry the tool observation"
+    # The observation is the real python_execute sandbox output for
+    # ``print(7*8)``: a fixed reply here would prove only that JSON parsed.
+    assert "56" in str(tool_messages[-1].get("content", "")), (
+        f"tool observation is not the sandbox output: {tool_messages[-1]!r}"
     )
     assert state.status.value == "completed", f"run did not complete: {state.status.value}"
     assert final_kind == "provider_adapter", (
