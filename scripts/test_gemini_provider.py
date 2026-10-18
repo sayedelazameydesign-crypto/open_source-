@@ -319,7 +319,7 @@ async def main() -> int:
         record(
             "precondition: key present",
             False,
-            f"{key_var} is empty — set it before running this test.",
+            "the credential environment variable is empty — set it before running this test.",
         )
         _print_summary()
         return 2
