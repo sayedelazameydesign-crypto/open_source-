@@ -5,6 +5,11 @@
 > التشغيل: شغّل الـ backend أولًا، ثم من هذا المجلد:
 > `CELA_BACKEND_URL=http://127.0.0.1:8080 CELA_API_TOKEN=... CELA_PRIVATE_API_TOKEN=... npm run dev`
 > الرموز تبقى في خادم Next فقط (وكيل `app/api/backend/*`) ولا تصل للمتصفح أبدًا.
+>
+> **بوابة وصول المشغّل:** الوكيل يوثّق *الخادم* أمام الـbackend ولا يوثّق *المتصل* — فمن
+> يصل إلى الوكيل العام يستخدم رموز الخادم، بما فيها نطاق `/cela/v1` الخاص. لذلك تُفرض
+> بوابة وصول المشغّل (`CELA_WEB_ACCESS_SECRET`) على `app/api/backend/*` — انظر
+> [بوابة وصول المشغّل](#بوابة-وصول-المشغّل-cela_web_access_secret) أدناه.
 
 ## الواجهة الحالية
 
@@ -44,6 +49,70 @@ approval_requested, approval_resolved,
 review, log, warning, error, run_finished
 ```
 
+## بوابة وصول المشغّل (`CELA_WEB_ACCESS_SECRET`)
+
+الوكيل `app/api/backend/*` يُضيف `Authorization: Bearer …` من بيئة الخادم إلى كل طلب
+صادر. هذا يوثّق **الخادم** أمام الـbackend، ولا يوثّق **المتصل** أمام الوكيل: أي شخص
+يصل إلى الوكيل العامّ يركب على رموز الخادم — بما فيها نطاق `/cela/v1` الخاص. في
+منتج «مستخدم واحد» هذا يعني أن الواجهة العامّة على الإنترنت تساوي صلاحية وصول
+كاملة. البوابة هي الطبقة التي تغيّر ذلك: **إثبات وصول للمشغّل** يُطلب قبل أي
+خروج للشبكة.
+
+### الأوضاع الثلاثة
+
+الوضع يُحسم من الإعداد **وقت الطلب** (`lib/access-gate.ts` — نفس الملف للتوأمين
+Next.js وCloudflare Pages، فالعقد واحد):
+
+| الوضع | الشرط | سلوك الوكيل |
+|---|---|---|
+| `enforced` | `CELA_WEB_ACCESS_SECRET` مضبوط | يُرفض الطلب بـ`401 access_required` حتى يقدّم المتصل إثباتًا صالحًا |
+| `unconfigured` | السر غائب، والبيئة إنتاجية أو غير معروفة | يُرفض بـ`503 access_gate_unconfigured` — **فشل مغلق**، لا فتح صامت للوكيل |
+| `open` | السر غائب، والتشغيل محلي/اختبار صراحةً (`NODE_ENV=development\|test` أو `CELA_WEB_GATE_REQUIRED=0`) | سلوك سابق بلا بوابة (وضع الجهاز المحلي) |
+
+> «غير معروفة» تُعامَل كإنتاج عمدًا: بيئات بلا `NODE_ENV` (مثل Cloudflare Workers)
+> تفشل مغلقة أيضًا.
+
+### نقطتا النهاية
+
+| الطلب | النتيجة |
+|---|---|
+| `GET /api/access` | `{ required, authorized, configured, mode }` — حالة البوابة كما يقرّرها الخادم |
+| `POST /api/access` | `{ "secret": "…" }` أو ترويسة `X-Celia-Access`؛ عند المطابقة فقط يُضبط كوكي `HttpOnly` |
+| `DELETE /api/access` | يمسح كوكي هذا المتصفّح فقط («اقفل هذا المتصفّح») |
+
+### تصميم الكوكي
+
+الكوكي **لا يحمل السر نفسه**، بل يحمل إثباتًا موقّعًا ومنتهي الصلاحية:
+`v1.<تاريخ-الانتهاء-بالثواني>.<hex HMAC-SHA256>` مشتقّ من السر عبر `crypto.subtle`
+(نفس التنفيذ على Node وWorkers). النتيجة:
+
+- سرٌ مسروق يُبطل بإدارة الدوران (`CELA_WEB_ACCESS_SECRET` جديد) — لا إثباتات سارية.
+- لا يمكن تمديد صلاحية الكوكي: تاريخ الانتهاء مغطّى بالتوقيع.
+- لا صدى للسر في أي استجابة أو سجلّ؛ المقارنة في **زمن ثابت** (`constantTimeEqual`).
+- `DELETE /api/access` يمسح الكوكي المحلي فقط — عند الاشتباه في سرقة، **درِّر السر**.
+- الترويسة `X-Celia-Access` تحمل السر الخام (للأتمتة: `curl`، `CI`)، وتُقارن في زمن
+  ثابت ولا تُسجَّل أبدًا — الوكيل يسجّل *اسم* الخطأ فقط عند فشل الـbackend.
+
+### الحدود — ما ليست هي البوابة
+
+البوابة **ليست** هوية مستخدم ولا نظام صلاحيات: هي إثبات «أنت المشغّل» لعملية واحدة.
+رموز الـbackend (`CELA_API_TOKEN` / `CELA_PRIVATE_API_TOKEN`) تبقى مطلوبة للوصول
+المباشر إلى خدمة Render، والوصول إلى الواجهة وحده لا يمنح صلاحية على الـbackend.
+منشور على الإنترنت ⇒ اضبط `CELA_WEB_ACCESS_SECRET`، أو `CELA_WEB_GATE_REQUIRED=0`
+لفتح مقصود صريح (لا تتركه على وضع `open` في الإنتاج).
+
+### التحقق
+
+```bash
+npm run test:gate-parity   # تطابق التوأمين في كل قرار (6/6)
+npm run test:next-proxy    # عقد الوكيل Next.js والبوابة (28/28)
+npm run test:access-gate   # واجهة القفل عبر jsdom (5/5)
+```
+
+وللمسار الحيّ: شغّل `npm run start` (وضع الإنتاج) وتحقّق من
+`GET /api/access` — بلا سر يجب أن يعيد `mode: "unconfigured"` وأن يعيد الوكيل
+`503`؛ ومع سر يجب أن يعيد `mode: "enforced"` وأن يعيد `401` بلا إثبات.
+
 ## قواعد البناء (من ADR-0002)
 
 1. **`GET /runs/{id}` أولًا، ثم WebSocket.** لا تعتمد على الأحداث وحدها؛ المخزن يُعيد
@@ -65,6 +134,11 @@ python -m os_server.cli serve --demo --host 0.0.0.0 --port 8080
 cd packages/web
 npm ci
 CELA_BACKEND_URL=http://127.0.0.1:8080 CELA_API_TOKEN=... CELA_PRIVATE_API_TOKEN=... npm run dev
+
+# ومع بوابة الوصول (موصى به في أي نشر يُعامَل كعام):
+CELA_BACKEND_URL=http://127.0.0.1:8080 CELA_API_TOKEN=... CELA_PRIVATE_API_TOKEN=... \
+  CELA_WEB_ACCESS_SECRET=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))') \
+  npm run dev
 ```
 
 ## override أمني لـPostCSS

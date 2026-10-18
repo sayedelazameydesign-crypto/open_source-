@@ -91,6 +91,11 @@ curl -X POST -H "Authorization: Bearer $CELA_PRIVATE_API_TOKEN" \
 كما يمكن استدعاء المنطق نفسه مباشرةً من Python دون HTTP عبر `CelaBrowser` — راجع
 [`docs/CELA_API.md`](docs/CELA_API.md).
 
+> **طبقة ثانية في الواجهة:** هذه مصادقة *الخادم* أمام الـbackend. أما في `packages/web`
+> فلا يُوثَّق المتصل، فيُضاف إثبات وصول المشغّل (`CELA_WEB_ACCESS_SECRET`) أمام
+> الوكيل — انظر
+> [بوابة وصول المشغّل](packages/web/README.md#بوابة-وصول-المشغّل-cela_web_access_secret).
+
 ## سجل نتائج التشغيل (Run-Outcome Ledger)
 
 كل تنفيذ — نجح أو فشل أو استنفد ميزانيته أو قُطع — يُسجَّل كسطر JSON واحد في ملف
@@ -382,6 +387,7 @@ python -m os_server.cli run --demo "Sum the integers from 0 to 100"   # بلا �
 * `unshare` يحتاج Linux + صلاحيات؛ عند غيابه **لا يوجد عزل شبكة فعلي** ويُبلَّغ
   `network="unverified"` بدل ادعاء العزل. الإنتاج يحتاج E2B/Firecracker.
 * `packages/web` واجهة Next.js 15 مبنيّة؛ معاينة الـArtifacts المضمنة وشجرة DAG الحية ما زالتا ضمن المتبقي.
+* **بوابة وصول المشغّل (`CELA_WEB_ACCESS_SECRET`) إثبات «أنت المشغّل» لعملية واحدة، لا هوية ولا صلاحيات.** الوكيل `app/api/backend/*` يوثّق الخادم أمام الـbackend ولا يوثّق المتصل؛ لذلك تفرض البوابة (`/api/access`) إثباتًا موقّعًا ومنتهي الصلاحية — كوكي `HttpOnly` لا تحمل السر، أو ترويسة `X-Celia-Access` للأتمتة. الإنتاج بلا سر **يفشل مغلقًا** (`503 access_gate_unconfigured`)، والوكيل على `packages/web` أو `functions/` يبقى بلا حماية إن فُتح صريحًا بـ`CELA_WEB_GATE_REQUIRED=0`. رموز الـbackend تبقى مطلوبة للوصول المباشر إلى Render. التفاصيل: [`packages/web/README.md`](packages/web/README.md#بوابة-وصول-المشغّل-cela_web_access_secret).
 * حالة التشغيل الحية داخل العملية افتراضيًا؛ مع `CELA_RUN_STORE_URL=sqlite:///<path>` (أو `--store-url`) تُحفظ الحالات والأحداث والـArtifacts والتذاكر (مجزّأة) بشكل دائم وتنجو التشغيلات المنتهية من إعادة التشغيل — لكن تعدد النسخ المتزامن ما زال يحتاج Postgres+Redis (ADR-0004).
 * سجل النتائج ملف محلي واحد بلا تدوير (rotation) ولا تنسيق بين المضيفين؛ قراءته
   تعيد قراءة الملف كاملًا — كافٍ لنموذج أولي، وغير كافٍ لأسطول.
