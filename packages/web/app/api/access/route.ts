@@ -1,16 +1,21 @@
 import {
   ACCESS_HEADER,
   accessCookieHeader,
+  accessStatus,
   clearAccessCookieHeader,
   constantTimeEqual,
-  hasValidAccess,
   normalizeSecret,
+  runtimeNodeEnv,
 } from "../../../lib/access-gate";
 
 /**
  * Operator unlock for the optional access gate (`CELA_WEB_ACCESS_SECRET`).
  *
- * * `GET`    → `{ required, authorized }` so the UI can show the gate overlay.
+ * * `GET`    → `{ required, authorized, configured, mode }`. In
+ *   `unconfigured` mode (production/unknown runtime without a secret) this is
+ *   `{ required: true, authorized: false, configured: false }`, matching the
+ *   proxies' fail-closed `503 access_gate_unconfigured` so the UI can show a
+ *   configuration error instead of pretending the workspace is open.
  * * `POST`   → body `{ "secret": "…" }` (or an `X-Celia-Access` header); a match
  *   sets the `HttpOnly` cookie that the `/api/backend/*` proxies accept.
  * * `DELETE` → clears the cookie ("lock this browser").
@@ -31,10 +36,9 @@ function baseHeaders(): Record<string, string> {
 
 async function status(secret: string, request: Request): Promise<Response> {
   return new Response(
-    JSON.stringify({
-      required: Boolean(secret),
-      authorized: await hasValidAccess(request, secret),
-    }),
+    JSON.stringify(
+      await accessStatus(request, secret, runtimeNodeEnv(), process.env.CELA_WEB_GATE_REQUIRED),
+    ),
     { status: 200, headers: baseHeaders() },
   );
 }

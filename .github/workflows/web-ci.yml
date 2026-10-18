@@ -38,6 +38,7 @@ jobs:
       - run: npm run test:deploy
       - run: npm run test:next-proxy
       - run: npm run test:gate-parity
+      - run: npm run test:access-gate
       - run: npm run build
       # The Cloudflare Pages shape is a different build: static export with the
       # Next proxy excluded and the edge BFF taking over. Build it in CI so a
