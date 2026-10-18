@@ -3,6 +3,7 @@
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Icon } from "./icon";
+import { AccessGate } from "./access-gate";
 
 function Navigation({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
@@ -117,6 +118,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           : "أدوات المشروع";
   return (
     <div className="app-frame">
+      <AccessGate />
       <a className="skip-link" href="#main-content">
         تخطّ إلى المحتوى
       </a>

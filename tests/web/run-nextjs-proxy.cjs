@@ -11,6 +11,7 @@ execFileSync(process.execPath, [path.join(modules, 'typescript/bin/tsc'),
   '--module', 'commonjs', '--moduleResolution', 'node', '--target', 'es2022',
   '--lib', 'es2022,dom,dom.iterable', '--strict', '--skipLibCheck',
   'packages/web/app/api/backend/[...path]/route.ts',
+  'packages/web/app/api/access/route.ts',
 ], { cwd: root, stdio: 'inherit' });
 execFileSync(process.execPath, ['--test', 'tests/web/nextjs-proxy.cjs'], {
   cwd: root, stdio: 'inherit',

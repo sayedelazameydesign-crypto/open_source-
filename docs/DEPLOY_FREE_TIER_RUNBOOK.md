@@ -147,9 +147,13 @@ Cloudflare → Pages → المشروع → **Settings → Variables and Secrets
 | `CELA_API_TOKEN` | Secret | الرمز العام نفسه |
 | `CELA_PRIVATE_API_TOKEN` | Secret | الرمز الخاص نفسه |
 | `CELA_BACKEND_TIMEOUT_MS` | Plain (اختياري) | `25000` افتراضيًا، والحد الأقصى `60000` |
+| `CELA_WEB_ACCESS_SECRET` | Secret (موصى به) | سر وصول المشغّل: يُشترط على كل `/api/backend/*` (كوكي عبر `POST /api/access` أو ترويسة `X-Celia-Access`). اتركه فارغًا فقط للاستخدام المحلي الفردي. |
 
 > هذه المتغيرات تُقرأ في **وقت التشغيل** داخل Pages Function. متغيرات *البناء* لا تحتاجها.
 > `deploy_doctor` يحذّرك صراحةً أنه لا يرى أسرار وقت التشغيل من بيئة البناء (`cloudflare_backend_url_unset`).
+> بوابة الوصول (`CELA_WEB_ACCESS_SECRET`) هي التوصية المطبقة لمراجعة المصادقة (Finding 1):
+> الوكيل يصادق الخادم على الخلفية، والبوابة تضيف طبقة مصادقة بسيطة للمشغّل الواحد أمام
+> الإنترنت العام. نفس المتغير يُضبط في Vercel عند النشر عبر Next.js.
 
 ### 3.3 النشر اليدوي (بديل عن ربط Git)
 
