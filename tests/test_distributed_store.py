@@ -56,15 +56,30 @@ def test_postgres_store_full_roundtrip() -> None:
 
 
 def test_postgres_missing_driver_fails_loudly_not_silently() -> None:
-    if pytest.importorskip("psycopg", reason="psycopg installed"):
-        pass
-    store = PostgresRunStore("postgres://localhost/cela")
+    """Lazily connecting to a bogus URL must raise a clear RuntimeError (never
+    silently fall back to in-memory storage). The message differs by state:
+    without psycopg it points at installing the [distributed] extra; with
+    psycopg it surfaces a redacted connection error.
+    """
+    try:
+        import psycopg  # noqa: F401
+        driver_present = True
+    except ImportError:
+        driver_present = False
+
+    store = PostgresRunStore("postgres://0.0.0.0:1/cela")
     try:
         store.list_run_ids()
     except RuntimeError as exc:
-        assert "distributed" in str(exc)
-    else:  # pragma: no cover - psycopg present but no server
-        pytest.skip("psycopg importable; connection error path is environment-specific")
+        msg = str(exc)
+        if driver_present:
+            assert "PostgreSQL connection failed" in msg
+            # The DSN is password-bearing and must be scrubbed.
+            assert "://" not in msg.split("PostgreSQL connection failed: ", 1)[-1]
+        else:
+            assert "psycopg" in msg.lower() or "distributed" in msg
+    else:  # pragma: no cover - environment-specific
+        pytest.skip("unexpectedly connected to bogus DSN")
 
 
 class _FakeRedis:

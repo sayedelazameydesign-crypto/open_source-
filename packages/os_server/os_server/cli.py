@@ -754,12 +754,35 @@ def main(argv: list[str] | None = None) -> int:
     for name in {"run", "flow"}:
         p = sub.add_parser(name, help="execute one task")
         p.add_argument("task")
-        p.add_argument("--demo", action="store_true", help="offline scripted model")
+        mode_group = p.add_mutually_exclusive_group()
+        mode_group.add_argument(
+            "--demo",
+            action="store_true",
+            help="force offline scripted model even if a live provider is set",
+        )
+        mode_group.add_argument(
+            "--live",
+            action="store_true",
+            help=(
+                "force the live OpenAI-compatible provider "
+                "(CELA_PROVIDER_* / GEMINI / GROQ / OPENROUTER); needs a key"
+            ),
+        )
         p.add_argument("--max-steps", type=int, default=8)
         p.add_argument("--ledger", default=None, help=LEDGER_HELP)
 
     s = sub.add_parser("serve", help="start the HTTP + WebSocket API")
-    s.add_argument("--demo", action="store_true")
+    serve_mode_group = s.add_mutually_exclusive_group()
+    serve_mode_group.add_argument(
+        "--demo",
+        action="store_true",
+        help="force offline scripted model even if a live provider is set",
+    )
+    serve_mode_group.add_argument(
+        "--live",
+        action="store_true",
+        help="force the live OpenAI-compatible provider",
+    )
     s.add_argument("--host", default="0.0.0.0")
     s.add_argument("--port", type=int, default=8080)
     s.add_argument("--ledger", default=None, help=LEDGER_HELP)
@@ -974,8 +997,36 @@ def main(argv: list[str] | None = None) -> int:
             # explicit --ledger (including 'off') is honoured by exporting it.
             os.environ["CELA_LEDGER_PATH"] = args.ledger
 
+        from os_server.demo import free_tier_model_from_env as _ftm
+        from os_server.demo import is_live_provider_enabled as _ilpe
+        _want_live = (not args.demo) and (bool(args.live) or _ilpe())
+        _live_available = _ftm() is not None
+        _use_live = _want_live and _live_available
+        if _want_live and not _live_available:
+            print(
+                "error: live provider requested but no valid provider is configured. "
+                "Set CELA_PROVIDER_BASE_URL + CELA_PROVIDER_MODEL + the corresponding "
+                "API key env var (default: GEMINI_API_KEY), or unset --live / "
+                "CELA_USE_LIVE_PROVIDER to run in offline demo mode.",
+                file=sys.stderr,
+            )
+            return 2
+
         def platform_factory(mode: str, max_steps: int) -> Platform:
-            return build_demo_platform_for(mode, interactive=True, max_steps=max_steps)
+            return build_demo_platform_for(
+                mode,
+                interactive=True,
+                max_steps=max_steps,
+                use_env_provider=_use_live,
+                require_live=_want_live,
+            )
+
+        _model_label = (
+            "live provider (fail-closed fallback to scripted)"
+            if _use_live
+            else "scripted demo"
+        )
+        print(f"  model: {_model_label}")
 
         print(f"serving on http://{args.host}:{args.port}")
         serve(
@@ -988,20 +1039,57 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    if not args.demo:
+    from os_core.models import describe_execution
+
+    from os_server.demo import (
+        build_demo_platform,
+        free_tier_model_from_env,
+        is_live_provider_enabled,
+    )
+
+    mode = "flow" if args.command == "flow" else "react"
+    demo_forced = bool(getattr(args, "demo", False))
+    want_live = (not demo_forced) and (
+        bool(getattr(args, "live", False)) or is_live_provider_enabled()
+    )
+    live_available = free_tier_model_from_env() is not None
+    use_live = want_live and live_available
+
+    if want_live and not live_available:
         print(
-            "error: only --demo (offline) is wired in this prototype. "
-            "Point OpenAICompatModel at vLLM/Ollama for real models.",
+            "error: live provider requested (--live or CELA_USE_LIVE_PROVIDER=1) "
+            "but no valid LLM provider is configured.\n"
+            "  • Set CELA_PROVIDER_BASE_URL + CELA_PROVIDER_MODEL + the API key "
+            "env var (default: GEMINI_API_KEY).\n"
+            "  • Or pass --demo to run the fully-offline scripted demo.",
             file=sys.stderr,
         )
         return 2
-
-    from os_server.demo import build_demo_platform
-
-    mode = "flow" if args.command == "flow" else "react"
-    platform = build_demo_platform(mode=mode)
+    if not args.demo and not use_live:
+        print(
+            "error: no live provider configured and --demo was not passed.\n"
+            "  • Pass --demo for the fully-offline scripted run.\n"
+            "  • Or set CELA_PROVIDER_BASE_URL + CELA_PROVIDER_MODEL + <KEY>_API_KEY,\n"
+            "    gated by CELA_USE_LIVE_PROVIDER=1 or --live, to drive real tool\n"
+            "    calls (fail-closed fallback to scripted on error).",
+            file=sys.stderr,
+        )
+        return 2
+    platform = build_demo_platform(
+        mode=mode,
+        use_env_provider=use_live,
+        interactive=True,
+        require_live=want_live,
+    )
     platform.config.max_steps = args.max_steps
     platform.ledger = resolve_ledger(args.ledger)
+    exec_desc = describe_execution(platform.model)
+    provider_label = (
+        f"live provider ({exec_desc.model_name}) [fail-closed fallback]"
+        if exec_desc.kind == "provider_adapter"
+        else "scripted demo"
+    )
+    print(f"  model: {provider_label}")
     return asyncio.run(_run(platform, args.task))
 
 
