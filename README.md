@@ -404,7 +404,8 @@ python -m os_server.cli run --demo "Sum the integers from 0 to 100"   # بلا �
 
 ## الترخيص وطرف ثالث
 
-**[MIT](LICENSE)** — للكود المكتوب هنا. راجع [`CONTRIBUTING.md`](CONTRIBUTING.md) قبل المساهمة.
+**[MIT](LICENSE)** — للكود المكتوب هنا. راجع [`CONTRIBUTING.md`](CONTRIBUTING.md) قبل المساهمة،
+وللإبلاغ عن ثغرة أمنية: [`SECURITY.md`](SECURITY.md) — لا تفتح issue عامًا.
 
 رخصة الجذر **لا تغطي كل ما في هذا الـcheckout**. النطاق الكامل، مادةً بمادة:
 **[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)**.

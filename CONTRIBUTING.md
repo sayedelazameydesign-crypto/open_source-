@@ -97,9 +97,11 @@ Use the GitHub issue tracker and include:
 
 ### Security vulnerabilities
 
-**Do not open a public issue for an exploitable flaw.** Contact the repository
-owner privately through the address on their GitHub profile, with a description
-and a reproduction. Expect an acknowledgement within a few days; a fix and a
+**Do not open a public issue for an exploitable flaw.** The full policy — scope,
+known limits, and what to include — lives in [`SECURITY.md`](SECURITY.md). In
+short: use GitHub **private vulnerability reporting** (`Security → Report a
+vulnerability`); if that is unavailable, contact the repository owner privately
+through the address on their GitHub profile, with a description and a reproduction. Expect an acknowledgement within a few days; a fix and a
 release follow as quickly as the problem allows, and you will be credited unless
 you would rather not be.
 
