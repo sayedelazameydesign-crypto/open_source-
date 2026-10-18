@@ -59,3 +59,29 @@ def test_key_value_is_never_stored_on_model(clean_env):
     clean_env.setenv("GEMINI_API_KEY", "super-secret-value")
     m = free_tier_model_from_env()
     assert "super-secret-value" not in m.model_dump_json()
+
+
+def test_reported_identity_follows_model_override(clean_env):
+    from os_core.models import describe_execution
+
+    clean_env.setenv("GEMINI_API_KEY", "k")
+    clean_env.setenv("GEMINI_MODEL", "gemini-2.5-pro")
+    info = describe_execution(free_tier_model_from_env())
+    assert info.model_name == "gemini-2.5-pro"
+
+
+def test_reported_identity_default_is_unchanged(clean_env):
+    from os_core.models import describe_execution
+
+    clean_env.setenv("GEMINI_API_KEY", "k")
+    info = describe_execution(free_tier_model_from_env())
+    assert info.model_name == "gemini-2.5-flash"
+
+
+def test_groq_model_env_is_not_applied_to_gemini_or_groq(clean_env):
+    # Overrides are Gemini-only; GROQ_MODEL must not leak into the Groq adapter.
+    clean_env.setenv("GROQ_API_KEY", "k")
+    clean_env.setenv("GROQ_MODEL", "some-other-model")
+    m = free_tier_model_from_env()
+    assert m.model_id == "llama-3.3-70b-versatile"
+    assert m.base_url == "https://api.groq.com/openai/v1"

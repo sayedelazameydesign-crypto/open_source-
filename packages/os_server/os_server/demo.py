@@ -497,11 +497,16 @@ def free_tier_model_from_env(*, transport: Any = None) -> OpenAICompatModel | No
     )
     for env_var, name, model_id, base_url in candidates:
         if os.environ.get(env_var, "").strip():
-            # Optional overrides use the same names CELA.PRO reads (see
-            # .env.example). Unset or blank means the built-in default above.
-            prefix = env_var.removesuffix("_API_KEY")
-            model_id = os.environ.get(f"{prefix}_MODEL", "").strip() or model_id
-            base_url = os.environ.get(f"{prefix}_BASE_URL", "").strip() or base_url
+            # Gemini only: GEMINI_MODEL / GEMINI_BASE_URL use the same names CELA.PRO
+            # reads (see .env.example). Blank or unset keeps the built-in defaults.
+            # The reported name follows the model actually sent, so a disclosed
+            # identity never names a model that was not used.
+            if env_var == "GEMINI_API_KEY":
+                override_model = os.environ.get("GEMINI_MODEL", "").strip()
+                if override_model:
+                    model_id = override_model
+                    name = override_model
+                base_url = os.environ.get("GEMINI_BASE_URL", "").strip() or base_url
             return OpenAICompatModel(
                 name=name,
                 model_id=model_id,
