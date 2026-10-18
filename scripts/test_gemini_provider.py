@@ -304,9 +304,11 @@ async def main() -> int:
     print("=" * 72)
     print("Gemini provider acceptance test (A1/A6)")
     print("=" * 72)
-    print(f"  base_url       : {base_url or '(invalid)'}")
+    # The URL may carry userinfo and the credential variable name is
+    # credential-shaped, so neither is printed: only whether they are set.
+    print(f"  base_url       : {'configured' if base_url else '(not set)'}")
     print(f"  model          : {model_id}")
-    print(f"  credential var : {key_var}")
+    print("  credential var : configured (name not printed)")
     print(f"  key present    : {'yes' if api_key else 'no'}")
     print()
 
@@ -314,7 +316,7 @@ async def main() -> int:
         record(
             "precondition: valid provider URL",
             False,
-            f"CELA_PROVIDER_BASE_URL is not a valid http(s) URL: {base_url!r}",
+            "CELA_PROVIDER_BASE_URL is not a valid http(s) URL",
         )
         _print_summary()
         return 2
