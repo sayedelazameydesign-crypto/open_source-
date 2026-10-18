@@ -23,6 +23,9 @@ const ENV = {
   CELA_BACKEND_URL: 'https://celia-api.onrender.com',
   CELA_API_TOKEN: PUBLIC_TOKEN,
   CELA_PRIVATE_API_TOKEN: PRIVATE_TOKEN,
+  // Workers has no reliable NODE_ENV, so the local fixture opens the optional
+  // gate explicitly; production/unknown environments otherwise fail closed.
+  CELA_WEB_GATE_REQUIRED: '0',
 };
 
 let calls = [];
@@ -133,7 +136,7 @@ test('POST body and JSON content type are forwarded', async () => {
 test('missing token is a named 503 and never echoes the other token', async () => {
   stubFetch(() => jsonResponse({}));
   const res = await call('/api/backend/cela/v1/whoami', {
-    env: { CELA_BACKEND_URL: ENV.CELA_BACKEND_URL, CELA_API_TOKEN: PUBLIC_TOKEN },
+    env: { CELA_BACKEND_URL: ENV.CELA_BACKEND_URL, CELA_API_TOKEN: PUBLIC_TOKEN, CELA_WEB_GATE_REQUIRED: '0' },
   });
 
   assert.equal(res.status, 503);
@@ -252,6 +255,12 @@ test('204 responses keep no body (Workers rejects bodyful 204s)', async () => {
 
 const GATE_SECRET = 'gate-secret-789';
 const GATED_ENV = { ...ENV, CELA_WEB_ACCESS_SECRET: GATE_SECRET };
+const gate = require(path.join(__dirname, '../../.cache/deploy-function/lib/access-gate.js'));
+
+async function gateCookie(secret = GATE_SECRET, ttlSeconds) {
+  const proof = await gate.issueAccessProof(secret, ttlSeconds);
+  return `celia_access=${encodeURIComponent(proof)}`;
+}
 
 test('gate: without the operator secret the proxy refuses before any backend or token state', async () => {
   stubFetch(() => jsonResponse({}));
@@ -261,14 +270,23 @@ test('gate: without the operator secret the proxy refuses before any backend or 
   assert.equal(body.code, 'access_required');
   assert.equal(body.retryable, false);
   assert.equal(calls.length, 0);
+
+  // Strict mode (CELA_WEB_GATE_REQUIRED=1) fails closed when the secret is
+  // missing instead of silently serving an open proxy.
+  const unconfigured = await call('/api/backend/health', {
+    env: { ...ENV, CELA_WEB_ACCESS_SECRET: undefined, CELA_WEB_GATE_REQUIRED: '1' },
+  });
+  assert.equal(unconfigured.status, 503);
+  assert.equal(JSON.parse(await unconfigured.text()).code, 'access_gate_unconfigured');
+  assert.equal(calls.length, 0);
 });
 
-test('gate: a valid cookie or header unlocks the proxy; a wrong one does not', async () => {
+test('gate: a valid signed cookie or header unlocks the proxy; a wrong one does not', async () => {
   stubFetch(() => jsonResponse({ status: 'ok' }));
 
   const viaCookie = await call('/api/backend/health', {
     env: GATED_ENV,
-    headers: { cookie: `celia_access=${GATE_SECRET}` },
+    headers: { cookie: await gateCookie() },
   });
   assert.equal(viaCookie.status, 200);
   assert.equal(calls[0].init.headers.get('authorization'), `Bearer ${PUBLIC_TOKEN}`);
@@ -285,6 +303,12 @@ test('gate: a valid cookie or header unlocks the proxy; a wrong one does not', a
     headers: { cookie: 'celia_access=not-the-secret' },
   });
   assert.equal(wrong.status, 401);
+
+  const expired = await call('/api/backend/health', {
+    env: GATED_ENV,
+    headers: { cookie: await gateCookie(GATE_SECRET, -10) },
+  });
+  assert.equal(expired.status, 401);
   assert.equal(calls.length, 2);
 });
 
@@ -307,7 +331,8 @@ test('access function twin: GET/POST/DELETE keep the same contract', async () =>
   });
   assert.equal(right.status, 200);
   const cookie = right.headers.get('set-cookie');
-  assert.match(cookie, /celia_access=/);
+  assert.match(cookie, /celia_access=v1\.\d+\.[0-9a-f]{64}/);
+  assert.ok(!cookie.includes(GATE_SECRET));
   assert.match(cookie, /HttpOnly/);
 
   const locked = await access.onRequest({ request: new Request('https://celia.pages.dev/api/access', { method: 'DELETE' }), env });

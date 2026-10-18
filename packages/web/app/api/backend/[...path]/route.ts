@@ -1,6 +1,13 @@
 import type { NextRequest } from "next/server";
 
-import { accessDeniedResponse, hasValidAccess, normalizeSecret } from "../../../../lib/access-gate";
+import {
+  accessDeniedResponse,
+  accessGateUnconfiguredResponse,
+  gateMode,
+  hasValidAccess,
+  normalizeSecret,
+  runtimeNodeEnv,
+} from "../../../../lib/access-gate";
 
 /**
  * Next.js route handler — server-side BFF for `/api/backend/*`.
@@ -219,10 +226,14 @@ async function proxy(request: Request): Promise<Response> {
     return jsonError(400, "invalid_path", "request path is not a valid /api/backend/* path");
   }
 
-  // Operator access gate (auth review Finding 1): checked before any backend
+  // Operator access gate (auth review Finding 1): decided before any backend
   // or token state can leak through error selection.
   const accessSecret = normalizeSecret(process.env.CELA_WEB_ACCESS_SECRET);
-  if (!hasValidAccess(request, accessSecret)) {
+  const mode = gateMode(accessSecret, runtimeNodeEnv(), process.env.CELA_WEB_GATE_REQUIRED);
+  if (mode === "unconfigured") {
+    return accessGateUnconfiguredResponse(BFF_MARKER);
+  }
+  if (mode === "enforced" && !(await hasValidAccess(request, accessSecret))) {
     return accessDeniedResponse(BFF_MARKER);
   }
 

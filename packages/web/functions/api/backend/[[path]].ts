@@ -36,8 +36,11 @@
 
 import {
   accessDeniedResponse,
+  accessGateUnconfiguredResponse,
+  gateMode,
   hasValidAccess,
   normalizeSecret,
+  runtimeNodeEnv,
 } from "../../../lib/access-gate";
 
 export interface CeliaPagesEnv {
@@ -48,6 +51,8 @@ export interface CeliaPagesEnv {
   CELA_BACKEND_TIMEOUT_MS?: string;
   /** Optional operator access gate secret (see `lib/access-gate.ts`). */
   CELA_WEB_ACCESS_SECRET?: string;
+  /** `1` = gate secret required even without NODE_ENV=production; `0` = explicitly open. */
+  CELA_WEB_GATE_REQUIRED?: string;
 }
 
 interface PagesContext {
@@ -237,10 +242,14 @@ export async function onRequest({ request, env }: PagesContext): Promise<Respons
     return jsonError(400, "invalid_path", "request path is not a valid /api/backend/* path");
   }
 
-  // Operator access gate (auth review Finding 1): checked before any backend
+  // Operator access gate (auth review Finding 1): decided before any backend
   // or token state can leak through error selection.
   const accessSecret = normalizeSecret(env.CELA_WEB_ACCESS_SECRET);
-  if (!hasValidAccess(request, accessSecret)) {
+  const mode = gateMode(accessSecret, runtimeNodeEnv(), env.CELA_WEB_GATE_REQUIRED);
+  if (mode === "unconfigured") {
+    return accessGateUnconfiguredResponse(BFF_MARKER);
+  }
+  if (mode === "enforced" && !(await hasValidAccess(request, accessSecret))) {
     return accessDeniedResponse(BFF_MARKER);
   }
 

@@ -16,6 +16,7 @@ const { GET, POST, HEAD } = require(path.join(
   __dirname, '../../.cache/nextjs-proxy/app/api/backend/[...path]/route.js'));
 const access = require(path.join(
   __dirname, '../../.cache/nextjs-proxy/app/api/access/route.js'));
+const gate = require(path.join(__dirname, '../../.cache/nextjs-proxy/lib/access-gate.js'));
 
 const realFetch = globalThis.fetch;
 const PUBLIC_TOKEN = 'pub-token-123';
@@ -24,8 +25,11 @@ const ENV = {
   CELA_BACKEND_URL: 'https://celia-api.onrender.com',
   CELA_API_TOKEN: PUBLIC_TOKEN,
   CELA_PRIVATE_API_TOKEN: PRIVATE_TOKEN,
+  // The default fixture models local development, where the optional access
+  // gate remains open when no operator secret is configured.
+  NODE_ENV: 'development',
 };
-const ENV_KEYS = ['CELA_BACKEND_URL', 'CELA_API_TOKEN', 'CELA_PRIVATE_API_TOKEN', 'CELA_BACKEND_TIMEOUT_MS', 'CELA_WEB_ACCESS_SECRET'];
+const ENV_KEYS = ['CELA_BACKEND_URL', 'CELA_API_TOKEN', 'CELA_PRIVATE_API_TOKEN', 'CELA_BACKEND_TIMEOUT_MS', 'CELA_WEB_ACCESS_SECRET', 'CELA_WEB_GATE_REQUIRED', 'NODE_ENV'];
 
 const originalEnv = {};
 for (const key of ENV_KEYS) originalEnv[key] = process.env[key];
@@ -169,7 +173,7 @@ test('POST body and JSON content type are forwarded', async () => {
 test('missing token is a named 503 and never echoes the other token', async () => {
   stubFetch(() => jsonResponse({}));
   const res = await call('/api/backend/cela/v1/whoami', {
-    env: { CELA_BACKEND_URL: ENV.CELA_BACKEND_URL, CELA_API_TOKEN: PUBLIC_TOKEN },
+    env: { CELA_BACKEND_URL: ENV.CELA_BACKEND_URL, CELA_API_TOKEN: PUBLIC_TOKEN, NODE_ENV: 'development' },
   });
 
   assert.equal(res.status, 503);
@@ -290,6 +294,11 @@ test('204 responses keep no body', async () => {
 const GATE_SECRET = 'gate-secret-789';
 const GATED_ENV = { ...ENV, CELA_WEB_ACCESS_SECRET: GATE_SECRET };
 
+async function gateCookie(secret = GATE_SECRET, ttlSeconds) {
+  const proof = await gate.issueAccessProof(secret, ttlSeconds);
+  return `celia_access=${encodeURIComponent(proof)}`;
+}
+
 test('gate: without the operator secret the proxy refuses before any backend or token state', async () => {
   stubFetch(() => jsonResponse({}));
   const denied = await call('/api/backend/health', { env: GATED_ENV });
@@ -308,12 +317,12 @@ test('gate: without the operator secret the proxy refuses before any backend or 
   assert.equal(JSON.parse(await masked.text()).code, 'access_required');
 });
 
-test('gate: a valid cookie or header unlocks the proxy; a wrong one does not', async () => {
+test('gate: a valid signed cookie or header unlocks the proxy; a wrong one does not', async () => {
   stubFetch(() => jsonResponse({ status: 'ok' }));
 
   const viaCookie = await call('/api/backend/health', {
     env: GATED_ENV,
-    headers: { cookie: `celia_access=${GATE_SECRET}` },
+    headers: { cookie: await gateCookie() },
   });
   assert.equal(viaCookie.status, 200);
   assert.equal(calls[0].init.headers.get('authorization'), `Bearer ${PUBLIC_TOKEN}`);
@@ -333,10 +342,117 @@ test('gate: a valid cookie or header unlocks the proxy; a wrong one does not', a
   assert.equal(calls.length, 2);
 });
 
+test('gate: the cookie carries a signed proof, never the secret itself', async () => {
+  const cookie = await gateCookie();
+  assert.ok(!cookie.includes(GATE_SECRET));
+  assert.match(cookie, /celia_access=v1\.\d+\.[0-9a-f]{64}/);
+});
+
+test('gate: a stolen proof can be replayed until expiry, and secret rotation revokes it', async () => {
+  stubFetch(() => jsonResponse({ status: 'ok' }));
+  const stolen = await gateCookie();
+
+  const first = await call('/api/backend/health', { env: GATED_ENV, headers: { cookie: stolen } });
+  assert.equal(first.status, 200);
+  const replay = await call('/api/backend/health', { env: GATED_ENV, headers: { cookie: stolen } });
+  assert.equal(replay.status, 200);
+  assert.equal(calls.length, 2);
+
+  // DELETE /api/access only clears one browser. Rotation is the revocation
+  // mechanism for every outstanding signed proof.
+  const rotated = await call('/api/backend/health', {
+    env: { ...ENV, CELA_WEB_ACCESS_SECRET: 'rotated-secret-999' },
+    headers: { cookie: stolen },
+  });
+  assert.equal(rotated.status, 401);
+  assert.equal(calls.length, 2);
+});
+
+test('gate: expired or tampered proofs are rejected (the expiry is signed)', async () => {
+  stubFetch(() => jsonResponse({ status: 'ok' }));
+
+  const expired = await call('/api/backend/health', {
+    env: GATED_ENV,
+    headers: { cookie: await gateCookie(GATE_SECRET, -10) },
+  });
+  assert.equal(expired.status, 401);
+
+  const proof = await gate.issueAccessProof(GATE_SECRET);
+  const [version, exp, sig] = proof.split('.');
+  const tampered = `${version}.${Number(exp) + 86_400}.${sig}`;
+  const extended = await call('/api/backend/health', {
+    env: GATED_ENV,
+    headers: { cookie: `celia_access=${encodeURIComponent(tampered)}` },
+  });
+  assert.equal(extended.status, 401);
+
+  const forged = `${version}.${exp}.${'0'.repeat(64)}`;
+  const forgedRes = await call('/api/backend/health', {
+    env: GATED_ENV,
+    headers: { cookie: `celia_access=${encodeURIComponent(forged)}` },
+  });
+  assert.equal(forgedRes.status, 401);
+  assert.equal(calls.length, 0);
+});
+
+test('gate: production without a secret fails closed with a named 503', async () => {
+  stubFetch(() => jsonResponse({}));
+
+  const production = await call('/api/backend/health', {
+    env: { CELA_BACKEND_URL: ENV.CELA_BACKEND_URL, CELA_API_TOKEN: PUBLIC_TOKEN, NODE_ENV: 'production' },
+  });
+  assert.equal(production.status, 503);
+  const body = JSON.parse(await production.text());
+  assert.equal(body.code, 'access_gate_unconfigured');
+  assert.equal(calls.length, 0);
+
+  // Explicit escape hatch: an operator may open the proxy on purpose.
+  const opened = await call('/api/backend/health', {
+    env: { ...ENV, NODE_ENV: 'production', CELA_WEB_GATE_REQUIRED: '0' },
+  });
+  assert.equal(opened.status, 200);
+
+  // And an explicit strict flag also fails closed outside NODE_ENV=production.
+  const strict = await call('/api/backend/health', {
+    env: { ...ENV, CELA_WEB_GATE_REQUIRED: '1' },
+  });
+  assert.equal(strict.status, 503);
+  assert.equal(JSON.parse(await strict.text()).code, 'access_gate_unconfigured');
+});
+
+test('gateMode: unknown runtimes fail closed; only recognized local/test runs stay open', () => {
+  assert.equal(gate.gateMode(GATE_SECRET, 'production', '0'), 'enforced');
+  assert.equal(gate.gateMode('', 'production', undefined), 'unconfigured');
+  assert.equal(gate.gateMode('', undefined, undefined), 'unconfigured');
+  assert.equal(gate.gateMode('', '', undefined), 'unconfigured');
+  assert.equal(gate.gateMode('', 'development', undefined), 'open');
+  assert.equal(gate.gateMode('', 'test', undefined), 'open');
+  assert.equal(gate.gateMode('', 'production', '0'), 'open');
+  assert.equal(gate.gateMode('', 'development', '1'), 'unconfigured');
+});
+
 test('gate: without CELA_WEB_ACCESS_SECRET the gate stays open (local single-user mode)', async () => {
   stubFetch(() => jsonResponse({ status: 'ok' }));
   const res = await call('/api/backend/health');
   assert.equal(res.status, 200);
+});
+
+test('gate: upstream failure logs never contain the access secret', async () => {
+  stubFetch(() => { throw new TypeError('connection refused'); });
+  const logged = [];
+  const original = console.error;
+  console.error = (...args) => { logged.push(args.join(' ')); };
+  try {
+    const res = await call('/api/backend/health', {
+      env: GATED_ENV,
+      headers: { 'x-celia-access': GATE_SECRET },
+    });
+    assert.equal(res.status, 502);
+  } finally {
+    console.error = original;
+  }
+  assert.ok(logged.length > 0);
+  for (const line of logged) assert.ok(!line.includes(GATE_SECRET), line);
 });
 
 test('access endpoint: GET reports whether the gate is required and unlocked', async () => {
@@ -349,12 +465,17 @@ test('access endpoint: GET reports whether the gate is required and unlocked', a
   assert.deepEqual(await res.json(), { required: true, authorized: false });
 
   res = await access.GET(new Request('https://celia.example/api/access', {
-    headers: { cookie: `celia_access=${GATE_SECRET}` },
+    headers: { cookie: await gateCookie() },
   }));
   assert.deepEqual(await res.json(), { required: true, authorized: true });
+
+  res = await access.GET(new Request('https://celia.example/api/access', {
+    headers: { cookie: await gateCookie(GATE_SECRET, -5) },
+  }));
+  assert.deepEqual(await res.json(), { required: true, authorized: false });
 });
 
-test('access endpoint: POST sets the HttpOnly cookie only for the right secret', async () => {
+test('access endpoint: POST sets the signed HttpOnly cookie only for the right secret', async () => {
   setEnv({ CELA_WEB_ACCESS_SECRET: GATE_SECRET });
 
   const wrong = await access.POST(new Request('https://celia.example/api/access', {
@@ -372,10 +493,17 @@ test('access endpoint: POST sets the HttpOnly cookie only for the right secret',
   }));
   assert.equal(right.status, 200);
   const cookie = right.headers.get('set-cookie');
-  assert.match(cookie, /celia_access=/);
+  assert.match(cookie, /celia_access=v1\.\d+\.[0-9a-f]{64}/);
+  assert.ok(!cookie.includes(GATE_SECRET));
   assert.match(cookie, /HttpOnly/);
   assert.match(cookie, /Secure/);
   assert.match(cookie, /SameSite=Lax/);
+  assert.match(cookie, /Path=\//);
+  assert.match(cookie, /Max-Age=\d+/);
+
+  // The minted cookie is accepted by the gate itself.
+  const proof = /celia_access=([^;]+)/.exec(cookie)[1];
+  assert.equal(await gate.verifyAccessProof(proof, GATE_SECRET), true);
 
   const viaHeader = await access.POST(new Request('https://celia.example/api/access', {
     method: 'POST',
