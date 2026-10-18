@@ -18,10 +18,13 @@ Usage::
         --dsn "postgresql://user:pass@host:5432/cela_test" --yes
 
 The DSN is read only from ``--dsn`` or ``CELA_TEST_POSTGRES_DSN``.
-``CELA_RUN_STORE_URL`` (the production variable) is deliberately ignored, and
-a DSN that resolves to the same host/port/database as ``CELA_RUN_STORE_URL``
-is refused. ``--yes`` is required so a copy/pasted command cannot silently
-write to a live database.
+``CELA_RUN_STORE_URL`` (the production variable) is deliberately ignored, and a
+DSN that resolves to the same database as ``CELA_RUN_STORE_URL`` is refused.
+"Same database" includes the username and — for Supabase — the project ref, so
+two projects behind one regional pooler host are *not* mistaken for each other,
+while the same project reached through the pooler and the direct host still is.
+``--yes`` is required so a copy/pasted command cannot silently write to a live
+database.
 
 What it proves after the reconnect:
 
@@ -93,6 +96,46 @@ def _db_identity(dsn: str) -> str:
     return f"{host}:{port}/{database}"
 
 
+def _supabase_project_ref(username: str) -> str | None:
+    """``postgres.<ref>`` -> ``<ref>``.
+
+    Two Supabase projects in one region share a pooler host, port and database
+    name; the project ref in the *username* is what distinguishes them. It is
+    used for the identity comparison only and never printed.
+    """
+    if username.startswith("postgres.") and len(username) > len("postgres."):
+        return username.split(".", 1)[1]
+    return None
+
+
+def _dsn_fingerprint(dsn: str) -> tuple[str, int, str, str]:
+    """Everything that identifies the database, including the username."""
+    parsed = urlparse(dsn)
+    database = (parsed.path or "").lstrip("/") or "(default)"
+    return (
+        parsed.hostname or "",
+        parsed.port or 5432,
+        database,
+        parsed.username or "",
+    )
+
+
+def _same_database(left: str, right: str) -> bool:
+    """True when both DSNs address the same database.
+
+    Supabase needs the project ref in the comparison: its pooler host is shared
+    by every project in a region, so host/port/database alone would refuse a
+    perfectly separate test project. Conversely, the same project reached via
+    the direct host and via the pooler must still be recognised as one database.
+    """
+    left_fp, right_fp = _dsn_fingerprint(left), _dsn_fingerprint(right)
+    left_ref = _supabase_project_ref(left_fp[3])
+    right_ref = _supabase_project_ref(right_fp[3])
+    if left_ref and right_ref and left_ref == right_ref:
+        return True
+    return left_fp == right_fp
+
+
 def _resolve_dsn(args: argparse.Namespace) -> tuple[str, str]:
     dsn = (args.dsn or os.environ.get("CELA_TEST_POSTGRES_DSN") or "").strip()
     if not dsn:
@@ -104,10 +147,7 @@ def _resolve_dsn(args: argparse.Namespace) -> tuple[str, str]:
         return "", "this script requires a real PostgreSQL DSN (postgres:// or postgresql://)"
 
     production = os.environ.get("CELA_RUN_STORE_URL", "").strip()
-    if production and (
-        dsn == production
-        or _db_identity(dsn) == _db_identity(production)
-    ):
+    if production and (dsn == production or _same_database(dsn, production)):
         return "", (
             "refusing to write: this DSN resolves to the same database as "
             f"CELA_RUN_STORE_URL ({_db_identity(production)}). "

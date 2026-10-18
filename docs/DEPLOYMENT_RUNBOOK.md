@@ -74,7 +74,7 @@ curl -s -H "Authorization: Bearer $CELA_API_TOKEN" http://127.0.0.1:8080/mission
    export CELA_TEST_POSTGRES_DSN="postgresql://user:pass@host:5432/cela_test"
    python scripts/test_postgres_persistence.py --yes
    ```
-   - السكربت لا يقرأ `CELA_RUN_STORE_URL` إطلاقًا، ويرفض أي DSN يطابق نفس المضيف/المنفذ/القاعدة، ويطلب `--yes` قبل أي كتابة.
+   - السكربت لا يقرأ `CELA_RUN_STORE_URL` إطلاقًا، ويرفض أي DSN يطابق **نفس القاعدة** (بما في ذلك اسم المستخدم، ولمشاريع Supabase مرجع المشروع `postgres.<ref>` — فتختلف مشاريعتان على نفس مضيف الـpooler ولا تُخلطان)، ويطلب `--yes` قبل أي كتابة.
    - يطبع تحذيرًا واضحًا بأنه **يكتب ثم يحذف** سجلاته؛ استخدم `--keep` فقط إذا أردت فحص السجلات بعد النجاح.
    - ينفّذ مهمة تكتب ملفًا معروف البصمة عبر `python_execute`، يغلق الاتصال، يفتح اتصالًا جديدًا (محاكاة إعادة تشغيل)، ثم يؤكد استعادة:
      - الحالة النهائية + meta
