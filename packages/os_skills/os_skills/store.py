@@ -203,6 +203,24 @@ class PostgresSkillStore:
         skill.updated_at = time.time()
         with self._lock:
             conn = self._connection()
+            # The previous card is snapshotted before it is overwritten — the
+            # same rule SQLiteSkillStore follows. Without this the versions
+            # table stays empty for the whole life of the deployment and
+            # rollback() returns None for a card that genuinely has history:
+            # SkillManager.rollback then reports "nothing to restore" instead of
+            # restoring anything, and the permission-grant preservation it
+            # performs never runs.
+            row = (
+                conn.execute(
+                    "SELECT skill_json FROM skills WHERE skill_id=%s", (skill.skill_id,)
+                ).fetchone()
+            )
+            if row is not None and row[0] != skill.model_dump_json():
+                old = Skill.model_validate_json(row[0])
+                conn.execute(
+                    "INSERT INTO skill_versions VALUES(%s,%s,%s,%s)",
+                    (skill.skill_id, old.version, row[0], time.time()),
+                )
             conn.execute(
                 "INSERT INTO skills VALUES(%s,%s,%s,%s) ON CONFLICT(skill_id) DO UPDATE SET "
                 "signature=EXCLUDED.signature, skill_json=EXCLUDED.skill_json, "
