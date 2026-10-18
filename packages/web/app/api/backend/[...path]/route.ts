@@ -9,6 +9,10 @@ import {
   runtimeNodeEnv,
 } from "../../../../lib/access-gate";
 
+// Contract parity with Cloudflare Pages Function (tests/test_deploy_config.py):
+// - joined.startsWith("cela/") mirrors PRIVATE_PREFIX = "cela/"
+// - req.nextUrl.search mirrors new URL(request.url).search for SSE after_seq
+
 /**
  * Next.js route handler — server-side BFF for `/api/backend/*`.
  *
