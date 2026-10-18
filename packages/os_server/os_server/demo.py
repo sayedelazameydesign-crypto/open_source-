@@ -305,14 +305,32 @@ def demo_planner_model(task: str) -> ScriptedModel:
 
 
 def build_demo_platform_for(
-    mode: str, *, interactive: bool = False, max_steps: int = 8
+    mode: str,
+    *,
+    interactive: bool = False,
+    max_steps: int = 8,
+    use_env_provider: bool | None = None,
+    transport: Any = None,
+    require_live: bool = False,
 ) -> Platform:
-    """A platform whose scripted model matches the requested execution mode.
+    """A platform whose model matches the requested execution mode.
 
-    Each run gets its own instance: the run must never mutate shared config,
-    otherwise a later request inherits an earlier one's mode.
+    When ``CELA_USE_LIVE_PROVIDER=1`` (or ``use_env_provider=True``) a real
+    OpenAI-compatible endpoint (Gemini / Groq / OpenRouter / explicit
+    ``CELA_PROVIDER_*``) is wrapped in :class:`ResilientModel` so a quota /
+    network failure degrades honestly to the scripted fallback — and
+    ``describe_execution`` reports ``scripted`` rather than pretending the
+    provider answered.
     """
-    platform = build_demo_platform(mode=mode, interactive=interactive)
+    if use_env_provider is None:
+        use_env_provider = is_live_provider_enabled()
+    platform = build_demo_platform(
+        mode=mode,
+        interactive=interactive,
+        use_env_provider=use_env_provider,
+        transport=transport,
+        require_live=require_live,
+    )
     platform.config.max_steps = max_steps
     return platform
 
@@ -396,9 +414,44 @@ def demo_skill_manager():
     return _SKILL_MANAGER
 
 
-def build_demo_platform(*, mode: str = "auto", interactive: bool = False) -> Platform:
+def build_demo_platform(
+    *,
+    mode: str = "auto",
+    interactive: bool = False,
+    use_env_provider: bool = False,
+    primary_model: ChatModel | None = None,
+    transport: Any = None,
+    require_live: bool = False,
+) -> Platform:
+    """Build a demo/live platform.
+
+    When live provider mode is enabled (CELA_USE_LIVE_PROVIDER=1 or
+    use_env_provider=True) a valid provider is resolved via
+    :func:`resolve_platform_model` and wrapped with an honest scripted
+    fallback. If ``require_live=True`` and no provider is available, the
+    function raises RuntimeError rather than silently serving scripted runs
+    — this is what prevents a Render deploy from advertising
+    ``provider_adapter`` while actually running offline.
+    """
     registry, _guard, _browser = build_registry()
-    model = demo_planner_model("") if mode == "flow" else demo_react_model("")
+    if primary_model is not None:
+        # Caller supplied an explicit model (tests / forced failure paths).
+        if isinstance(primary_model, ResilientModel):
+            model: ChatModel = primary_model
+        else:
+            fallback: ScriptedModel = (
+                demo_planner_model("") if mode == "flow" else demo_react_model("")
+            )
+            model = ResilientModel(
+                fallback=fallback, primary=primary_model, label="explicit"
+            )
+    else:
+        model, _ = resolve_platform_model(
+            mode=mode,
+            transport=transport,
+            require_live=require_live,
+            live_enabled=use_env_provider,
+        )
     return Platform(
         model=model,
         registry=registry,
@@ -469,18 +522,103 @@ def demo_mission_planner_model(
     )
 
 
-def free_tier_model_from_env(*, transport: Any = None) -> OpenAICompatModel | None:
+def is_live_provider_enabled() -> bool:
+    """Return True when the operator has explicitly opted into live LLM calls.
+
+    Gated by CELA_USE_LIVE_PROVIDER=1/true/yes/on so a default Render deploy
+    (where the env var is unset) never makes outbound LLM calls without
+    operator consent.
+    """
+    return os.environ.get("CELA_USE_LIVE_PROVIDER", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _provider_from_env_explicit(
+    *,
+    transport: Any = None,
+    timeout: float = 60.0,
+    env: Any = None,
+) -> OpenAICompatModel | None:
+    """Build a provider from explicit CELA_PROVIDER_* env vars (highest priority).
+
+    Recognised variables (matches the operator command in the deployment plan):
+        CELA_PROVIDER_CREDENTIAL_VAR  name of the env var holding the credential
+                                      (default GEMINI_API_KEY).
+        CELA_PROVIDER_API_KEY_ENV     legacy alias for CELA_PROVIDER_CREDENTIAL_VAR,
+                                      kept for backwards compatibility with
+                                      earlier runbooks and local shells.
+        CELA_PROVIDER_BASE_URL        OpenAI-compatible base URL ending in /v1
+                                      or /v1beta/openai.  Legacy aliases:
+                                      CELA_MODEL_BASE_URL.
+        CELA_PROVIDER_MODEL           model id to request.  Legacy alias:
+                                      CELA_MODEL_ID.
+    """
+    # Resolution order for base_url:
+    #   1. CELA_PROVIDER_BASE_URL (current canonical name)
+    #   2. CELA_MODEL_BASE_URL    (legacy GitHub-secrets name, for existing
+    #      deployments that still set it)
+    cfg = os.environ if env is None else env
+    base_url = (
+        cfg.get("CELA_PROVIDER_BASE_URL", "").strip()
+        or cfg.get("CELA_MODEL_BASE_URL", "").strip()
+    )
+    model_id = (
+        cfg.get("CELA_PROVIDER_MODEL", "").strip()
+        or cfg.get("CELA_MODEL_ID", "").strip()
+    )
+    # Backwards-compat: accept the original CELA_PROVIDER_API_KEY_ENV if set,
+    # preferring CELA_PROVIDER_CREDENTIAL_VAR when both are present.
+    api_key_env = (
+        cfg.get("CELA_PROVIDER_CREDENTIAL_VAR", "").strip()
+        or cfg.get("CELA_PROVIDER_API_KEY_ENV", "").strip()
+        or "GEMINI_API_KEY"
+    )
+    if not base_url or not model_id:
+        return None
+    api_key = cfg.get(api_key_env, "").strip()
+    if not api_key:
+        return None
+    # Derive a human-readable name from the env var / model id.
+    label = api_key_env.replace("_API_KEY", "").lower()
+    return OpenAICompatModel(
+        name=f"{label}-{model_id}",
+        model_id=model_id,
+        base_url=base_url.rstrip("/"),
+        api_key_env=api_key_env,
+        timeout=timeout,
+        transport=transport,
+    )
+
+
+def free_tier_model_from_env(
+    *, transport: Any = None, env: Any = None
+) -> OpenAICompatModel | None:
     """Configure a free-tier OpenAI-compatible provider from env if present.
 
+    Resolution order:
+      1. Explicit CELA_PROVIDER_BASE_URL + CELA_PROVIDER_MODEL + key env.
+      2. First present of GEMINI_API_KEY -> GROQ_API_KEY -> OPENROUTER_API_KEY.
+
     Secrets remain in ``os.environ`` and are referenced only via ``api_key_env``
-    (ADR-0011). Priority order: Gemini 2.5 Flash -> Groq -> OpenRouter Free.
+    (ADR-0011). Returns None if no valid provider configuration exists.
+    ``env`` lets a caller inspect a mapping other than the process environment
+    (the readiness doctor does this); the default is ``os.environ``.
     """
+    cfg = os.environ if env is None else env
+    explicit = _provider_from_env_explicit(transport=transport, env=cfg)
+    if explicit is not None:
+        return explicit
     candidates = (
         (
             "GEMINI_API_KEY",
             "gemini-2.5-flash",
-            "gemini-2.5-flash",
-            "https://generativelanguage.googleapis.com/v1beta/openai",
+            cfg.get("GEMINI_MODEL", "").strip() or "gemini-2.5-flash",
+            cfg.get("GEMINI_BASE_URL", "").strip()
+            or "https://generativelanguage.googleapis.com/v1beta/openai",
         ),
         (
             "GROQ_API_KEY",
@@ -496,36 +634,86 @@ def free_tier_model_from_env(*, transport: Any = None) -> OpenAICompatModel | No
         ),
     )
     for env_var, name, model_id, base_url in candidates:
-        if os.environ.get(env_var, "").strip():
-            # Gemini only: GEMINI_MODEL / GEMINI_BASE_URL use the same names CELA.PRO
-            # reads (see .env.example). Blank or unset keeps the built-in defaults.
-            # The reported name follows the model actually sent, so a disclosed
-            # identity never names a model that was not used.
+        if cfg.get(env_var, "").strip():
             if env_var == "GEMINI_API_KEY":
-                override_model = os.environ.get("GEMINI_MODEL", "").strip()
-                if override_model:
-                    model_id = override_model
-                    name = override_model
-                base_url = os.environ.get("GEMINI_BASE_URL", "").strip() or base_url
+                # Gemini only: GEMINI_MODEL / GEMINI_BASE_URL use the same names
+                # CELA.PRO reads (see .env.example). Blank or whitespace counts as
+                # unset. The reported identity follows the model actually sent, so
+                # a disclosure never names a model that was not used.
+                name = model_id
             return OpenAICompatModel(
                 name=name,
                 model_id=model_id,
-                base_url=base_url,
+                base_url=base_url.rstrip("/"),
                 api_key_env=env_var,
-                timeout=30.0,
+                timeout=60.0,
                 transport=transport,
             )
     return None
 
 
-class ResilientMissionModel:
-    """Wraps an optional LLM provider with honest fallback to the deterministic core.
+def resolve_platform_model(
+    *,
+    mode: str,
+    transport: Any = None,
+    require_live: bool = False,
+    live_enabled: bool | None = None,
+) -> tuple[ChatModel, dict[str, Any]]:
+    """Resolve the model for a new platform instance, with fail-closed validation.
 
-    When ``primary`` is ``None`` or raises (e.g. HTTP 429 free-tier quota exceeded
-    or network error), execution switches cleanly to ``fallback`` (a
-    :class:`~os_core.models.ScriptedModel` driving the real inspection tools)
+    Returns (model, info) where info is a public-safe dict describing the
+    resolved configuration (no secrets). ``live_enabled`` lets a caller force
+    the offline path with ``False`` (the CLI's ``--demo`` and tests do this)
+    instead of re-reading only the environment gate; ``None`` keeps the
+    historical environment-driven behaviour. If require_live=True and no
+    valid provider is configured, raises RuntimeError instead of silently
+    falling back to scripted mode.
+    """
+    fallback: ScriptedModel = (
+        demo_planner_model("") if mode == "flow" else demo_react_model("")
+    )
+    if live_enabled is None:
+        live_enabled = is_live_provider_enabled()
+    primary = free_tier_model_from_env(transport=transport) if live_enabled else None
+
+    if require_live and live_enabled and primary is None:
+        raise RuntimeError(
+            "CELA_USE_LIVE_PROVIDER=1 is set but no valid LLM provider is configured. "
+            "Set CELA_PROVIDER_BASE_URL + CELA_PROVIDER_MODEL + the corresponding API key "
+            "env var (default: GEMINI_API_KEY), or unset CELA_USE_LIVE_PROVIDER to run "
+            "in offline demo mode."
+        )
+
+    if primary is not None:
+        model: ChatModel = ResilientModel(
+            fallback=fallback, primary=primary, label="live_provider"
+        )
+        info = {
+            "mode": "live",
+            "kind": "provider_adapter",
+            "model_name": primary.name,
+            "fallback_to": fallback.name,
+        }
+    else:
+        model = fallback
+        info = {
+            "mode": "offline_demo",
+            "kind": "scripted",
+            "model_name": fallback.name,
+        }
+    return model, info
+
+
+class ResilientModel:
+    """Wraps an optional LLM provider with honest fallback to a deterministic core.
+
+    When ``primary`` is ``None`` or raises (HTTP 4xx/5xx, network error, quota),
+    execution switches cleanly to ``fallback`` (a :class:`~os_core.models.ScriptedModel`)
     and records ``fallback_reason`` so ``describe_execution`` honestly reports
     ``kind="scripted"`` instead of pretending an LLM answered.
+
+    Used for both the generic ReAct/Flow CLI (stand-in + real tool calls) and
+    Mission OS.
     """
 
     def __init__(
@@ -533,9 +721,11 @@ class ResilientMissionModel:
         *,
         fallback: ScriptedModel,
         primary: ChatModel | None = None,
+        label: str = "live_provider",
     ) -> None:
         self.fallback = fallback
         self.primary = primary
+        self.label = label
         self.fallback_triggered: bool = primary is None
         self.fallback_reason: str | None = (
             "no_provider_configured" if primary is None else None
@@ -576,6 +766,10 @@ class ResilientMissionModel:
             temperature=temperature,
             max_tokens=max_tokens,
         )
+
+
+# Backwards-compatible alias for existing Mission OS callers/tests.
+ResilientMissionModel = ResilientModel
 
 
 def build_mission_platform(

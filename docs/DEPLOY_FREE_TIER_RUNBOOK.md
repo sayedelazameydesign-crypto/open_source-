@@ -62,7 +62,7 @@ postgresql://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/p
 | `CELA_API_TOKEN` | رمز عام (للواجهة والسطح العام) |
 | `CELA_PRIVATE_API_TOKEN` | رمز **مختلف** لـ `/cela/v1` |
 | `CELA_RUN_STORE_URL` | رابط Session pooler من الخطوة 1 |
-| `GEMINI_API_KEY` | اختياري (نماذج مجانية) |
+| `GEMINI_API_KEY` | مطلوب **فقط** بعد تفعيل الوضع الحي (الخطوة 2.6)؛ اتركه فارغًا في المعاينة |
 | `CELA_ACTIVEPIECES_*` | اختياري (أتمتة) |
 
 3. **لماذا `pip install -e ".[server,distributed]"` في `render.yaml`؟**
@@ -89,6 +89,28 @@ curl -sS -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer $CELA_API_TO
 curl -sS -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer $CELA_API_TOKEN" $API/cela/v1/whoami  # 401
 curl -sS -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer $CELA_PRIVATE_API_TOKEN" $API/cela/v1/whoami  # 200
 ```
+
+### 2.6 الوضع التجريبي أولًا، ثم الوضع الحي
+
+`render.yaml` يُنشئ الخدمة في **وضع المعاينة**: `CELA_USE_LIVE_PROVIDER=0`.
+لذلك يقلع الخادم بلا أي مفتاح، ويُعلن عن نفسه بصدق: `/runtime-info` يعيد
+`execution.kind = "scripted"`، وواجهة `ExecutionDisclosure` تعرض «تنفيذ تجريبي»
+بدل الإيحاء بأن نموذجًا حيًّا أجاب.
+
+1. أكمل خطوات §3–§4 أولًا وتأكد أن المهمة التجريبية تُحفظ وتُستعاد بعد إعادة تشغيل Render.
+2. أضف `GEMINI_API_KEY` كسرًا في Render (Dashboard → Environment)، ثم غيّر
+   `CELA_USE_LIVE_PROVIDER` إلى `1` وأعد النشر.
+3. شغّل اختبار القبول A1/A6 بمفتاح حقيقي (انظر `docs/DEPLOYMENT_RUNBOOK.md` §المرحلة أ)،
+   ثم تحقق من الخدمة المنشورة نفسها: `/runtime-info` يجب أن يعيد
+   `provider_adapter` مع `fallback_triggered=False` في مسار النجاح.
+
+> **فشل مغلق مقصود:** إذا بقي العلم على `1` بلا مفتاح صالح، يرفض الخادم الإقلاع،
+> ويعيد `scripts/deploy_doctor.py` الخطأ `live_provider_unconfigured` **قبل** النشر.
+> لا تترك العلم مفعّلًا على أمل أن يعمل لاحقًا.
+
+> **اسم النموذج ليس مضمونًا:** القيمة الافتراضية `gemini-2.5-flash` مجرد إعداد؛
+> أهلية المفتاح وحصته يقررهما المزوّد. إن رفض المزوّد النموذج، غيّر
+> `CELA_PROVIDER_MODEL`، وأعد تشغيل A1/A6، وسجّل التغيير بدل افتراض النجاح.
 
 > **نوم Render المجاني:** بعد 15 دقيقة خمول ينام الخادم ويستغرق ~50 ثانية للاستيقاظ.
 > لا تعطّل هذا في الخادم: وكيل الحافة يترجمه إلى `503 backend_starting` مع `Retry-After: 5`، والواجهة تعيد المحاولة،
@@ -161,6 +183,7 @@ grep -c "CELA_API_TOKEN\|local-dev-token" <(curl -sS $SITE/) || true        # 0 
 | 5 | `GET /api/backend/runs/{id}/events?after_seq=0` | `text/event-stream` وأحداث متتابعة |
 | 6 | إعادة تشغيل خدمة Render ثم فتح الواجهة | تعرض «الخادم يستيقظ» وتعيد المحاولة بدل خطأ خام |
 | 7 | تشغيل ثم إعادة تشغيل Render | التشغيل السابق يبقى في `/ledger` (Postgres لا القرص المؤقت) |
+| 8 | `CELA_TEST_POSTGRES_DSN=<قاعدة اختبار منفصلة> CELA_RUN_STORE_URL=<قاعدة التطبيق> python scripts/test_postgres_persistence.py --yes` | PASS، ثم حذف صفوف الاختبار (C6). مرجع الإنتاج للمقارنة فقط (أو `--production-dsn`)، وغيابه يوقف السكربت. مشروع Supabase ثانٍ مقبول حتى لو شارك مضيف الـpooler |
 
 ---
 
@@ -175,6 +198,7 @@ grep -c "CELA_API_TOKEN\|local-dev-token" <(curl -sS $SITE/) || true        # 0 
 | `503 backend_not_configured` مع «must not embed credentials» | `https://user:pass@host` | انقل الاعتماد إلى Secrets |
 | `413 payload_too_large` | جسم الطلب > 1 MiB | الوكيل يقبل JSON فقط؛ استخدم مسار رفع مخصصًا |
 | أول تشغيل `500` مع «psycopg is not installed» في السجل | بناء Render بلا extra `distributed` | أعد النشر بـ `pip install -e ".[server,distributed]"` |
+| الخدمة ترفض الإقلاع: `no valid LLM provider` | `CELA_USE_LIVE_PROVIDER=1` بلا مفتاح/عنوان صالح | إمّا أضف `GEMINI_API_KEY` و`CELA_PROVIDER_*`، أو أعد العلم إلى `0` للمعاينة |
 | ضياع التشغيلات بعد نوم Render | `CELA_RUN_STORE_URL` على sqlite/ذاكرة | استخدم رابط Supabase (Session pooler) |
 | `401 invalid or missing private API token` على `/cela/v1/*` | استخدام الرمز العام | استخدم `CELA_PRIVATE_API_TOKEN` |
 | الصفحة تعمل و`/api/backend/*` يعطي 404 على Pages | مجلد الإخراج أو دالة الحافة غير منشورة | تأكد من `out` ووجود `functions/` في جذر المشروع |

@@ -85,7 +85,11 @@ from os_server.cela import (
     create_private_router,
     private_auth_dependency,
 )
-from os_server.demo import build_demo_platform_for, free_tier_model_from_env
+from os_server.demo import (
+    build_demo_platform_for,
+    free_tier_model_from_env,
+    is_live_provider_enabled,
+)
 from os_server.launcher_api import (
     LAUNCHER_API_PREFIX,
     LAUNCHER_PRIVATE_PREFIX,
@@ -160,10 +164,28 @@ def create_app(
     ):
         raise ValueError("private_api_token must differ from api_token")
 
+    # Fail fast at startup if live mode is requested but misconfigured, rather
+    # than silently serving scripted/demo responses under a provider label.
+    _live_enabled = is_live_provider_enabled()
+    if _live_enabled and free_tier_model_from_env() is None and platform_or_factory is None:
+        raise RuntimeError(
+            "CELA_USE_LIVE_PROVIDER=1 is set but no valid LLM provider is configured. "
+            "Set CELA_PROVIDER_BASE_URL + CELA_PROVIDER_MODEL + the corresponding API key "
+            "env var (default: GEMINI_API_KEY), or unset CELA_USE_LIVE_PROVIDER to run "
+            "in offline demo mode."
+        )
+
     resolved_factory: Platform | PlatformFactory = (
         platform_or_factory
         if platform_or_factory is not None
-        else (lambda mode, max_steps: build_demo_platform_for(mode, max_steps=max_steps))
+        else (
+            lambda mode, max_steps: build_demo_platform_for(
+                mode,
+                interactive=True,
+                max_steps=max_steps,
+                require_live=_live_enabled,
+            )
+        )
     )
     rt = (
         runtime
