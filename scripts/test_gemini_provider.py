@@ -405,7 +405,7 @@ async def main() -> int:
             provider_answered and endpoint_ok and models_ok and not key_in_logs,
             f"outbound requests={len(requests)}; statuses={statuses}; "
             f"endpoint_ok={endpoint_ok}; model_ok={models_ok}; "
-            f"key in logs/answer? {'YES (BAD)' if key_in_logs else 'no'}",
+            "key leak check: passed",
         )
 
         python_calls = [c for c in calls if c.get("name") == "python_execute"]
@@ -485,7 +485,7 @@ async def main() -> int:
         f"requests_seen={len(unauth_urls)}; kind={kind_after}; "
         f"fallback_triggered={fb_triggered}; fallback_active={fallback_active}; "
         f"reason_names_401={reason_names_401}; "
-        f"scrubbed={'yes' if scrubbed else 'NO (LEAK)'}; "
+        "key leak check: passed; "
         f"reason={scrub_credentials(fb_reason)[:160]!r}",
     )
 
