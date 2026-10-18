@@ -39,6 +39,31 @@ a laptop. Three rules keep it that way:
 `tests/` contains no sleep-margin assertion today; a PR that adds one should
 say why in its description.
 
+## Branches, commits and pull requests
+
+Every PR targets `main` and lands as **one squash commit**; `main` therefore reads
+as a list of merge commits, and the reasoning for each change lives in the **PR
+description and the ADR that motivated it** — not in the branch. Write the
+description for a reader who will never see your branch: what was true before,
+what is true now, and what you verified. Numeric claims (`1123 tests`, `0.4s p50`)
+belong next to the command that produces them; a hand-typed count in prose is a
+claim the next PR quietly falsifies — see [`docs/EVIDENCE.md`](docs/EVIDENCE.md).
+
+Before you open the PR:
+
+```bash
+make check        # ruff + evidence-count freshness + the whole suite, offline
+```
+
+CI repeats it on Python 3.11 / 3.12 / 3.13, then smoke-tests the CLI end to end
+and the run-outcome ledger, and CodeQL scans the tree. Nothing here needs a key
+or a network connection — if your change does, it does not belong in the default
+suite (mark it `network` and say why).
+
+A clone can be **shallow**: `git log` showing a single commit usually means the
+clone, not the project. Run `git fetch --unshallow` (or read the history on
+GitHub) before concluding that history is missing.
+
 ## Third-party code, assets and ownership
 
 **Read [`docs/THIRD_PARTY_POLICY.md`](docs/THIRD_PARTY_POLICY.md) before adding
@@ -97,9 +122,11 @@ Use the GitHub issue tracker and include:
 
 ### Security vulnerabilities
 
-**Do not open a public issue for an exploitable flaw.** Contact the repository
-owner privately through the address on their GitHub profile, with a description
-and a reproduction. Expect an acknowledgement within a few days; a fix and a
+**Do not open a public issue for an exploitable flaw.** The full policy — scope,
+known limits, and what to include — lives in [`SECURITY.md`](SECURITY.md). In
+short: use GitHub **private vulnerability reporting** (`Security → Report a
+vulnerability`); if that is unavailable, contact the repository owner privately
+through the address on their GitHub profile, with a description and a reproduction. Expect an acknowledgement within a few days; a fix and a
 release follow as quickly as the problem allows, and you will be credited unless
 you would rather not be.
 

@@ -130,6 +130,10 @@ packages/
 `os_tools` و `os_agents` لا يعرف أحدهما الآخر؛ يلتقيان فقط عبر `ToolRegistry` و
 `ChatModel`، فأي طبقة تُستبدل وحدها.
 
+ملفات الجذر `cela_pro_app.py` · `launch_cela_pro.sh` · `CELA_PRO_COLAB.ipynb` ·
+`CELA_PRO_STATUS.md` **ليست جزءًا من هذه الحزم**: إنها تطبيق CELA.PRO المستقل —
+انظر قسم «تطبيق CELA.PRO (Gradio)» أدناه.
+
 ## الاختبار
 
 ```bash
@@ -402,9 +406,42 @@ python -m os_server.cli run --demo "Sum the integers from 0 to 100"   # بلا �
   (لا `resources`/`prompts`/`sampling`/OAuth)، وقائمة الأدوات تُثبَّت عند الإقلاع — التحديث الساخن
   مؤجَّل صراحة (ADR-0017).
 
+## تطبيق CELA.PRO (Gradio) — تطبيق مستقل، لا جزء من المنصة
+
+أربعة ملفات في جذر المستودع لا تنتمي إلى الحزم أعلاه: [`cela_pro_app.py`](cela_pro_app.py)
+(واجهة Gradio عربية RTL) و[`launch_cela_pro.sh`](launch_cela_pro.sh) و
+[`CELA_PRO_COLAB.ipynb`](CELA_PRO_COLAB.ipynb) و[`CELA_PRO_STATUS.md`](CELA_PRO_STATUS.md).
+هو تطبيق محادثة متعدد المزوّدين (Groq · Gemini · OpenRouter · Kimi · Ollama) بمحرّك مهارات
+(`SkillEngine`) و`OrionAgent` بموافقة بشرية، وفحص اتصال يُصنَّف
+`BLOCKED` / `FAIL` / `INCONCLUSIVE` / `PASS`، وحجب تلقائي لقيمة المفتاح (`[REDACTED]`)
+في رسائل الخطأ ومخرجات الفحص.
+
+**ما هو ليس كذلك — بصراحة:**
+
+* لا تستورده أي حزمة `os_*` ولا يستوردها هو؛ ولا يسجّل أدواته في `ToolRegistry`.
+* لا يمرّ على `SSRFGuard` ولا `EgressPolicy`، ولا ينفّذ كوده داخل الصندوق المعزول،
+  ولا يكتب في سجل النتائج. ضوابط المنصة أعلاه **لا تغطّيه**.
+* ليس ضمن حزم النشر: `pyproject` يضم حزم `os_*` وحدها.
+* واجهته ليست واجهة المنصة. إن أردت واجهة **فوق** المنصة (سند ميزانية، حواجز،
+  موافقات، سجل نتائج) فالطريق هو `packages/web` مع `/cela/v1`.
+
+**تشغيله:** `gradio` **ليس** في أي extra في هذا المشروع — `pip install -e ".[dev,server]"`
+لا يكفي لتشغيله؛ ثبّته بنفسك أو استخدم السكربت (يثبّته ويحذّر عند غياب حماية الرابط العام).
+متغيّراته: `CELA_DEFAULT_PROVIDER` و`*_API_KEY` و`*_BASE_URL` و`*_MODEL` و
+`GRADIO_USERNAME`/`GRADIO_PASSWORD` — نموذجها في [`.env.example`](.env.example).
+
+**ضوابطه الأمنية الخاصة:** لا تبديل تلقائي بين المزوّدين عند الفشل (رسالة خطأ تخصّ
+المزوّد المختار) · «المفتاح مُعيّن» **لا** يعني «متصل» — الادعاء الوحيد بالاتصال هو `PASS` ·
+اختيار المزوّد يعرض حالة الإعداد فقط ولا يرسل قيمة المفتاح إلى الواجهة.
+
+اختباراته [`tests/test_cela_pro_app.py`](tests/test_cela_pro_app.py): محلية بالكامل،
+بلا نداءات API حقيقية، وتتحقّق من سلامة دفتر Colab أيضًا (وتعمل ببديل وهمي حين لا يكون
+`gradio` مثبَّتًا، كما في CI).
+
 ## الترخيص وطرف ثالث
 
-**[MIT](LICENSE)** — للكود المكتوب هنا. راجع [`CONTRIBUTING.md`](CONTRIBUTING.md) قبل المساهمة.
+**[MIT](LICENSE)** — للكود المكتوب هنا. راجع [`CONTRIBUTING.md`](CONTRIBUTING.md) قبل المساهمة،
+وللإبلاغ عن ثغرة أمنية: [`SECURITY.md`](SECURITY.md) — لا تفتح issue عامًا.
 
 رخصة الجذر **لا تغطي كل ما في هذا الـcheckout**. النطاق الكامل، مادةً بمادة:
 **[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)**.
