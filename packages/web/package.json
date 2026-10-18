@@ -11,7 +11,10 @@
     "typecheck": "tsc --noEmit",
     "test:components": "node ../../tests/web/run-components.cjs",
     "test:hooks": "node ../../tests/web/run-hooks.cjs",
-    "test:deploy": "node ../../tests/web/run-deploy-function.cjs"
+    "test:deploy": "node ../../tests/web/run-deploy-function.cjs",
+    "test:next-proxy": "node ../../tests/web/run-nextjs-proxy.cjs",
+    "test:gate-parity": "node ../../tests/web/run-gate-parity.cjs",
+    "test:access-gate": "node ../../tests/web/run-access-gate-ui.cjs"
   },
   "dependencies": {
     "next": "^15.5.28",

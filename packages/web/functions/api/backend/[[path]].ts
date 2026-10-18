@@ -34,12 +34,25 @@
  * below so this file needs no `@cloudflare/workers-types` dependency.
  */
 
+import {
+  accessDeniedResponse,
+  accessGateUnconfiguredResponse,
+  gateMode,
+  hasValidAccess,
+  normalizeSecret,
+  runtimeNodeEnv,
+} from "../../../lib/access-gate";
+
 export interface CeliaPagesEnv {
   CELA_BACKEND_URL?: string;
   CELA_API_TOKEN?: string;
   CELA_PRIVATE_API_TOKEN?: string;
   /** Wall-clock budget for the backend's *response headers*, in milliseconds. */
   CELA_BACKEND_TIMEOUT_MS?: string;
+  /** Optional operator access gate secret (see `lib/access-gate.ts`). */
+  CELA_WEB_ACCESS_SECRET?: string;
+  /** `1` = gate secret required even without NODE_ENV=production; `0` = explicitly open. */
+  CELA_WEB_GATE_REQUIRED?: string;
 }
 
 interface PagesContext {
@@ -227,6 +240,17 @@ export async function onRequest({ request, env }: PagesContext): Promise<Respons
   const path = backendPath(request);
   if (path === null) {
     return jsonError(400, "invalid_path", "request path is not a valid /api/backend/* path");
+  }
+
+  // Operator access gate (auth review Finding 1): decided before any backend
+  // or token state can leak through error selection.
+  const accessSecret = normalizeSecret(env.CELA_WEB_ACCESS_SECRET);
+  const mode = gateMode(accessSecret, runtimeNodeEnv(), env.CELA_WEB_GATE_REQUIRED);
+  if (mode === "unconfigured") {
+    return accessGateUnconfiguredResponse(BFF_MARKER);
+  }
+  if (mode === "enforced" && !(await hasValidAccess(request, accessSecret))) {
+    return accessDeniedResponse(BFF_MARKER);
   }
 
   const backend = resolveBackend(env.CELA_BACKEND_URL);

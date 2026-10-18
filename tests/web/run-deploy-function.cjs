@@ -9,6 +9,7 @@ execFileSync(process.execPath, [path.join(modules, 'typescript/bin/tsc'),
   '--module', 'commonjs', '--moduleResolution', 'node', '--target', 'es2022',
   '--lib', 'es2022,dom,dom.iterable', '--strict', '--skipLibCheck',
   'packages/web/functions/api/backend/[[path]].ts',
+  'packages/web/functions/api/access.ts',
 ], { cwd: root, stdio: 'inherit' });
 execFileSync(process.execPath, ['--test', 'tests/web/deploy-function.cjs'], {
   cwd: root, stdio: 'inherit',
