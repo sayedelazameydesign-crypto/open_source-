@@ -183,7 +183,7 @@ grep -c "CELA_API_TOKEN\|local-dev-token" <(curl -sS $SITE/) || true        # 0 
 | 5 | `GET /api/backend/runs/{id}/events?after_seq=0` | `text/event-stream` وأحداث متتابعة |
 | 6 | إعادة تشغيل خدمة Render ثم فتح الواجهة | تعرض «الخادم يستيقظ» وتعيد المحاولة بدل خطأ خام |
 | 7 | تشغيل ثم إعادة تشغيل Render | التشغيل السابق يبقى في `/ledger` (Postgres لا القرص المؤقت) |
-| 8 | `CELA_TEST_POSTGRES_DSN=<قاعدة اختبار منفصلة> python scripts/test_postgres_persistence.py --yes` | PASS، ثم حذف صفوف الاختبار (C6) — لا تستخدم قاعدة التطبيق. مشروع Supabase ثانٍ مقبول حتى لو شارك مشروع الإنتاج مضيف الـpooler |
+| 8 | `CELA_TEST_POSTGRES_DSN=<قاعدة اختبار منفصلة> CELA_RUN_STORE_URL=<قاعدة التطبيق> python scripts/test_postgres_persistence.py --yes` | PASS، ثم حذف صفوف الاختبار (C6). مرجع الإنتاج للمقارنة فقط (أو `--production-dsn`)، وغيابه يوقف السكربت. مشروع Supabase ثانٍ مقبول حتى لو شارك مضيف الـpooler |
 
 ---
 

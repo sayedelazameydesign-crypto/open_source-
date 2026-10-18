@@ -17,12 +17,21 @@ Usage::
     python scripts/test_postgres_persistence.py \\
         --dsn "postgresql://user:pass@host:5432/cela_test" --yes
 
-The DSN is read only from ``--dsn`` or ``CELA_TEST_POSTGRES_DSN``.
-``CELA_RUN_STORE_URL`` (the production variable) is deliberately ignored, and a
-DSN that resolves to the same database as ``CELA_RUN_STORE_URL`` is refused.
-"Same database" includes the username and — for Supabase — the project ref, so
-two projects behind one regional pooler host are *not* mistaken for each other,
-while the same project reached through the pooler and the direct host still is.
+The write target comes only from ``--dsn`` or ``CELA_TEST_POSTGRES_DSN``.
+``CELA_RUN_STORE_URL`` (production) is never used as the target — it is the
+*comparison reference*, and a target that resolves to the same database is
+refused. Supabase is recognised in both of its shapes: the project ref comes
+from ``db.<ref>.supabase.co`` (direct) or ``postgres.<ref>@...pooler...``
+(session pooler), so two projects on the shared pooler host are distinct while
+one project reached both ways is the same database. Where no project ref can be
+proven, a matching host/port/database is refused **even if the username
+differs** — a different role is not a different database.
+
+If no production reference is available the script refuses by default: an
+absent reference is not evidence of separation. ``--no-production-reference``
+is the explicit opt-out for an environment that truly has no production
+database, and the run is then labelled unverified.
+
 ``--yes`` is required so a copy/pasted command cannot silently write to a live
 database.
 
@@ -50,7 +59,7 @@ import os
 import sys
 import time
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 for _name in (
@@ -96,15 +105,32 @@ def _db_identity(dsn: str) -> str:
     return f"{host}:{port}/{database}"
 
 
-def _supabase_project_ref(username: str) -> str | None:
-    """``postgres.<ref>`` -> ``<ref>``.
+_SUPABASE_DIRECT_SUFFIX = ".supabase.co"
+_SUPABASE_POOLER_SUFFIX = ".pooler.supabase.com"
 
-    Two Supabase projects in one region share a pooler host, port and database
-    name; the project ref in the *username* is what distinguishes them. It is
-    used for the identity comparison only and never printed.
+
+def _supabase_project_ref(dsn: str) -> str | None:
+    """Project ref of a Supabase endpoint — from the host *or* the username.
+
+    Supabase exposes one project through two very different DSNs:
+
+    * direct connection — host ``db.<ref>.supabase.co``, username ``postgres``;
+    * session/transaction pooler — host ``...pooler.supabase.com`` (shared by
+      every project in a region), username ``postgres.<ref>``.
+
+    Reading only the username would miss the direct form, and reading only the
+    host would confuse two projects on the shared pooler, so both shapes are
+    recognised here. The ref is used for the identity comparison only and is
+    never printed.
     """
-    if username.startswith("postgres.") and len(username) > len("postgres."):
-        return username.split(".", 1)[1]
+    parsed = urlparse(dsn)
+    host = (parsed.hostname or "").lower()
+    if host.startswith("db.") and host.endswith(_SUPABASE_DIRECT_SUFFIX):
+        return host[len("db.") : -len(_SUPABASE_DIRECT_SUFFIX)] or None
+    if host.endswith(_SUPABASE_POOLER_SUFFIX):
+        username = unquote(parsed.username or "")
+        if "." in username:
+            return username.rsplit(".", 1)[1] or None
     return None
 
 
@@ -123,17 +149,37 @@ def _dsn_fingerprint(dsn: str) -> tuple[str, int, str, str]:
 def _same_database(left: str, right: str) -> bool:
     """True when both DSNs address the same database.
 
-    Supabase needs the project ref in the comparison: its pooler host is shared
-    by every project in a region, so host/port/database alone would refuse a
-    perfectly separate test project. Conversely, the same project reached via
-    the direct host and via the pooler must still be recognised as one database.
+    The database name decides first: a different name is a different target
+    even on the same server. Otherwise, Supabase needs the project ref, because
+    one project is reachable through two hosts (pooler and direct) while the
+    pooler host is shared by every project in a region.
+
+    Without two provable refs the endpoint (host, port, database) is all there
+    is — and a matching endpoint is refused *regardless of the username*: two
+    roles on one server still write to one database, so a username difference
+    must never be read as a sign of separation.
     """
     left_fp, right_fp = _dsn_fingerprint(left), _dsn_fingerprint(right)
-    left_ref = _supabase_project_ref(left_fp[3])
-    right_ref = _supabase_project_ref(right_fp[3])
-    if left_ref and right_ref and left_ref == right_ref:
-        return True
-    return left_fp == right_fp
+    if left_fp[2] != right_fp[2]:
+        return False
+    left_ref = _supabase_project_ref(left)
+    right_ref = _supabase_project_ref(right)
+    if left_ref and right_ref:
+        return left_ref == right_ref
+    return left_fp[:3] == right_fp[:3]
+
+
+def _production_reference(args: argparse.Namespace) -> str:
+    """The production DSN used *only* for comparison — never to connect.
+
+    ``--production-dsn`` wins over ``CELA_RUN_STORE_URL`` so a test shell that
+    does not export the production variable can still supply the reference.
+    """
+    return (
+        getattr(args, "production_dsn", None)
+        or os.environ.get("CELA_RUN_STORE_URL", "")
+        or ""
+    ).strip()
 
 
 def _resolve_dsn(args: argparse.Namespace) -> tuple[str, str]:
@@ -141,16 +187,30 @@ def _resolve_dsn(args: argparse.Namespace) -> tuple[str, str]:
     if not dsn:
         return "", (
             "pass --dsn or set CELA_TEST_POSTGRES_DSN to a dedicated test database "
-            "(CELA_RUN_STORE_URL is deliberately ignored)"
+            "(CELA_RUN_STORE_URL is never used as the target)"
         )
     if not dsn.startswith(("postgres://", "postgresql://")):
         return "", "this script requires a real PostgreSQL DSN (postgres:// or postgresql://)"
 
-    production = os.environ.get("CELA_RUN_STORE_URL", "").strip()
-    if production and (dsn == production or _same_database(dsn, production)):
+    production = _production_reference(args)
+    if not production:
+        if not getattr(args, "no_production_reference", False):
+            return "", (
+                "refusing to write: no production reference to compare against, so "
+                "this guard cannot prove the target is a different database. Set "
+                "CELA_RUN_STORE_URL (production) or pass --production-dsn <prod DSN>. "
+                "If this environment genuinely has no production database, say so "
+                "explicitly with --no-production-reference; an absent reference is "
+                "never taken as evidence of separation."
+            )
+        # The operator asserted there is no production database to compare with.
+        # Nothing was proven, so the run is allowed but labelled unverified.
+        return dsn, ""
+
+    if dsn == production or _same_database(dsn, production):
         return "", (
-            "refusing to write: this DSN resolves to the same database as "
-            f"CELA_RUN_STORE_URL ({_db_identity(production)}). "
+            "refusing to write: this DSN resolves to the same database as the "
+            f"production reference ({_db_identity(production)}). "
             "Use a dedicated test database."
         )
     return dsn, ""
@@ -378,6 +438,22 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="keep the test rows after a successful run (default: delete them)",
     )
+    parser.add_argument(
+        "--production-dsn",
+        default=None,
+        help=(
+            "production DSN used only to prove the target is a different database "
+            "(default: CELA_RUN_STORE_URL); it is never connected to or printed"
+        ),
+    )
+    parser.add_argument(
+        "--no-production-reference",
+        action="store_true",
+        help=(
+            "assert that this environment has no production database to compare "
+            "against; the run is then labelled unverified instead of failing closed"
+        ),
+    )
     args = parser.parse_args(argv)
 
     dsn, error = _resolve_dsn(args)
@@ -389,6 +465,11 @@ def main(argv: list[str] | None = None) -> int:
     print("C6 — PostgreSQL persistence acceptance test")
     print("=" * 72)
     print(f"  target: {_db_identity(dsn)}")
+    reference = _production_reference(args)
+    if reference:
+        print(f"  production: {_db_identity(reference)} (compared, not connected)")
+    else:
+        print("  production: (none) — SEPARATION IS UNVERIFIED (--no-production-reference)")
     print("  WARNING: this test WRITES to the target database and then deletes")
     print("           its own rows. Use a dedicated TEST database only.")
     print(f"  artifact: {ARTIFACT_NAME} (sha256={ARTIFACT_SHA256[:16]}…)")
