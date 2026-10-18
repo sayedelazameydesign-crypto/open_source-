@@ -3,6 +3,10 @@
 # - Supabase Postgres Free (500 MB) via CELA_RUN_STORE_URL="postgresql://..."
 # - Cloudflare Pages / Workers for packages/web (with CELA_API_TOKEN kept server-side)
 # Secrets are marked sync: false and must NEVER be committed to Git.
+#
+# The server FAILS FAST at startup if CELA_USE_LIVE_PROVIDER=1 is set but no
+# valid provider is configured — this is deliberate so the deploy never
+# silently serves scripted/demo responses under a "live provider" label.
 
 services:
   - type: web
@@ -17,12 +21,32 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.9"
+      # Set CELA_USE_LIVE_PROVIDER=1 explicitly to opt into real LLM calls;
+      # leaving it unset keeps the server in offline-demo mode (safe default).
+      - key: CELA_USE_LIVE_PROVIDER
+        value: "1"
+      # These tokens must be supplied by the operator (and injected into the
+      # Pages/Workers build as CELA_API_TOKEN). They are never generated here
+      # because the client side needs to know the value to issue requests.
       - key: CELA_API_TOKEN
         sync: false
       - key: CELA_PRIVATE_API_TOKEN
         sync: false
+      # Point this at your Supabase / Render Postgres connection string.
+      # For Render-managed Postgres, set CELA_RUN_STORE_URL=$DATABASE_URL
+      # in the dashboard (Render injects DATABASE_URL automatically).
       - key: CELA_RUN_STORE_URL
         sync: false
+      # Explicit OpenAI-compatible provider (Gemini is the documented default).
+      # CELA_PROVIDER_BASE_URL must end at the /openai or /v1 root.
+      - key: CELA_PROVIDER_BASE_URL
+        value: "https://generativelanguage.googleapis.com/v1beta/openai/"
+      - key: CELA_PROVIDER_MODEL
+        value: "gemini-2.5-flash"
+      # CELA_PROVIDER_CREDENTIAL_VAR names the env var that holds the actual
+      # API key. It is metadata, not a credential (default: GEMINI_API_KEY).
+      - key: CELA_PROVIDER_CREDENTIAL_VAR
+        value: "GEMINI_API_KEY"
       - key: GEMINI_API_KEY
         sync: false
       - key: CELA_ACTIVEPIECES_WEBHOOK_URL
