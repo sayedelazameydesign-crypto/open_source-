@@ -327,6 +327,7 @@ def _postgres_driver_available() -> bool:
     """
     return importlib.util.find_spec("psycopg") is not None
 _CLOUDFLARE_BFF_PATH = Path("packages/web/functions/api/backend/[[path]].ts")
+_NEXTJS_BFF_PATH = Path("packages/web/app/api/backend/[...path]/route.ts")
 
 
 def _backend_url_problem(raw: str) -> str | None:
@@ -382,6 +383,14 @@ def check_deployment_readiness(
     # Cloudflare Pages sets CF_PAGES=1 in every build environment, so the doctor
     # can tell which edge the front end is being built for.
     is_cloudflare_pages = active_env.get("CF_PAGES", "").lower() in {"1", "true", "yes"}
+    # Vercel sets VERCEL=1 in every build environment (and runtime). Next.js on
+    # Vercel always runs with NODE_ENV=production, so a missing
+    # CELA_WEB_ACCESS_SECRET means every /api/backend/* request fails closed
+    # with 503 access_gate_unconfigured — the published UI never reaches the
+    # backend. The doctor must warn about that even though the secret may live
+    # in Vercel dashboard settings that the build env cannot see (hence warning
+    # by default, error under --strict).
+    is_vercel = active_env.get("VERCEL", "").lower() in {"1", "true", "yes"}
     backend_url = active_env.get("CELA_BACKEND_URL", "").strip()
 
     if strict_production or is_render:
@@ -494,6 +503,68 @@ def check_deployment_readiness(
                 }
             )
 
+    if is_vercel:
+        if backend_url:
+            problem = _backend_url_problem(backend_url)
+            if problem is not None:
+                errors.append(
+                    {
+                        "id": "insecure_backend_url",
+                        "variable": "CELA_BACKEND_URL",
+                        "message_ar": (
+                            f"{problem}. وكيل Next.js يرفض هذا العنوان كي لا تنتقل "
+                            "رموز الوصول على الشبكة مكشوفة."
+                        ),
+                    }
+                )
+        else:
+            warnings.append(
+                {
+                    "id": "vercel_backend_url_unset",
+                    "variable": "CELA_BACKEND_URL",
+                    "message_ar": (
+                        "لم يُضبط CELA_BACKEND_URL في بيئة بناء Vercel. لا يفحص "
+                        "هذا الفحص أسرار وقت التشغيل في Vercel؛ تأكد من ضبطه مع "
+                        "CELA_API_TOKEN و CELA_PRIVATE_API_TOKEN في إعدادات المشروع."
+                    ),
+                }
+            )
+
+        web_access_secret = active_env.get("CELA_WEB_ACCESS_SECRET", "").strip()
+        gate_required = active_env.get("CELA_WEB_GATE_REQUIRED", "").strip()
+
+        if not web_access_secret:
+            entry = {
+                "id": "vercel_web_access_secret_unset",
+                "variable": "CELA_WEB_ACCESS_SECRET",
+                "message_ar": (
+                    "لم يُضبط CELA_WEB_ACCESS_SECRET في بيئة بناء Vercel. على Vercel يعمل "
+                    "Next.js دائمًا بـ NODE_ENV=production، فغياب السر يعني فشلًا مغلقًا: كل "
+                    "/api/backend/* يعيد 503 access_gate_unconfigured والواجهة المنشورة لا تصل "
+                    "إلى الـbackend إطلاقاً. أضف السر في إعدادات Vercel (Production وPreview) "
+                    "أو كسرّ Actions يُمرَّر إلى vercel deploy --env، ولا تضعه في نص "
+                    "الـworkflow ولا في NEXT_PUBLIC_*."
+                ),
+            }
+            if strict_production:
+                errors.append(entry)
+            else:
+                warnings.append(entry)
+
+        if gate_required != "1":
+            entry = {
+                "id": "vercel_gate_required_unset",
+                "variable": "CELA_WEB_GATE_REQUIRED",
+                "message_ar": (
+                    "لم يُضبط CELA_WEB_GATE_REQUIRED=1 في بيئة بناء Vercel. اضبطه صراحةً "
+                    "لتوثيق أن البوابة مطلوبة في الإنتاج؛ القيمة 0 تعني فتحًا مقصودًا فقط."
+                ),
+            }
+            if strict_production:
+                errors.append(entry)
+            else:
+                warnings.append(entry)
+
     return {
         "ready": len(errors) == 0,
         "strict_production": strict_production or is_render,
@@ -506,6 +577,7 @@ def check_deployment_readiness(
             "render_yaml": (workspace / "render.yaml").is_file(),
             "env_example": (workspace / ".env.example").is_file(),
             "cloudflare_bff_proxy": (workspace / _CLOUDFLARE_BFF_PATH).is_file(),
+            "next_bff_proxy": (workspace / _NEXTJS_BFF_PATH).is_file(),
         },
         "errors": errors,
         "warnings": warnings,
