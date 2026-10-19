@@ -248,3 +248,117 @@ Dependabot alerts. لا علاقة له بمسار Vercel، وسُجّل حتى 
 * `packages/web/README.md` — جدول الضبط على Vercel وأوامر التحقق.
 * `scripts/deploy_doctor.py`, `tests/test_deploy_config.py` — الفاحص واختباراته.
 * `docs/verification/github-state-2026-10-18.md` — اللقطة السابقة بنفس المنهج.
+
+## 10) إعادة فحص «الفحص صفر» بعد دمج PR #57 — 2026-10-19T09:44Z
+
+أُعيد تنفيذ الخطوة صفر من §3.5.4 (وهي نفسها في `docs/publish-runbook.md`
+«التحقق بعد النشر») على رأس `main` الجديد، بطلب صريح بصيغة الأمرين:
+
+```bash
+SITE=https://<رابط النشر من Dashboard>
+curl -sS -o /dev/null -w '%{http_code} %{redirect_url}\n' $SITE/api/access   # المتوقع 200 وبلا redirect
+curl -sS $SITE/api/access                                                    # mode:"enforced"
+```
+
+**النتيجة باختصار: الفحص صفر لم ينجح حيًا بعد.** الروابط الصالحة كلها ما زالت
+تُحوَّل إلى صفحة دخول Vercel، فلا `200` ولا `mode:"enforced"` من الإنترنت
+العام. وسلوك الكود نفسه مُثبت محليًا بنفس الأمرين (أدناه)، فالحاجز ما زال
+**Deployment Protection** كما في §5 — لم يتغيّر بدمج PR #57.
+
+### 10.1) رأس `main` ونشره
+
+```text
+$ gh pr view 57 --json state,mergedAt,mergeCommit
+{"state":"MERGED","mergedAt":"2026-10-19T09:32:34Z",
+ "mergeCommit":{"oid":"149b45923553fef9cde1c7155e9c6fd42a6eb60a"}}
+
+$ gh api repos/…/commits/149b459…/status --jq …
+{"state":"success","statuses":[{"context":"Vercel","state":"success",
+  "description":"Deployment has completed",
+  "target_url":"https://vercel.com/celia-fashions-projects/open-source/DQYmcB89m9WqrmZTgrdYdFTpjF5F"}]}
+```
+
+### 10.2) قيم `SITE` المرشّحة (لا قيمة من Dashboard وصلت هذه الجلسة)
+
+استُخرجت من تعليق `vercel[bot]` على PR #57 ومن نمط أسماء Vercel، وفُحصت كلها.
+موصّل Vercel في الجلسة ما زال كما في §6 بلا أي تغيّر (`limited:true`)، فلا
+يُقرأ رابط Production منه رسميًا:
+
+```text
+$ vercel.get_authenticated_user   → "limited":true, defaultTeamId team_KaDefEE8HBoecXfntoJUw2TZ
+$ vercel.list_projects            → {"projects":[]}   (وبـteam_id نفسه: [])
+$ vercel.list_deployments target=production → {"deployments":[]}
+$ vercel.get_project prj_FkLk1oSgnAVxkRBrBVro8SI3r9pc (بـteam_id)
+  → 404 …/v9/projects/prj_… (بلا teamId في الرابط) "Project not found"
+$ vercel.list_domains             → "Access denied"
+```
+
+### 10.3) الفحص الحي: ما زال تحويلًا إلى `vercel.com/login`
+
+قيد بيئة أولًا: `curl` من هذا الـsandbox لا يصل إلى `*.vercel.app` أصلًا
+(قائمة خروج مقصورة على GitHub/npm/PyPI)، فمُخرَجه الحرفي ليس دليلًا عن النشر:
+
+```text
+$ curl -sS -o /dev/null -w '%{http_code} %{redirect_url}\n' $SITE/api/access
+curl: (35) OpenSSL SSL_connect: SSL_ERROR_SYSCALL in connection to …vercel.app:443
+000
+```
+
+لذلك نُفّذ الطلب نفسه بأداة جلب تتّبع التحويلات وتعرض الرابط النهائي
+والعنوان. النتيجة على الروابط الثلاثة الصالحة واحدة:
+
+```text
+$ GET https://open-source-celia-fashions-projects.vercel.app/api/access
+$ GET https://open-source-git-main-celia-fashions-projects.vercel.app/api/access
+$ GET https://open-source-git-arena-12a908dd-o-23da05-celia-fashions-projects.vercel.app/api/access
+→ النهائي: https://vercel.com/login?next=%2Fsso-api%3Furl%3Dhttps%253A%252F%252F<host>%252Fapi%252Faccess%26nonce%3D…
+→ العنوان: "Protected Deployment – Vercel" — صفحة "Log in to Vercel"
+```
+
+ومعايرة حتى لا تُقرأ النتيجة خطأً: رابط وهمي بالنمط نفسه يردّ
+`404 DEPLOYMENT_NOT_FOUND` بلا تحويل، و`open-source.vercel.app` يردّ
+`404: NOT_FOUND` (كما في §7). أي أن الروابط الثلاثة أعلاه **موجودة ومحمية**،
+وأقواها مرشّحًا لرابط Production هو الأول بنمط `<project>-<team>.vercel.app` —
+لكنه يبقى **غير مُثبت المحتوى** ما دام الطلب لا يصل إلى التطبيق. لا نطاق
+مخصّص مذكور في المستودع.
+
+### 10.4) نفس الأمران محليًا: `200` و`enforced` كما هو متوقع
+
+```text
+$ cd packages/web && npm ci && npm run test:gate-parity
+# tests 6 · pass 6 · fail 0
+
+$ CELA_WEB_ACCESS_SECRET=<سر محلي وهمي> CELA_WEB_GATE_REQUIRED=1 npx next dev -p 3000
+$ SITE=http://127.0.0.1:3000
+$ curl -sS -o /dev/null -w '%{http_code} %{redirect_url}\n' $SITE/api/access
+200
+$ curl -sS $SITE/api/access
+{"required":true,"authorized":false,"configured":true,"mode":"enforced"}
+$ curl -sS -w '\n%{http_code}\n' $SITE/api/backend/health        # بلا إثبات
+{"detail":"access requires the operator secret","code":"access_required","retryable":false}
+401
+$ curl -sS -i -X POST -H "Content-Type: application/json" -d '{"secret":"…"}' $SITE/api/access
+HTTP/1.1 200 OK
+set-cookie: celia_access=v1.…; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=2592000
+```
+
+أي: متى وصل الطلب إلى Next.js وكان السر مضبوطًا، فالناتج هو المتوقع حرفيًا.
+غياب `200/enforced` حيًا ليس عطل كود، ولا يثبت شيئًا عن وجود
+`CELA_WEB_ACCESS_SECRET` في Vercel من عدمه.
+
+### 10.5) ما يتبقّى (بيد المشغّل في Dashboard، لم يتغيّر عن §8)
+
+1. **Settings → Deployment Protection**: إيقاف **Vercel Authentication**
+   (أو قصرها على Preview بحيث يبقى Production عامًا)، أو توليد
+   **Protection Bypass for Automation** والفحص بـ
+   `curl -H "x-vercel-protection-bypass: $BYPASS" $SITE/api/access`.
+   لا هذا ولا ذاك قابل للتنفيذ من الكود أو من موصّل هذه الجلسة (§6، §10.2).
+2. التأكد أن الخمسة في **Production وPreview** ثم **Redeploy** (§8 خطوتان 2–3).
+3. إعادة الفحص من جهاز يصل إلى `*.vercel.app`، بـ`SITE` مأخوذ من
+   Dashboard → Deployments:
+
+```bash
+SITE=https://open-source-celia-fashions-projects.vercel.app   # أو الرابط من Dashboard حرفيًا
+curl -sS -o /dev/null -w '%{http_code} %{redirect_url}\n' $SITE/api/access   # المتوقع: 200 وبلا redirect
+curl -sS $SITE/api/access                                                    # {"mode":"enforced",…}
+```
