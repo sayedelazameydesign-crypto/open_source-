@@ -131,3 +131,48 @@
 
 - عند الدفع ظهر check باسم **"Vercel Preview"** على الفرع — حساب **Vercel مرتبط بالمستودع بالفعل** وجاهز لنشر واجهة `packages/web`.
 - GitHub يبلغ عن ثغرة Dependabot واحدة (moderate) على main — تحتاج فحصًا لاحقًا.
+
+## 10) إعدادات النشر النهائية على ClawCloud Run (جاهزة — 2026-10-20)
+
+الحزمة `ghcr.io/sayedelazameydesign-crypto/open_source:edge` **عامة ومؤكدة** (صفحة الحزمة تقول Public).
+
+### App Launchpad → Create App
+
+| الإعداد | القيمة |
+|---|---|
+| Application Name | `celia-mission-os` |
+| Image (Public) | `ghcr.io/sayedelazameydesign-crypto/open_source:edge` |
+| Deployment Mode | **Fixed** — 1 instance |
+| CPU | **0.1 vCPU** |
+| Memory | **256 MB** (قياسنا: RSS = 58.5 MB ⇒ هامش 4×) |
+| Network — Container Port | **8080** |
+| Network — External Access | **مفعّل** (يعطي رابط HTTPS ثابت) |
+| Health Check Path | `/health` |
+| Persistent Storage | لا شيء (التطبيق stateless) |
+| Startup Command | فارغ — الصورة تحمل CMD جاهزًا (`uvicorn ... --port ${PORT:-8080}`) |
+
+### متغيرات البيئة (Environment Variables)
+
+```
+CELA_API_TOKEN=<توكن عام ≥32 حرفًا>
+CELA_PRIVATE_API_TOKEN=<توكن مختلف ≥32 حرفًا>
+```
+
+- `CELA_USE_LIVE_PROVIDER` **لا يُضبط**: بدون القيمة يعمل الخادم في الوضع التجريبي الآمن (scripted) ويقلع بلا أي مفتاح — التحقق من الكود: الخادم يرفض الإقلاع فقط إذا ضُبطت =1 دون مزوّد صالح.
+- `CELA_CODE_EXEC_MODE=disabled` مدمجة داخل الصورة أصلًا.
+- اختياري لاحقًا للتخزين الدائم: `CELA_RUN_STORE_URL` (رابط Supabase Session pooler — الخطوة 1 من `docs/DEPLOY_FREE_TIER_RUNBOOK.md`).
+
+### حساب التكلفة الشهرية (أسعار ClawCloud الرسمية: CPU $4/vCPU/شهر، RAM $2/GB/شهر)
+
+| الموارد | الحساب | الشهر |
+|---|---|---|
+| 0.1 vCPU + 256 MB | (0.1×4) + (0.25×2) | **≈ $0.90** |
+| الحد الأدنى الاقتصادي 0.05 vCPU + 128 MB | (0.05×4) + (0.125×2) | ≈ $0.45 |
+
+كلاهما داخل رصيد $5/شهر بهامش كبير. بدون بطاقة وبدون دفع — الخطة Free تكفي.
+
+### بعد النشر — التحقق
+
+1. انتظر حالة **Active** (لحظات — الصورة جاهزة فلا بناء).
+2. افتح **Public Address** (يظهر في تفاصيل التطبيق بعد تفعيل External Access؛ ثابت لا يتغير بين إعادة التشغيل).
+3. `GET /health` ⇒ `{"status":"ok"}` • `/docs` لواجهة Swagger • `/cela/v1/runs` بالتوكن الخاص ⇒ 200.
