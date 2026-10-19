@@ -178,6 +178,94 @@ curl -sS -o /dev/null -w "%{http_code}\n" $SITE/status
 grep -c "CELA_API_TOKEN\|local-dev-token" <(curl -sS $SITE/) || true        # 0 — لا رمز في HTML
 ```
 
+### 3.5 Vercel — Next.js (بديل لـ Cloudflare Pages)
+
+> **مهم:** Next.js على Vercel يعمل بـ `NODE_ENV=production` دائمًا، فغياب
+> `CELA_WEB_ACCESS_SECRET` يعني **فشلاً مغلقاً**: كل `/api/backend/*` يعيد
+> `503 access_gate_unconfigured` والواجهة المنشورة لا تصل إلى الـbackend إطلاقاً.
+> آمن لكنه مكسور — ولا شيء في المستودع كان ينبّهك قبل هذا القسم.
+
+#### 3.5.1 إعداد المشروع
+
+| الإعداد | القيمة |
+|---|---|
+| **Framework preset** | Next.js |
+| **Root directory** | `packages/web` |
+| **Build command** | `npm run build` (افتراضي Vercel) |
+| **Output** | `.next` (افتراضي) — لا `out/` |
+
+لا يُستخدم `npm run build:pages` هنا؛ Vercel يشغّل خادم Next.js كاملاً مع
+`app/api/backend/[...path]/route.ts` كوكيل خادمي. عقد الأمان مطابق لـ
+Pages Function (نفس `cela/` الخاص، نفس حقن التوكن، نفس `after_seq`).
+
+#### 3.5.2 متغيرات البيئة
+
+Vercel → المشروع → **Settings → Environment Variables** (Production **و** Preview):
+
+| المتغير | النوع | القيمة |
+|---|---|---|
+| `CELA_BACKEND_URL` | Secret | `https://<service>.onrender.com` (**https إلزامي** — الوكيل يرفض `http://` خارج loopback) |
+| `CELA_API_TOKEN` | Secret | الرمز العام نفسه |
+| `CELA_PRIVATE_API_TOKEN` | Secret | الرمز الخاص نفسه |
+| `CELA_BACKEND_TIMEOUT_MS` | Plain (اختياري) | `25000` افتراضيًا، والحد الأقصى `60000` |
+| `CELA_WEB_ACCESS_SECRET` | Secret | **إلزامي على Vercel** — سر وصول المشغّل. غيابه = `503` على كل وكيل (انظر أعلاه). |
+| `CELA_WEB_GATE_REQUIRED` | Plain | `1` صراحةً لتوثيق اشتراط البوابة. (`0` = فتح مقصود فقط.) |
+
+##### النشر عبر GitHub Actions (لا عبر موصّل Vercel)
+
+النشر عندك **عبر Actions secrets**، لا عبر موصّل Vercel. لا تضع السر في نصّ
+الـworkflow ولا في `NEXT_PUBLIC_*`:
+
+1. أضف الأسرار في **GitHub → Settings → Secrets and variables → Actions**:
+   `CELA_BACKEND_URL`, `CELA_API_TOKEN`, `CELA_PRIVATE_API_TOKEN`,
+   `CELA_WEB_ACCESS_SECRET`, `CELA_WEB_GATE_REQUIRED=1`, `VERCEL_TOKEN`,
+   `VERCEL_PROJECT_ID`, `VERCEL_ORG_ID` (أو `VERCEL_TEAM_ID`).
+2. مرّرها كـ **build env** عند النشر (الأسرار تبقى في بيئة Actions، لا تُكتب في YAML):
+
+```yaml
+# داخل workflow — لا تكتب قيمة سر في النص
+- run: npx vercel deploy --prod --build-env CELA_BACKEND_URL=$CELA_BACKEND_URL --build-env CELA_API_TOKEN=$CELA_API_TOKEN --build-env CELA_PRIVATE_API_TOKEN=$CELA_PRIVATE_API_TOKEN --build-env CELA_WEB_ACCESS_SECRET=$CELA_WEB_ACCESS_SECRET --build-env CELA_WEB_GATE_REQUIRED=$CELA_WEB_GATE_REQUIRED
+  env:
+    CELA_BACKEND_URL: ${{ secrets.CELA_BACKEND_URL }}
+    CELA_API_TOKEN: ${{ secrets.CELA_API_TOKEN }}
+    CELA_PRIVATE_API_TOKEN: ${{ secrets.CELA_PRIVATE_API_TOKEN }}
+    CELA_WEB_ACCESS_SECRET: ${{ secrets.CELA_WEB_ACCESS_SECRET }}
+    CELA_WEB_GATE_REQUIRED: "1"
+    VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+    VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+    VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+```
+
+> لا تُمكّن workflow لمزامنة المفاتيح إلى Vercel إن كان موجوداً — اكتبه
+> يدوياً كـ `--build-env` فقط، واجعل `CELA_WEB_ACCESS_SECRET` سرّ Actions
+> يُمرَّر إلى `vercel deploy --build-env` (لا في `NEXT_PUBLIC_*` ولا في
+> سجلّ الـbuild).
+
+#### 3.5.3 الفحص قبل النشر (يحاكي بيئة بناء Vercel)
+
+```bash
+VERCEL=1 CELA_BACKEND_URL=https://<service>.onrender.com \
+  CELA_API_TOKEN=... CELA_PRIVATE_API_TOKEN=... \
+  CELA_WEB_ACCESS_SECRET=... CELA_WEB_GATE_REQUIRED=1 \
+  python scripts/deploy_doctor.py --strict
+# المتوقع: "ready": true + "next_bff_proxy": true + بلا تحذير vercel_*
+# بلا سر → تحذير vercel_web_access_secret_unset (خطأ تحت --strict) + vercel_gate_required_unset
+# http:// → خطأ insecure_backend_url (الوكيل يرفضه فعلاً)
+```
+
+#### 3.5.4 التحقق بعد النشر
+
+```bash
+SITE=https://<project>.vercel.app
+curl -sS $SITE/api/access                          # {"mode":"enforced","required":true,"authorized":false}
+curl -sS -X POST -H "Content-Type: application/json" -d '{"secret":"..."}' $SITE/api/access  # يضع الكوكي
+curl -sS $SITE/api/backend/health                 # {"status":"ok"} عبر الكوكي أو X-Celia-Access
+curl -sS -H "X-Celia-Access: $CELA_WEB_ACCESS_SECRET" $SITE/api/backend/cela/v1/whoami  # 200 (الرمز الخاص يُحقن على الحافة)
+grep -c "CELA_API_TOKEN\|local-dev-token" <(curl -sS $SITE/) || true  # 0 — لا رمز في HTML
+```
+
+> تدوير السر يُبطل كل الكوكيز فوراً.
+
 ---
 
 ## 4) الفحص النهائي قبل الإعلان
@@ -186,6 +274,7 @@ grep -c "CELA_API_TOKEN\|local-dev-token" <(curl -sS $SITE/) || true        # 0 
 |---|---|---|
 | 1 | `python scripts/deploy_doctor.py --strict` ببيئة Render | `ready: true` بلا أخطاء |
 | 2 | `CF_PAGES=1 CELA_BACKEND_URL=https://… python scripts/deploy_doctor.py` | `ready: true` و`cloudflare_bff_proxy: true` |
+| 2b | `VERCEL=1 CELA_BACKEND_URL=https://… CELA_WEB_ACCESS_SECRET=… CELA_WEB_GATE_REQUIRED=1 python scripts/deploy_doctor.py --strict` | `ready: true` و`next_bff_proxy: true` وبلا تحذير `vercel_*` |
 | 3 | `GET /health` على Render | `{"status":"ok"}` |
 | 4 | `POST /api/backend/runs` من موقع Pages | `202` مع `run_id` |
 | 5 | `GET /api/backend/runs/{id}/events?after_seq=0` | `text/event-stream` وأحداث متتابعة |
@@ -211,6 +300,8 @@ grep -c "CELA_API_TOKEN\|local-dev-token" <(curl -sS $SITE/) || true        # 0 
 | `401 invalid or missing private API token` على `/cela/v1/*` | استخدام الرمز العام | استخدم `CELA_PRIVATE_API_TOKEN` |
 | الصفحة تعمل و`/api/backend/*` يعطي 404 على Pages | مجلد الإخراج أو دالة الحافة غير منشورة | تأكد من `out` ووجود `functions/` في جذر المشروع |
 | صفحة بيضاء بعد النشر | `CELA_STATIC_EXPORT` غير مفعّل فبُنيت نسخة Node | استخدم `npm run build:pages` |
+| `503 access_gate_unconfigured` على كل `/api/backend/*` على Vercel | `CELA_WEB_ACCESS_SECRET` غائب و`NODE_ENV=production` يفشل مغلقاً | أضف `CELA_WEB_ACCESS_SECRET` + `CELA_WEB_GATE_REQUIRED=1` في Vercel (Production وPreview) أو كسرّ Actions مع `--build-env`، ثم أعد النشر |
+| `401 access_required` بلا كوكي على Vercel | البوابة `enforced` بلا إثبات | افتح `/api/access` وأدخل السر، أو استخدم `X-Celia-Access` للأتمتة |
 
 ---
 
@@ -231,7 +322,8 @@ grep -c "CELA_API_TOKEN\|local-dev-token" <(curl -sS $SITE/) || true        # 0 
 | الملف | الدور |
 |---|---|
 | `render.yaml` | مخطط Render (خطة مجانية، فحص صحة `/health`، أسرار `sync: false`) |
-| `packages/web/functions/api/backend/[[path]].ts` | وكيل الحافة (BFF) |
+| `packages/web/functions/api/backend/[[path]].ts` | وكيل الحافة (BFF) — Cloudflare Pages |
+| `packages/web/app/api/backend/[...path]/route.ts` | وكيل الخادم (BFF) — Next.js / Vercel |
 | `packages/web/next.config.ts` | وضع التصدير الثابت عبر `CELA_STATIC_EXPORT=1` |
 | `scripts/deploy_doctor.py` | فحص الجاهزية قبل النشر |
 | `tests/test_deploy_config.py` + `npm run test:deploy` | حراسة العقد الأمني والكونفيغوراسيون |

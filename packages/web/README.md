@@ -67,6 +67,65 @@ npm ci
 CELA_BACKEND_URL=http://127.0.0.1:8080 CELA_API_TOKEN=... CELA_PRIVATE_API_TOKEN=... npm run dev
 ```
 
+
+## بوابة وصول المشغّل (`CELA_WEB_ACCESS_SECRET`)
+
+مراجعة المصادقة 2026-10-18 (Finding 1) لاحظت أن الوكيلين يصادقان *الخادم* على الخلفية لكن لا يصادقان *المتصل*: أي من يصل إلى الوكيل العام يركب على توكنات الخادم، بما فيها نطاق `/cela/v1` الخاص. هذه البوابة هي الحل المتفق عليه لشكل المنتج ذي المشغّل الواحد ("جلسة محلية · مستخدم واحد").
+
+### الأوضاع الثلاثة (تُحسم عند كل طلب من الإعدادات)
+
+| الوضع | متى | الأثر |
+|---|---|---|
+| **enforced** | `CELA_WEB_ACCESS_SECRET` مضبوط | كل طلب `/api/backend/*` يجب أن يحمل إثبات مشغّل صالح — كوكي `HttpOnly` موقّعة عبر `POST /api/access`، أو السر نفسه في ترويسة `X-Celia-Access` للأتمتة. بلا إثبات → `401 access_required`. |
+| **unconfigured** | السر غائب والبيئة إنتاج أو غير معروفة (`NODE_ENV=production`، بلا `NODE_ENV` معروف، أو `CELA_WEB_GATE_REQUIRED=1`) | الوكيل يرفض **مغلقاً** بـ `503 access_gate_unconfigured` بدل فتح وكيل مفتوح بصمت. هذا ما يحدث على **Vercel** دائماً — Next.js هناك يعمل بـ `NODE_ENV=production` فغياب السر يكسر كل `/api/backend/*`. |
+| **open** | السر غائب والتشغيل محلي/اختبار صريح (`NODE_ENV=development\|test` أو `CELA_WEB_GATE_REQUIRED=0`) | سلوك قديم بلا بوابة — لا فحص. |
+
+`DELETE /api/access` يمسح الكوكي المحلي فقط — اشتباه سرقة ⇒ دوّر `CELA_WEB_ACCESS_SECRET`.
+
+### تصميم الكوكي الموقّعة
+
+الكوكي لا تحمل السر أبداً. هي `v1.<expires-at>.<hex HMAC-SHA256>` — إثبات منتهي الصلاحية مشتق من السر (`crypto.subtle` متطابق على Node وWorkers).
+
+* `HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=2592000` (30 يومًا — يعيد المشغّل إدخال السر بعد شهر أو عند التدوير).
+* الكوكي المسروقة لا تزال bearer حتى انتهاء صلاحيتها المضمّنة، لكنها لا تكشف السر، لا يمكن تمديدها (الصلاحية مغطاة بالتوقيع)، وتدوير `CELA_WEB_ACCESS_SECRET` يُبطل كل الإثباتات السارية فوراً.
+* ترويسة الأتمتة `X-Celia-Access` لا تزال تحمل السر الخام؛ تُقارن بزمن ثابت ولا يجب تسجيلها أبداً (الوكيلان يسجلان اسم الخطأ فقط على فشل المنبع — لا ترويسات).
+
+### الحدود
+
+* البوابة **ليست هوية/صلاحيات لكل مستخدم** — هي حماية واجهة عامة لمشغّل واحد أمام الإنترنت العام. التوكنات (`CELA_API_TOKEN`/`CELA_PRIVATE_API_TOKEN`) تبقى مطلوبة عند الاتصال المباشر بخدمة Render.
+* الوكيلان يضيفان التوكنات من بيئة الخادم فقط (`CELA_BACKEND_URL`, `CELA_API_TOKEN`, `CELA_PRIVATE_API_TOKEN`) ولا تظهر في المتصفح أبداً (`NEXT_PUBLIC_*` ممنوع — `deploy_doctor` يفشله كـ `browser_exposed_secret_var`).
+* `GET /api/access` يعيد `{required, authorized, configured, mode}` — في وضع `unconfigured` يكون `required:true` و `authorized:false` و `mode:"unconfigured"` ليتطابق مع رفض الوكيل 503 بدل إيهام الواجهة أن كل شيء مفتوح.
+
+### أين يُضبط على Vercel (النشر عبر GitHub Actions)
+
+| المتغير | النوع | أين يُوضع عند النشر عبر Actions |
+|---|---|---|
+| `CELA_BACKEND_URL` | Secret | سرّ GitHub Secrets يُمرَّر إلى `vercel deploy --build-env CELA_BACKEND_URL=...` — لا في نص الـworkflow ولا في `NEXT_PUBLIC_*`. |
+| `CELA_API_TOKEN` / `CELA_PRIVATE_API_TOKEN` | Secret | نفس المسار — `--build-env` لكل سر. |
+| `CELA_WEB_ACCESS_SECRET` | Secret | **إلزامي على Vercel** (Production وPreview) — نفس مسار `--build-env`. غيابه = `503` على كل وكيل. |
+| `CELA_WEB_GATE_REQUIRED` | Plain | `1` صراحةً (لتوثيق اشتراط البوابة). `0` = فتح مقصود فقط. |
+
+الفحص المحلي قبل النشر:
+
+```bash
+VERCEL=1 CELA_BACKEND_URL=https://... CELA_API_TOKEN=... CELA_PRIVATE_API_TOKEN=... \
+  CELA_WEB_ACCESS_SECRET=... CELA_WEB_GATE_REQUIRED=1 \
+  python scripts/deploy_doctor.py --strict
+# ready:true + next_bff_proxy:true + بلا تحذير vercel_*
+```
+
+التحقق بعد النشر:
+
+```bash
+SITE=https://<project>.vercel.app
+curl -sS $SITE/api/access                    # {"mode":"enforced", "required":true, "authorized":false}
+curl -sS -X POST -H "Content-Type: application/json" -d '{"secret":"..."}' $SITE/api/access  # يضع الكوكي
+curl -sS $SITE/api/backend/health            # {"status":"ok"} عبر الكوكي أو X-Celia-Access
+```
+
+> **تدوير السر** يُبطل كل الكوكيز فوراً. لا حاجة لمسح قاعدة بيانات.
+
+
 ## override أمني لـPostCSS
 
 يحتوي `package.json` على override مُقيَّد داخل Next:

@@ -353,3 +353,94 @@ def test_doctor_never_echoes_secrets() -> None:
         assert secret not in rendered
     assert "db-password-777" not in rendered
     assert "leaked-value-666" not in rendered
+
+def test_doctor_passes_a_clean_vercel_build() -> None:
+    from os_server.automation import check_deployment_readiness
+
+    report = check_deployment_readiness(
+        {
+            "VERCEL": "1",
+            "CELA_BACKEND_URL": "https://celia-api.onrender.com",
+            "CELA_API_TOKEN": "pub-token-111",
+            "CELA_PRIVATE_API_TOKEN": "priv-token-222",
+            "CELA_WEB_ACCESS_SECRET": "super-secret-32-chars-long-xyz-999",
+            "CELA_WEB_GATE_REQUIRED": "1",
+        },
+        root=ROOT,
+    )
+    assert report["ready"] is True
+    assert report["errors"] == []
+    assert report["warnings"] == []
+    assert report["files"]["next_bff_proxy"] is True
+    assert report["files"]["cloudflare_bff_proxy"] is True
+
+
+def test_doctor_refuses_cleartext_backend_on_vercel() -> None:
+    from os_server.automation import check_deployment_readiness
+
+    report = check_deployment_readiness(
+        {
+            "VERCEL": "1",
+            "CELA_BACKEND_URL": "http://celia-api.onrender.com",
+            "CELA_API_TOKEN": "pub-token-111",
+            "CELA_PRIVATE_API_TOKEN": "priv-token-222",
+            "CELA_WEB_ACCESS_SECRET": "super-secret-32-chars-long-xyz-999",
+            "CELA_WEB_GATE_REQUIRED": "1",
+        },
+        root=ROOT,
+    )
+    assert report["ready"] is False
+    assert [e["id"] for e in report["errors"]] == ["insecure_backend_url"]
+    message = report["errors"][0]["message_ar"]
+    assert "https" in message and "cleartext" in message
+
+
+def test_doctor_vercel_warns_about_missing_access_secret() -> None:
+    from os_server.automation import check_deployment_readiness
+
+    report = check_deployment_readiness(
+        {"VERCEL": "1", "CELA_BACKEND_URL": "https://celia-api.onrender.com"},
+        root=ROOT,
+    )
+    warning_ids = {w["id"] for w in report["warnings"]}
+    assert "vercel_web_access_secret_unset" in warning_ids
+    assert "vercel_gate_required_unset" in warning_ids
+    # Warnings don't make ready false
+    assert report["ready"] is True
+    # Strict mode turns warnings into errors
+    strict = check_deployment_readiness(
+        {"VERCEL": "1", "CELA_BACKEND_URL": "https://celia-api.onrender.com"},
+        root=ROOT,
+        strict_production=True,
+    )
+    assert strict["ready"] is False
+    error_ids = {e["id"] for e in strict["errors"]}
+    assert "vercel_web_access_secret_unset" in error_ids
+    assert "vercel_gate_required_unset" in error_ids
+    # Never echo secret values
+    assert "super-secret" not in json.dumps(report)
+
+
+def test_doctor_vercel_is_silent_outside_build() -> None:
+    from os_server.automation import check_deployment_readiness
+
+    # Without VERCEL flag, no vercel warnings even if secret missing and http backend
+    report = check_deployment_readiness(
+        {
+            "CELA_BACKEND_URL": "http://celia-api.onrender.com",
+            "CELA_WEB_ACCESS_SECRET": "",
+        },
+        root=ROOT,
+    )
+    assert all(not w["id"].startswith("vercel_") for w in report["warnings"])
+    assert all(not e["id"].startswith("vercel_") for e in report["errors"])
+    # http backend outside Vercel/Cloudflare should not be an error
+    # (doctor only checks inside those envs)
+    assert report["ready"] is True
+
+    # Also verify cloudflare warnings don't appear outside CF_PAGES
+    quiet = check_deployment_readiness(
+        {"CELA_BACKEND_URL": "https://celia-api.onrender.com"}, root=ROOT
+    )
+    assert quiet["warnings"] == []
+
