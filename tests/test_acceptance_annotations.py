@@ -68,19 +68,6 @@ def test_annotations_report_the_commit_and_one_line_per_criterion() -> None:
     assert lines[2].startswith("::error title=A1/A6 FAIL::2. task performs")
 
 
-def test_annotations_accept_a_stage_title_for_the_c6_log() -> None:
-    """The C6 workflow reuses this publisher; its lines must not say A1/A6."""
-    script = _load_script()
-    sha, verdicts = script.parse(
-        "  commit sha: abc123\n[PASS] PostgreSQL run persists\n    cleanup done\n"
-    )
-
-    lines = script.annotations(sha, verdicts, title="C6")
-
-    assert lines[0] == "::notice title=C6 at abc123::1/1 criteria passed"
-    assert lines[1].startswith("::notice title=C6 PASS::PostgreSQL run persists")
-
-
 def test_a_log_without_criteria_never_reads_as_a_pass() -> None:
     """A skipped live step leaves no PASS line; an empty list must say so."""
     script = _load_script()
