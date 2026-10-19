@@ -40,6 +40,7 @@ def parse(log_text: str) -> tuple[str, list[tuple[bool, str, str]]]:
     """
     sha = "unknown"
     verdicts: list[list[Any]] = []
+    seen: dict[str, int] = {}
     for raw in log_text.splitlines():
         line = _ANSI.sub("", raw).strip()
         match = _SHA_LINE.match(line)
@@ -48,7 +49,15 @@ def parse(log_text: str) -> tuple[str, list[tuple[bool, str, str]]]:
             continue
         verdict = _VERDICT.match(line)
         if verdict:
-            verdicts.append([verdict.group(1) == "PASS", verdict.group(2).strip(), ""])
+            name = verdict.group(2).strip()
+            # Each criterion is printed twice: once when it is recorded, once in
+            # the SUMMARY block. Counting both would turn 7 criteria into a
+            # confident-looking "14/14".
+            if name in seen:
+                verdicts[seen[name]][0] = verdicts[seen[name]][0] and verdict.group(1) == "PASS"
+                continue
+            seen[name] = len(verdicts)
+            verdicts.append([verdict.group(1) == "PASS", name, ""])
             continue
         # The first non-empty line after a verdict is that criterion's detail.
         if line and verdicts and not verdicts[-1][2]:

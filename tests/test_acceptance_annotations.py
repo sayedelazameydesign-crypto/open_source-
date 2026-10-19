@@ -105,3 +105,28 @@ def test_ansi_colour_codes_do_not_hide_a_failure() -> None:
 
     assert sha == "deadbeef"
     assert verdicts[0][0] is False
+
+
+def test_a_criterion_printed_twice_is_counted_once() -> None:
+    """The script prints each criterion when it runs and again in SUMMARY."""
+    script = _load_script()
+    log = (
+        "  commit sha     : abc\n"
+        "[PASS] 1. one\n"
+        "    detail\n"
+        "[PASS] 1. one\n"
+    )
+
+    sha, verdicts = script.parse(log)
+
+    assert [name for _, name, _ in verdicts] == ["1. one"]
+    assert script.annotations(sha, verdicts)[0].endswith("1/1 criteria passed")
+
+
+def test_a_disagreeing_duplicate_fails_the_criterion() -> None:
+    script = _load_script()
+    log = "  commit sha     : abc\n[PASS] 1. one\n    first\n[FAIL] 1. one\n    second\n"
+
+    _, verdicts = script.parse(log)
+
+    assert verdicts[0][0] is False
