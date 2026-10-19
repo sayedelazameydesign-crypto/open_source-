@@ -126,10 +126,18 @@ Next.js على Vercel يعمل دائماً بـ `NODE_ENV=production`. بلا `
 | `CELA_WEB_ACCESS_SECRET` | Secret | **إلزامي على Vercel** — سر المشغّل (32+ حرف، `secrets.token_urlsafe(32)`) |
 | `CELA_WEB_GATE_REQUIRED` | Plain | `1` صراحةً (توثيق أن البوابة مطلوبة؛ `0` = فتح مقصود فقط) |
 
-### أين يُوضع السر عند النشر عبر GitHub Actions
+### أين يُوضع السر: المسار الفعلي (تكامل Git) ومسار CLI البديل
 
-النشر عندك **عبر Actions secrets**، لا عبر موصّل Vercel. الحساب قد يكون فارغاً
-من المشاريع، فاختلاق مشروع كان سينشئ نشراً في غير مكانه. الأسرار إذاً:
+**المسار الفعلي اليوم هو تكامل Vercel مع GitHub، لا GitHub Actions.** مثبت
+بالأمر لا بالذاكرة: `ls .github/workflows` يعيد `ci.yml codeql.yml
+eval-real-model.yml launcher-ci.yml web-ci.yml` — **لا يوجد workflow ينفّذ
+`vercel deploy`**، بينما حالة commit الدمج `9adbdb7` تحمل سياق `Vercel:
+success`يشير إلى `vercel.com/celia-fashions-projects/open-source/…`. إذن المتغيرات
+التي يقرأها `app/api/*` وقت الطلب مصدرها **Dashboard → Environment Variables**
+(Production **و** Preview)، وكل تعديل فيها يتطلب **نشرًا جديدًا**.
+
+مسار CLI/Actions أدناه **بديل موثَّق** لمن ينشر يدوياً أو يضيف workflow لاحقاً؛
+وهو ليس ما يحدث الآن. في الحالتين: السر وقت التشغيل (`--env`) لا وقت البناء.
 
 1. **GitHub → Settings → Secrets and variables → Actions**: أضف
    `CELA_BACKEND_URL`, `CELA_API_TOKEN`, `CELA_PRIVATE_API_TOKEN`,
@@ -179,6 +187,9 @@ VERCEL=1 CELA_BACKEND_URL=https://... CELA_API_TOKEN=... CELA_PRIVATE_API_TOKEN=
 
 ```bash
 SITE=https://<project>.vercel.app
+
+# 0) حماية نشر Vercel أولاً: إن ردّ 302 إلى vercel.com/login فالنتيجة ليست من التطبيق.
+curl -sS -o /dev/null -w '%{http_code} %{redirect_url}\n' $SITE/api/access   # المتوقع: 200 وبلا redirect
 curl -sS $SITE/api/access  # {"mode":"enforced","required":true,"authorized":false}
 # كوكي HttpOnly; Secure; SameSite=Lax; Max-Age=2592000
 curl -sS -X POST -H "Content-Type: application/json" -d '{"secret":"..."}' $SITE/api/access
@@ -186,6 +197,13 @@ curl -sS $SITE/api/backend/health  # {"status":"ok"} عبر الكوكي
 curl -sS -H "X-Celia-Access: $CELA_WEB_ACCESS_SECRET" $SITE/api/backend/health  # للأتمتة
 # Max-Age=0 عند DELETE، و502 backend_unreachable بترويسة الأتمتة لو الـbackend نائم
 ```
+
+> **مُثبت بالطلب الفعلي 2026-10-19 09:09Z:** رابطا Preview و`main` للمشروع
+> `open-source` (فريق `celia-fashions-projects`) يردّان بصفحة `Protected
+> Deployment – Vercel` لأن **Vercel Authentication** مفعّلة؛ أي أن الخطوات 1–4
+> أعلاه لا تصل إلى `app/api/*` قبل ضبط **Settings → Deployment Protection**
+> (إيقافها، أو `x-vercel-protection-bypass`). الدليل والأوامر في
+> `docs/verification/vercel-state-2026-10-19.md`.
 
 ---
 

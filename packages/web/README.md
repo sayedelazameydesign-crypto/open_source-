@@ -96,13 +96,20 @@ CELA_BACKEND_URL=http://127.0.0.1:8080 CELA_API_TOKEN=... CELA_PRIVATE_API_TOKEN
 * الوكيلان يضيفان التوكنات من بيئة الخادم فقط (`CELA_BACKEND_URL`, `CELA_API_TOKEN`, `CELA_PRIVATE_API_TOKEN`) ولا تظهر في المتصفح أبداً (`NEXT_PUBLIC_*` ممنوع — `deploy_doctor` يفشله كـ `browser_exposed_secret_var`).
 * `GET /api/access` يعيد `{required, authorized, configured, mode}` — في وضع `unconfigured` يكون `required:true` و `authorized:false` و `mode:"unconfigured"` ليتطابق مع رفض الوكيل 503 بدل إيهام الواجهة أن كل شيء مفتوح.
 
-### أين يُضبط على Vercel (النشر عبر GitHub Actions)
+### أين يُضبط على Vercel
 
-| المتغير | النوع | أين يُوضع عند النشر عبر Actions |
+**المسار الفعلي:** المشروع `open-source` (فريق `celia-fashions-projects`) مربوط
+بـ GitHub، فالدفع إلى `main` ينشر Production ودفع أي فرع ينشر Preview عبر
+**تكامل Vercel نفسه** — لا يوجد في المستودع workflow ينفّذ `vercel deploy`
+(`ls .github/workflows`). لذلك تُضبط المتغيرات في **Dashboard → Settings →
+Environment Variables** مع تفعيل **Production وPreview معاً**، وكل تعديل يتطلب
+**نشرًا جديدًا**.
+
+| المتغير | النوع | أين يُوضع |
 |---|---|---|
-| `CELA_BACKEND_URL` | Secret | سرّ GitHub Secrets يُمرَّر إلى `vercel deploy --env CELA_BACKEND_URL=...` (**وقت التشغيل** — لا `--build-env` ولا `NEXT_PUBLIC_*`). |
-| `CELA_API_TOKEN` / `CELA_PRIVATE_API_TOKEN` | Secret | نفس المسار — `--env` لكل سر وقت التشغيل. |
-| `CELA_WEB_ACCESS_SECRET` | Secret | **إلزامي على Vercel** (Production وPreview) — نفس مسار `--env` وقت التشغيل. غيابه = `503` على كل وكيل. |
+| `CELA_BACKEND_URL` | Secret | Dashboard (Production+Preview). وعند النشر اليدوي عبر CLI: `vercel deploy --env CELA_BACKEND_URL=...` (**وقت التشغيل** — لا `--build-env` ولا `NEXT_PUBLIC_*`). |
+| `CELA_API_TOKEN` / `CELA_PRIVATE_API_TOKEN` | Secret | نفس المسار — متغير تشغيل في Dashboard أو `--env`. |
+| `CELA_WEB_ACCESS_SECRET` | Secret | **إلزامي على Vercel** (Production وPreview) — متغير تشغيل. غيابه = `503` على كل وكيل. |
 | `CELA_WEB_GATE_REQUIRED` | Plain | `1` صراحةً (لتوثيق اشتراط البوابة). `0` = فتح مقصود فقط. |
 
 > `--build-env` للبناء فقط، `--env` للتشغيل — مسارات `app/api/*` تقرأ `process.env` وقت الطلب (انظر `vercel.com/docs/cli`).
