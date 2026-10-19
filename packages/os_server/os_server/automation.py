@@ -330,24 +330,29 @@ _CLOUDFLARE_BFF_PATH = Path("packages/web/functions/api/backend/[[path]].ts")
 _NEXTJS_BFF_PATH = Path("packages/web/app/api/backend/[...path]/route.ts")
 
 
-def _backend_url_problem(raw: str) -> str | None:
-    """Return why *raw* must not be used as ``CELA_BACKEND_URL``, or ``None``.
+def backend_url_problem(raw: str, *, var_name: str = "CELA_BACKEND_URL") -> str | None:
+    """Return why *raw* must not be used as a service base URL, or ``None``.
 
     Mirrors the refusals of the Cloudflare Pages proxy: bearer tokens may only
     leave the edge over TLS, and credentials must not be embedded in a URL that
-    intermediaries log.
+    intermediaries log. ``var_name`` names the setting in the message, so the
+    same rule can be reported for the edge proxy and for a probed service.
     """
     parts = urlsplit(raw)
     if parts.scheme not in {"http", "https"} or not parts.hostname:
-        return "CELA_BACKEND_URL must be an absolute http(s) URL"
+        return f"{var_name} must be an absolute http(s) URL"
     if parts.username or parts.password:
-        return "CELA_BACKEND_URL must not embed credentials"
+        return f"{var_name} must not embed credentials"
     if parts.scheme == "http" and parts.hostname not in _LOOPBACK_HOSTS:
         return (
-            "CELA_BACKEND_URL must use https outside loopback: "
+            f"{var_name} must use https outside loopback: "
             "tokens must not travel in cleartext"
         )
     return None
+
+
+# Kept for the callers that used the private name.
+_backend_url_problem = backend_url_problem
 
 
 def check_deployment_readiness(

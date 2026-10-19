@@ -90,6 +90,30 @@ curl -sS -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer $CELA_API_TO
 curl -sS -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer $CELA_PRIVATE_API_TOKEN" $API/cela/v1/whoami  # 200
 ```
 
+ولفحص **هوية التنفيذ** — أن `/health` يردّ `{"status":"ok"}` وأن `/runtime-info`
+يردّ `execution.kind` المتوقَّع — استعمل السكربت المعمول بدل الـ`curl` اليدوي:
+
+```bash
+export CELA_API_TOKEN=...            # الرمز العام؛ لا يُطبع أبدًا
+python scripts/verify_deployment.py --api "$API"
+# Celia.sh — deployment verification
+#   service : https://<service>.onrender.com
+#   commit  : <40-char sha>
+#   expect  : execution.kind == 'scripted'
+#   token   : loaded from CELA_API_TOKEN (never printed)
+# [PASS] health answers {"status":"ok"} without a token
+# [PASS] runtime-info requires the platform token
+# [PASS] runtime-info reports execution.kind == "scripted"
+# [PASS] no response echoes the API token
+# 4/4 criteria passed.
+```
+
+السكربت **لا يخمّن**: فحوصه الأربعة مسمّاة، ورمز الخروج `0` يعني أن كل الفحوص
+نجحت، و`1` يعني أن فشل واحدًا على الأقل (فيُطبع أيّها بالتفصيل)، و`2` يعني أن
+الفحص لم يعمل أصلًا (لا رمز، أو عنوان غير صالح). الرمز لا يُطبع ولا يُخزَّن في
+التقرير، والعنوان يجب أن يكون `https` خارج loopback لأن الفحص يرسل رمزًا
+بـ`Bearer`. أضف `--json` لآلة تقرأ التقرير.
+
 ### 2.6 الوضع التجريبي أولًا، ثم الوضع الحي
 
 `render.yaml` يُنشئ الخدمة في **وضع المعاينة**: `CELA_USE_LIVE_PROVIDER=0`.
@@ -102,7 +126,14 @@ curl -sS -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer $CELA_PRIVAT
    `CELA_USE_LIVE_PROVIDER` إلى `1` وأعد النشر.
 3. شغّل اختبار القبول A1/A6 بمفتاح حقيقي (انظر `docs/DEPLOYMENT_RUNBOOK.md` §المرحلة أ)،
    ثم تحقق من الخدمة المنشورة نفسها: `/runtime-info` يجب أن يعيد
-   `provider_adapter` مع `fallback_triggered=False` في مسار النجاح.
+   `provider_adapter` مع `fallback_triggered=False` في مسار النجاح. أي:
+
+   ```bash
+   python scripts/verify_deployment.py --api "$API" --expect-kind provider_adapter
+   ```
+
+   الفحص الافتراضي يتوقّع `scripted` (وضع المعاينة)، فإن استُدعي على خدمة حيّة
+   دون تصحيح التوقّع أظهر ذلك صراحةً بدل أن يمرّ صامتًا.
 
 > **فشل مغلق مقصود:** إذا بقي العلم على `1` بلا مفتاح صالح، يرفض الخادم الإقلاع،
 > ويعيد `scripts/deploy_doctor.py` الخطأ `live_provider_unconfigured` **قبل** النشر.
