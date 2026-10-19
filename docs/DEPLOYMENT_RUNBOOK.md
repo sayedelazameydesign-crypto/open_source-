@@ -51,6 +51,21 @@ curl -s -H "Authorization: Bearer $CELA_API_TOKEN" http://127.0.0.1:8080/mission
 # تأكد من أن payload يحتوي على execution.kind == "provider_adapter"
 ```
 
+### تشغيل A1/A6 من GitHub Actions (بلا تمرير المفتاح إلى أي طرفية)
+
+GitHub لا يعرض قيمة أي سر بعد حفظه — لا للمستخدم ولا للوكلاء — والطريقة الوحيدة
+لاستخدامه هنا هي تشغيل Workflow. لهذا يوجد `.github/workflows/live-acceptance.yml`:
+
+- يقرأ `GEMINI_API_KEY` من أسرار المستودع فقط، ويضعه في بيئة الخطوة (لا في argv ولا في URL).
+- الوجهة ثابتة داخل الملف (`generativelanguage.googleapis.com`)، وليست مدخلًا يمكن تغييره عند التشغيل.
+- يتخطى الخطوة الحية إن لم يكن `ALLOW_LIVE_EXTERNAL_CALLS` هو النص `true`، فلا يستهلك حصة.
+- يحاول رفع `live-acceptance.log` كـArtifact دائمًا، حتى عند فشل أحد المعايير؛ لا يوجد سجل حي إذا تخطّى التشغيل أو فشل الفحص الأولي.
+
+`workflow_dispatch` لا يظهر في الواجهة قبل وجود الملف على الفرع الافتراضي، لذلك يعمل أيضًا
+على `push` يغيّر الملف نفسه على فرع غير `main` (أول التزام يُضيفه). وبعد الدمج يكفي: Actions → Live acceptance → Run workflow.
+لتغيير النموذج دون تعديل الملف، أضف متغير مستودع `CELA_LIVE_MODEL` بالقيمة المطلوبة.
+لا يُعد نجاح Workflow مع تخطي الخطوة الحية دليلًا على اجتياز A1/A6؛ تبقى A1/A6 وC6 مفتوحة حتى وصول أدلتها الفعلية.
+
 ## المرحلة C5 — النشر على Render
 
 1. اربط المستودع بـ Render واختر خطة Free.

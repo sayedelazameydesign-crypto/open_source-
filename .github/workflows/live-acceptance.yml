@@ -1,0 +1,73 @@
+name: Live acceptance (A1/A6, real Gemini)
+
+# Manual, secrets-injected run of scripts/test_gemini_provider.py.
+# The key travels only from repository secret to step env to model client.
+# The destination is pinned, not a dispatch input.
+# Push bootstraps runs before workflow_dispatch exists on the default branch.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/live-acceptance.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-acceptance-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  a1-a6:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Push to main is the merge itself: only dispatch should spend quota there.
+    if: github.event_name == 'workflow_dispatch' || github.ref_name != 'main'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,server]"
+      - name: Preflight — kill switch and credential present
+        env:
+          CELA_LIVE_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ALLOW_LIVE_EXTERNAL_CALLS: ${{ secrets.ALLOW_LIVE_EXTERNAL_CALLS }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CELA_LIVE_KEY:-}" ]; then
+            echo "::error title=Preflight::Repository secret GEMINI_API_KEY is empty or unset. Add it in Settings > Secrets and variables > Actions, then re-run."
+            exit 1
+          fi
+          # Kill switch: no provider call happens unless this is literally "true".
+          if [ "${ALLOW_LIVE_EXTERNAL_CALLS:-}" != "true" ]; then
+            echo "::notice title=Live run skipped::ALLOW_LIVE_EXTERNAL_CALLS is not 'true', so no Gemini request was made. Set it to 'true' and re-run to produce A1/A6 evidence."
+            echo "SKIP_LIVE=1" >> "$GITHUB_ENV"
+          fi
+      - name: Run A1/A6 acceptance test
+        if: env.SKIP_LIVE != '1'
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # Pinned constant: a dispatched run cannot choose the destination.
+          CELA_PROVIDER_BASE_URL: "https://generativelanguage.googleapis.com/v1beta/openai"
+          # Optional repository variable selects the model, not the destination.
+          CELA_PROVIDER_MODEL: ${{ vars.CELA_LIVE_MODEL || 'gemini-2.5-flash' }}
+          CELA_PROVIDER_CREDENTIAL_VAR: GEMINI_API_KEY
+          CELA_USE_LIVE_PROVIDER: "1"
+          CELA_API_TOKEN: ci-live-acceptance-only
+          CELA_LEDGER_PATH: "off"
+        run: |
+          set -o pipefail
+          python scripts/test_gemini_provider.py 2>&1 | tee live-acceptance.log
+      - name: Upload log
+        # Always: a failed criterion is exactly the evidence someone needs.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-acceptance-log
+          path: live-acceptance.log
+          if-no-files-found: warn
+          retention-days: 14
