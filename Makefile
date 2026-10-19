@@ -1,5 +1,6 @@
 .PHONY: install test lint format demo-react demo-flow serve check clean launcher-test launcher-build \
-        vendored-verify vendored-verify-upstream vendored-write defork-launcher evidence evidence-check
+        vendored-verify vendored-verify-upstream vendored-write defork-launcher evidence evidence-check \
+        verify-deploy
 
 install:
 	pip install -e ".[dev,server]"
@@ -25,6 +26,14 @@ demo-flow:
 
 serve:
 	python -m os_server.cli serve --demo --host 0.0.0.0 --port 8080
+
+# Post-deploy verification of a published service. Needs the service URL and
+# the public platform token in the environment; the token is never printed.
+#   make verify-deploy API=https://<service>.onrender.com
+#   make verify-deploy API=... EXPECT_KIND=provider_adapter
+verify-deploy:
+	@test -n "$(API)" || { echo "usage: make verify-deploy API=https://<service>.onrender.com"; exit 2; }
+	python scripts/verify_deployment.py --api "$(API)" --expect-kind "$(or $(EXPECT_KIND),scripted)"
 
 # Vendored ArtCraft Launcher workspace (packages/craft-launcher, ADR-0015).
 # Independent of the Python toolchain: needs Rust 1.90+ on PATH.

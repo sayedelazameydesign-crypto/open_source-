@@ -6,7 +6,7 @@
 بينما كبرت المجموعة، وصار أول دليل يقرأه الزائر هو أول دليل يخذله.
 
 <!-- generated:test-count -->
-**1267 اختبارًا في المجموعة** — 1265 مُختارًا · 2 مُستبعَدًا (deselected) · `pytest --collect-only -q`
+**1281 اختبارًا في المجموعة** — 1279 مُختارًا · 2 مُستبعَدًا (deselected) · `pytest --collect-only -q`
 <!-- /generated:test-count -->
 
 > **الرقمان ليسا تناقضًا.** العدد أعلاه حصيلة `pytest --collect-only -q`، أي
@@ -35,6 +35,7 @@ make evidence-check    # يفشل إن كانت الكتلة لا تطابق م�
 | واجهة الويب | `npm run test:components` / `test:hooks` / `test:deploy` | مكوّنات React · خطّافات · دالة الحافة (بلا شبكة) |
 | بناء الويب (شكلان) | `npm run build` · `npm run build:pages` | بناء Next الخادمي · تصدير ثابت لـ Cloudflare Pages |
 | جاهزية النشر | `python scripts/deploy_doctor.py` | أسرار، عناوين، برنامج Postgres، وكيل الحافة |
+| هوية خدمة منشورة | `python scripts/verify_deployment.py --api https://<service>.onrender.com` | `{"status":"ok"}` بلا رمز · `/runtime-info` محميّة · `execution.kind` هو المتوقَّع · الرمز لا يُطبع |
 
 ## ٢) لقطة تحقّق — 2026-10-17 عند `3498ce3`
 
