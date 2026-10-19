@@ -95,16 +95,21 @@ GitHub لا يعرض قيمة أي سر بعد حفظه — لا للمستخد�
 1. أنشئ **مشروع Supabase ثانيًا مخصصًا للاختبار** (Free، بلا بطاقة) — قاعدة
    الإنتاج الحالية لا تُكتب أبدًا بصفتها هدفًا، والسكربت يرفض أي هدف يحلّ إلى
    نفس القاعدة (نفس مشروع Supabase عبر الـpooler والمباشر = قاعدة واحدة).
-2. في **Settings → Secrets and variables → Actions** أضف سرّين (الأسماء فقط
-   تُذكر هنا؛ القيم لا تُكتب في محادثة ولا في كود):
+2. في **Settings → Secrets and variables → Actions** أضف ثلاثة أسرار (الأسماء
+   فقط تُذكر هنا؛ القيم لا تُكتب في محادثة ولا في كود):
    * `CELA_TEST_POSTGRES_DSN` — رابط **Session pooler** (منفذ `5432`، مع
      `?sslmode=require`) لقاعدة الاختبار. هو هدف الكتابة الوحيد.
    * `CELA_RUN_STORE_URL` — رابط قاعدة الإنتاج، **مرجع مقارنة فقط**: يُقارن
      ولا يُتصل به ولا يُكتب إليه أبدًا. غيابه لا يوقف التشغيل لكنه يجعل
      النتيجة موسومة `SEPARATION IS UNVERIFIED`، فلا تُغلق بها C6.
+   * `CELA_ALLOW_C6_WRITE` = النص `true` حرفيًا — مفتاح تسليح الكتابة (نفس
+     نمط `ALLOW_LIVE_EXTERNAL_CALLS` في A1/A6). وجود الـDSN وحده لا يُسلّح
+     كتابة: بدونه يبقى الـPreflight أحمر ولا تُلمس أي قاعدة، فلا تتحول C6
+     خضراء إلا بعد كتابة وتحقق وحذف فعليين.
 3. شغّل: Actions → **Postgres persistence (C6, real PostgreSQL)** → Run workflow.
-   الدليل هو سطر `A1/A6`-النظير بعنوان `C6`: تعليق `C6 at <sha>` يطابق
-   `headSha`، وسطر `[PASS] PostgreSQL run/state/events/artifact/ticket persist…`،
+   الدليل هو تعليق بعنوان `C6`: ‏`C6 at <sha>` حيث `<sha>` يساوي `headSha`
+   لتشغيلك أنت (رأس الفرع لحظة إعادة التشغيل، لا رقمًا منقولًا من خطة)،
+   وسطر `[PASS] PostgreSQL run/state/events/artifact/ticket persist…`،
    وArtifact باسم `postgres-persistence-log`. السكربت يكتب ثم **يحذف صفوفه**
    افتراضيًا، ويطبع `commit sha:` من `GITHUB_SHA` في ترويسته.
 

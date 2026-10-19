@@ -38,6 +38,7 @@ jobs:
         env:
           CELA_TEST_POSTGRES_DSN: ${{ secrets.CELA_TEST_POSTGRES_DSN }}
           CELA_RUN_STORE_URL: ${{ secrets.CELA_RUN_STORE_URL }}
+          CELA_ALLOW_C6_WRITE: ${{ secrets.CELA_ALLOW_C6_WRITE }}
         run: |
           set -euo pipefail
           # Evidence is only evidence with the tree it came from: the log names
@@ -46,6 +47,14 @@ jobs:
           echo "ref: ${GITHUB_REF}"
           if [ -z "${CELA_TEST_POSTGRES_DSN:-}" ]; then
             echo "::error title=Preflight::Repository secret CELA_TEST_POSTGRES_DSN is empty or unset. Add the Session-pooler DSN of a dedicated TEST Supabase project (Settings > Secrets and variables > Actions), then re-run. The value is never printed."
+            exit 1
+          fi
+          # Write-arm switch, same pattern as A1/A6's ALLOW_LIVE_EXTERNAL_CALLS:
+          # the DSNs being present never arms a database write on its own. Only
+          # the literal string "true" does, so a re-run stays red (and writes
+          # nothing) until the operator deliberately arms it.
+          if [ "${CELA_ALLOW_C6_WRITE:-}" != "true" ]; then
+            echo "::error title=Preflight::Repository secret CELA_ALLOW_C6_WRITE is not 'true', so no database write is armed. Set it to 'true' (Settings > Secrets and variables > Actions) only when the TEST DSN above points at a dedicated test database, then re-run."
             exit 1
           fi
           if [ -z "${CELA_RUN_STORE_URL:-}" ]; then

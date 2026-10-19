@@ -71,6 +71,21 @@ def test_write_gate_and_artifact_survive_failure(spec: dict) -> None:
     assert "--title C6" in publish["run"]
 
 
+def test_write_must_be_armed_with_the_literal_true(spec: dict) -> None:
+    """DSNs alone never arm a write: only ``CELA_ALLOW_C6_WRITE == "true"``.
+
+    Same pattern as the A1/A6 kill switch (`ALLOW_LIVE_EXTERNAL_CALLS`):
+    adding the secrets and re-running must stay red until the operator
+    deliberately arms the write, so a green C6 check always means rows
+    were actually written, verified and cleaned up.
+    """
+    preflight = _step(spec, "Preflight")
+    assert preflight["env"]["CELA_ALLOW_C6_WRITE"] == "${{ secrets.CELA_ALLOW_C6_WRITE }}"
+    assert '!= "true"' in preflight["run"], "anything but literal 'true' must refuse the write"
+    run_step = _step(spec, "Run C6")
+    assert run_step.get("if") == "success()", "a refused preflight must skip the write step"
+
+
 def test_log_records_the_commit_sha(spec: dict) -> None:
     preflight = _step(spec, "Preflight")
     assert 'echo "commit sha: ${GITHUB_SHA}"' in preflight["run"]

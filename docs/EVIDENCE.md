@@ -6,7 +6,7 @@
 بينما كبرت المجموعة، وصار أول دليل يقرأه الزائر هو أول دليل يخذله.
 
 <!-- generated:test-count -->
-**1307 اختبارًا في المجموعة** — 1305 مُختارًا · 2 مُستبعَدًا (deselected) · `pytest --collect-only -q`
+**1308 اختبارًا في المجموعة** — 1306 مُختارًا · 2 مُستبعَدًا (deselected) · `pytest --collect-only -q`
 <!-- /generated:test-count -->
 
 > **الرقمان ليسا تناقضًا.** العدد أعلاه حصيلة `pytest --collect-only -q`، أي
@@ -84,11 +84,11 @@ make evidence-check    # يفشل إن كانت الكتلة لا تطابق م�
 
 | الفحص | النتيجة |
 |---|---|
-| `make check` | `ruff` نظيف · `evidence-check` مطابق · `1305 passed, 2 deselected` |
-| `pytest --collect-only -q` | `1307` اختبارًا مجمَّعًا (١٣٠٥ مُختارًا + ٢ مُستبعَدين) |
+| `make check` | `ruff` نظيف · `evidence-check` مطابق · `1306 passed, 2 deselected` |
+| `pytest --collect-only -q` | `1308` اختبارًا مجمَّعًا (١٣٠٦ مُختارًا + ٢ مُستبعَدين) |
 | محاكاة C5 محليًا (نفس بيئة `render.yaml`، وضع المعاينة) | `deploy_doctor --strict` → `ready: true` · `GET /health` → `{"status":"ok"}` · `/runtime-info` → `scripted/demo-react` (إفصاح صادق) · رمزا السطحين يفصلان `401/200` كما في الدليل |
 | قاعدة C6 المرشحة (Supabase) | مشروع قائم `ACTIVE_HEALTHY`، PostgreSQL 17.6، خدمات db/pooler/pg_bouncer سليمة — القراءة فقط، لم يُكتب شيء |
-| C6 الحي (workflow جديد) | **لم يُشغَّل بمفتاح حقيقي بعد**: `.github/workflows/postgres-persistence.yml` مبني ومحروس باختبارات، وينتظر سرّي `CELA_TEST_POSTGRES_DSN` (قاعدة اختبار منفصلة) و`CELA_RUN_STORE_URL` (مرجع مقارنة) في إعدادات المستودع |
+| C6 الحي (workflow جديد) | **لم يُكتب به بعد**: `.github/workflows/postgres-persistence.yml` مبني ومحروس باختبارات؛ أول تشغيل (39263535858) توقف عند الـPreflight لخلوّ الأسرار ولم تُلمس أي قاعدة. ينتظر `CELA_TEST_POSTGRES_DSN` (قاعدة اختبار منفصلة) و`CELA_RUN_STORE_URL` (مرجع مقارنة) و`CELA_ALLOW_C6_WRITE=true` (مفتاح تسليح الكتابة) |
 | C5 (Render deploy) | **لم يُنفَّذ** — لا حساب Render مربوط؛ التمهيد المحلي أعلاه لا يُحتسب نشرًا |
 
 ## ٣) ما لا يغطّيه هذا الملف — بصراحة
