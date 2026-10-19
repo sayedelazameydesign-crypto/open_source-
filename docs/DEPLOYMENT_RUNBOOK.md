@@ -87,6 +87,51 @@ GitHub لا يعرض قيمة أي سر بعد حفظه — لا للمستخد�
 لتغيير النموذج دون تعديل الملف، أضف متغير مستودع `CELA_LIVE_MODEL` بالقيمة المطلوبة.
 لا يُعد نجاح Workflow مع تخطي الخطوة الحية دليلًا على اجتياز A1/A6؛ تبقى A1/A6 وC5 وC6 مفتوحة حتى وصول أدلتها الفعلية.
 
+### تشغيل C6 من GitHub Actions (بلا تمرير أي DSN إلى طرفية)
+
+نفس قاعدة A1/A6: قيمة الـDSN لا تظهر لأحد بعد حفظها سرًّا، فإثبات C6 الحي
+يكون بتشغيل `.github/workflows/postgres-persistence.yml`:
+
+1. أنشئ **مشروع Supabase ثانيًا مخصصًا للاختبار** (Free، بلا بطاقة) — قاعدة
+   الإنتاج الحالية لا تُكتب أبدًا بصفتها هدفًا، والسكربت يرفض أي هدف يحلّ إلى
+   نفس القاعدة (نفس مشروع Supabase عبر الـpooler والمباشر = قاعدة واحدة).
+2. في **Settings → Secrets and variables → Actions** أضف سرّين (الأسماء فقط
+   تُذكر هنا؛ القيم لا تُكتب في محادثة ولا في كود):
+   * `CELA_TEST_POSTGRES_DSN` — رابط **Session pooler** (منفذ `5432`، مع
+     `?sslmode=require`) لقاعدة الاختبار. هو هدف الكتابة الوحيد.
+   * `CELA_RUN_STORE_URL` — رابط قاعدة الإنتاج، **مرجع مقارنة فقط**: يُقارن
+     ولا يُتصل به ولا يُكتب إليه أبدًا. غيابه لا يوقف التشغيل لكنه يجعل
+     النتيجة موسومة `SEPARATION IS UNVERIFIED`، فلا تُغلق بها C6.
+3. شغّل: Actions → **Postgres persistence (C6, real PostgreSQL)** → Run workflow.
+   الدليل هو سطر `A1/A6`-النظير بعنوان `C6`: تعليق `C6 at <sha>` يطابق
+   `headSha`، وسطر `[PASS] PostgreSQL run/state/events/artifact/ticket persist…`،
+   وArtifact باسم `postgres-persistence-log`. السكربت يكتب ثم **يحذف صفوفه**
+   افتراضيًا، ويطبع `commit sha:` من `GITHUB_SHA` في ترويسته.
+
+> أسرار GitHub لا تصل إلى Render تلقائيًا: ما يُحفظ في Actions يخدم
+> Workflows فقط، وما تحتاجه الخدمة الحية (`CELA_API_TOKEN`,
+> `CELA_PRIVATE_API_TOKEN`, `CELA_RUN_STORE_URL`, `GEMINI_API_KEY`) يُدخل
+> مرة أخرى في لوحة Render نفسها بصفته Environment secrets.
+
+### تصحيحات على خطط «النشر المجاني» المتداولة لهذا المستودع
+
+* **`render.yaml` موجود أصلًا** في الجذر وبصيغة هذا المشروع تحديدًا: بناء
+  `pip install -e ".[server,distributed]"` من `pyproject.toml` (لا يوجد
+  `requirements.txt` ولا نقطة دخول `app:app`/`gunicorn`). أي قالب عام يقترح
+  غير ذلك سيبني خدمة لا تُقلع.
+* **أمر الإقلاع عاملٌ واحد مقصودًا:** `uvicorn os_server.app:create_app --factory`
+  بلا `--workers`. على ذاكرة الخطة المجانية المحدودة، كل عامل إضافي نسخة
+  كاملة من العملية؛ عاملان أو أكثر مخاطرة ذاكرة لا مكسب.
+* **`DATABASE_URL` لا يقرأه التطبيق.** المتغير المقروء هو `CELA_RUN_STORE_URL`
+  فقط. قاعدة Render المُدارة تُستخدم بكتابة قيمتها **داخل** `CELA_RUN_STORE_URL`
+  في اللوحة، وقاعدة Supabase/Neon الخارجية تُستخدم برابط Session pooler
+  بالصيغة نفسها — لا يوجد `fromDatabase` في الـBlueprint الحالي لأن القاعدة
+  خارجية عمدًا (قاعدة Render المجانية قصيرة العمر؛ تحقق من مهلتها في اللوحة
+  قبل اختيارها قاعدة دائمة).
+* **إبقاء الخدمة مستيقظة بـping خارجي ليس بلا كلفة:** انظر تنبيه النوم في
+  [`DEPLOY_FREE_TIER_RUNBOOK.md`](DEPLOY_FREE_TIER_RUNBOOK.md) §٢ — يستهلك
+  ساعات التشغيل المجانية باستمرار.
+
 ## ما لا يعنيه هذا الملف — C5 وC6 على وجه التحديد
 
 مرحلتان مختلفتان، ولا تُغني إحداهما عن الأخرى:
