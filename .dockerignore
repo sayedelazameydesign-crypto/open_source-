@@ -1,0 +1,18 @@
+# Trim the Docker build context (image correctness does not depend on it).
+.git
+.git-credentials
+.venv
+.cela
+.arena
+node_modules
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+coverage
+dist
+build
+.next
+out
