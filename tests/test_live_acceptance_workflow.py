@@ -81,3 +81,11 @@ def test_log_records_the_commit_sha(spec: dict) -> None:
     # Printed by the preflight step, which runs even when the live call is
     # skipped: a skipped run must still say *which* commit skipped.
     assert 'echo "commit sha: ${GITHUB_SHA}"' in preflight["run"]
+
+
+def test_verdict_is_published_even_when_the_run_fails(spec: dict) -> None:
+    """The artifact is a zip behind a signed URL; annotations travel with the run."""
+    publish = _step(spec, "Publish criteria as check annotations")
+    assert publish.get("if") == "always()"
+    assert "scripts/publish_acceptance_annotations.py" in publish["run"]
+    assert "live-acceptance.log" in publish["run"]
