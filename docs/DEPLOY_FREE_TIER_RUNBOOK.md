@@ -213,10 +213,36 @@ Vercel → المشروع → **Settings → Environment Variables** (Production
 
 > **مهم — التدقيق 2026-10-19:** المشروع مربوط بـ GitHub، لذا دفع `main` ينشر تلقائياً. غير أن متغيرات Vercel لا تُطبّق بأثر رجعي — أي تعديل في **Dashboard → Environment Variables** (أو عبر `--env`) يتطلب **نشرًا جديدًا**. التدقيق وجد `CELA_WEB_ACCESS_SECRET` مسجلاً في **Production** فقط وغائبًا في **Preview**؛ النتيجة: `Preview` الحالي (commit `9e7c207` بحالة `READY`) لا يملك سر التشغيل والبوابة تفشل مغلقة. أضف السر في **Preview وProduction معاً** ثم أعد النشر للتحقق (`GET /api/access`).
 
-##### النشر عبر GitHub Actions (لا عبر موصّل Vercel)
+> **حاجز قبل أي اختبار حي — التدقيق 2026-10-19 09:09Z:** روابط النشر الحالية
+> (Preview لـ`d52cfb7` ورابط `main`) تُعيد **صفحة دخول Vercel** (`Protected
+> Deployment – Vercel` → `vercel.com/login?next=%2Fsso-api…`) لأي طلب بلا جلسة،
+> أي أن **حماية النشر من Vercel (Vercel Authentication)** مفعّلة على المشروع
+> وتقطع الطلب **قبل** وصوله إلى Next.js. النتيجة: `GET /api/access` لا يُرى
+> إطلاقاً، والاختبارات الأربعة في §3.5.4 مستحيلة من الإنترنت العام حتى تُضبط
+> الحماية. المسار: Vercel → `open-source` → **Settings → Deployment Protection**،
+> فإمّا إيقاف **Vercel Authentication** (بوابة `CELA_WEB_ACCESS_SECRET` هي الحامية
+> المقصودة للواجهة) أو إبقاء الحماية وقبول أن كل اختبار حي يحتاج جلسة Vercel
+> (يدوياً في المتصفح، أو `curl` مع ترويسة `x-vercel-protection-bypass` بعد توليد
+> Protection Bypass secret). التفاصيل والأوامر في
+> `docs/verification/vercel-state-2026-10-19.md`.
 
-النشر عندك **عبر Actions secrets**، لا عبر موصّل Vercel. لا تضع السر في نصّ
-الـworkflow ولا في `NEXT_PUBLIC_*`:
+##### مسار النشر الفعلي: موصّل Vercel مع GitHub — وCLI/Actions بديل موثَّق
+
+**تصحيح (تدقيق 2026-10-19):** النشر عندك **عبر موصّل Vercel مع GitHub**، لا عبر
+Actions. الدليل بالأمر لا بالذاكرة:
+
+```text
+$ ls .github/workflows
+ci.yml  codeql.yml  eval-real-model.yml  launcher-ci.yml  web-ci.yml   # لا workflow ينفّذ vercel deploy
+$ gh api repos/…/commits/9adbdb72…/status
+{"state":"success","statuses":[{"context":"Vercel","state":"success",
+ "target_url":"https://vercel.com/celia-fashions-projects/open-source/A3cEbh3XkmZsEFNSFeqCF8NArRys"}]}
+```
+
+أي أن متغيرات وقت التشغيل مصدرها **Dashboard → Settings → Environment Variables**
+(Production **و** Preview)، وكل تعديل فيها يتطلب **نشرًا جديدًا** (انظر التنبيه
+في §3.5.2). الخطوات أدناه تنطبق فقط إن اخترت النشر يدوياً عبر CLI أو أضفت
+workflow لاحقاً؛ وفي الحالتين لا تضع السر في نصّ الـworkflow ولا في `NEXT_PUBLIC_*`:
 
 1. أضف الأسرار في **GitHub → Settings → Secrets and variables → Actions**:
    `CELA_BACKEND_URL`, `CELA_API_TOKEN`, `CELA_PRIVATE_API_TOKEN`,
@@ -262,6 +288,13 @@ VERCEL=1 CELA_BACKEND_URL=https://<service>.onrender.com \
 
 ```bash
 SITE=https://<project>.vercel.app
+
+# 0) اختبر أن الطلب يصل إلى التطبيق أصلاً ولا تصطاده حماية نشر Vercel.
+#    إن ظهر `vercel.com/login?next=%2Fsso-api` أو عنوان `Protected Deployment`
+#    فالنتيجة ليست من تطبيقك — عالج §3.5.2 (Deployment Protection) أولاً.
+curl -sS -o /dev/null -w '%{http_code} %{redirect_url}\n' $SITE/api/access
+#    المتوقع 200 وبلا redirect. أي 30x إلى vercel.com/login = حماية Vercel.
+
 curl -sS $SITE/api/access                          # {"mode":"enforced","required":true,"authorized":false}
 curl -sS -X POST -H "Content-Type: application/json" -d '{"secret":"..."}' $SITE/api/access  # يضع الكوكي
 curl -sS $SITE/api/backend/health                 # {"status":"ok"} عبر الكوكي أو X-Celia-Access
@@ -307,6 +340,7 @@ grep -c "CELA_API_TOKEN\|local-dev-token" <(curl -sS $SITE/) || true  # 0 — ل
 | صفحة بيضاء بعد النشر | `CELA_STATIC_EXPORT` غير مفعّل فبُنيت نسخة Node | استخدم `npm run build:pages` |
 | `503 access_gate_unconfigured` على كل `/api/backend/*` على Vercel | `CELA_WEB_ACCESS_SECRET` غائب و`NODE_ENV=production` يفشل مغلقاً | أضف `CELA_WEB_ACCESS_SECRET` + `CELA_WEB_GATE_REQUIRED=1` في Vercel (Production وPreview) **كمتغيرات تشغيل (Dashboard أو `vercel deploy --env`)** — لا `--build-env` — ثم أعد النشر |
 | `401 access_required` بلا كوكي على Vercel | البوابة `enforced` بلا إثبات | افتح `/api/access` وأدخل السر، أو استخدم `X-Celia-Access` للأتمتة |
+| `/api/*` يعيد صفحة `Protected Deployment – Vercel` / `302` إلى `vercel.com/login?next=%2Fsso-api` | **Vercel Authentication** (Deployment Protection) مفعّلة فتقطع الطلب قبل Next.js — ليست `503 access_gate_unconfigured` ولا `401 access_required` | Settings → Deployment Protection: أوقفها (بوابة السر هي الحماية المقصودة)، أو ولّد Protection Bypass secret ومرّر `x-vercel-protection-bypass` في `curl` |
 
 ---
 
