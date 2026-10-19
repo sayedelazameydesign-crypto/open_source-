@@ -55,6 +55,7 @@ from os_server.deploy_probe import (  # noqa: E402
     ProbeConfigurationError,
     verify_published_service,
 )
+from os_server.secret_file import load_secret_files  # noqa: E402
 
 GREEN = "\033[32m"
 RED = "\033[31m"
@@ -138,6 +139,9 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # The probe token may live in the whole-system secret file (ADR-0021)
+    # instead of the shell environment; load missing values before resolving.
+    load_secret_files()
     args = _parse_args(list(sys.argv[1:] if argv is None else argv))
     url = _resolve_url(args.api)
     token = os.environ.get(args.token_env, "").strip()

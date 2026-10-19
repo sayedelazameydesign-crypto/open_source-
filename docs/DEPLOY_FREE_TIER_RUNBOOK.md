@@ -65,6 +65,31 @@ postgresql://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/p
 | `GEMINI_API_KEY` | مطلوب **فقط** بعد تفعيل الوضع الحي (الخطوة 2.6)؛ اتركه فارغًا في المعاينة |
 | `CELA_ACTIVEPIECES_*` | اختياري (أتمتة) |
 
+> **بديل ملف الأسرار الواحد (ADR-0021):** بدل تعبئة كل متغير على حدة، أضف
+> ملفًا واحدًا للنظام بالكامل من **Dashboard → Environment → Secret Files →
+> Add Secret File**:
+>
+> | الحقل | القيمة |
+> |---|---|
+> | **Filename** | `.env` |
+> | **Contents** | نفس أسماء متغيرات هذا الدليل بصيغة `KEY=VALUE` (القالب: `.env.example`) |
+>
+> ```dotenv
+> CELA_API_TOKEN=<الرمز العام — مختلف عن الخاص>
+> CELA_PRIVATE_API_TOKEN=<الرمز الخاص>
+> CELA_RUN_STORE_URL=postgresql://…?sslmode=require
+> GEMINI_API_KEY=<مطلوب فقط للوضع الحي>
+> ```
+>
+> الملف متاح أثناء البناء والتشغيل من جذر التطبيق ومن `/etc/secrets/.env`، و
+> `os_server.secret_file` يُحمّله عند إقلاع الخادم وCLI (انظر ADR-0021).
+> القواعد: **متغيرات البيئة الحقيقية تفوز دائمًا** على الملف (يمكن خلط
+> المصدرين)، والرمزان يجب أن يختلفا، ولا يُرتكب الملف في Git أبدًا
+> (`.env` في `.gitignore`)، وأي تعديل على الملف في Dashboard يتطلب إعادة نشر.
+> الـBlueprint لا يستطيع إعلان Secret Files، لذا لا يوجد مقابل لها في
+> `render.yaml` — تُضاف من Dashboard فقط. `CELA_SECRET_FILE=<path>` يختار
+> ملفًا آخر، و`CELA_SECRET_FILE=off` يعطّل التحميل كليًا.
+
 3. **لماذا `pip install -e ".[server,distributed]"` في `render.yaml`؟**
    `CELA_RUN_STORE_URL` يشير إلى Postgres، وحزمة `psycopg` موجودة فقط في extra `distributed`.
    بدونها **يقلع الخادم بنجاح ويجيب `/health` بـ 200**، ثم يفشل أول تشغيل فعلي بـ 500.

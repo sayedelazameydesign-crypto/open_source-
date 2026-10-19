@@ -18,6 +18,13 @@ from os_server.runtime import (
     resolve_private_token,
     resolve_token,
 )
+from os_server.secret_file import (
+    SECRET_FILE_ENV_VAR,
+    SecretFileError,
+    SecretFileLoad,
+    load_secret_files,
+    parse_secret_file,
+)
 from os_server.storage import (
     DistributedRunStore,
     InMemoryRunStore,
@@ -32,6 +39,7 @@ __all__ = [
     "PRODUCT_NAME",
     "PRODUCT_VERSION",
     "PUBLIC_AI_API_PREFIX",
+    "SECRET_FILE_ENV_VAR",
     "ApiRuntime",
     "CelaBrowser",
     "DistributedRunStore",
@@ -39,6 +47,8 @@ __all__ = [
     "PostgresRunStore",
     "RunStore",
     "SQLiteRunStore",
+    "SecretFileError",
+    "SecretFileLoad",
     "build_demo_platform",
     "build_registry",
     "create_app",
@@ -46,6 +56,8 @@ __all__ = [
     "create_private_router",
     "demo_browser",
     "demo_egress_policy",
+    "load_secret_files",
+    "parse_secret_file",
     "resolve_private_token",
     "resolve_token",
     "run_store_from_url",

@@ -34,6 +34,7 @@ from os_tools.local_ai import LocalAIEngine
 from pydantic import BaseModel, ConfigDict
 
 from os_server.demo import demo_egress_policy
+from os_server.secret_file import load_secret_files
 from os_server.storage import RunMeta, RunStore, run_store_from_url
 
 PRODUCT_NAME: str = "cela_use_browser"
@@ -88,6 +89,11 @@ def resolve_token(
     """
     if explicit is not None:
         return explicit
+    # Token surfaces may be built without create_app (standalone routers), so
+    # resolving from the environment also honours the secret file (ADR-0021).
+    # An explicit argument — including "" to force the unconfigured state —
+    # bypasses the file entirely.
+    load_secret_files()
     for name in env_vars:
         value = os.environ.get(name)
         if value:

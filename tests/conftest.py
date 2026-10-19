@@ -74,6 +74,18 @@ async def await_until(
 
 
 @pytest.fixture(autouse=True)
+def secret_file_off_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the suite hermetic from a developer's local secret file (ADR-0021).
+
+    ``create_app`` and the CLI load ``./.env`` / ``/etc/secrets/.env`` when one
+    exists; without this, running the suite on a machine with a real ``.env``
+    would silently reconfigure tokens and providers. Tests for the secret
+    file itself override this with an explicit ``CELA_SECRET_FILE``.
+    """
+    monkeypatch.setenv("CELA_SECRET_FILE", "off")
+
+
+@pytest.fixture(autouse=True)
 def ledger_off_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep the suite hermetic: no test writes the default ledger file.
 

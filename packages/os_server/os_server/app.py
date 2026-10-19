@@ -107,7 +107,7 @@ from os_server.reach_api import (
 from os_server.runtime import (
     DEFAULT_WS_TICKET_TTL,
     PRODUCT_VERSION,
-     ApiRuntime,
+    ApiRuntime,
     ArtifactIntegrityError,
     PlatformFactory,
     RunHandle,
@@ -115,6 +115,7 @@ from os_server.runtime import (
     resolve_token,
     valid_bearer_token,
 )
+from os_server.secret_file import load_secret_files
 from os_server.waapi import WaapiService, create_waapi_router
 
 # Backwards-compatible alias for internal callers.
@@ -153,6 +154,12 @@ def create_app(
     mcp_layer: MCPLayer | None = None,
 ) -> FastAPI:
     """Build the FastAPI application hosting both the platform and ``/cela/v1``."""
+    # Whole-system secret file first (ADR-0021): a Render secret file named
+    # `.env` (app root or /etc/secrets/.env) fills any variable the real
+    # environment lacks, so tokens, provider keys, WaAPI credentials and the
+    # run-store URL below all resolve from it. Env values always win, and a
+    # missing default file is the normal env-only deployment (a no-op).
+    load_secret_files()
     configured_token = resolve_token(api_token)
     configured_private_token = resolve_private_token(private_api_token)
     if (
@@ -573,6 +580,7 @@ def serve(
 ) -> None:
     import uvicorn
 
+    load_secret_files()
     token = resolve_token(api_token)
     if not token:
         raise RuntimeError(

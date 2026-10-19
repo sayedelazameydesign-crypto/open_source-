@@ -748,6 +748,13 @@ def _telemetry_export(args) -> int:
 def main(argv: list[str] | None = None) -> int:
     from os_core.ledger import resolve_ledger
 
+    from os_server.secret_file import load_secret_files
+
+    # Whole-system secret file (ADR-0021) before anything reads the
+    # environment: run/flow provider keys and serve tokens alike. Real
+    # environment values always win; no file is the normal no-op.
+    load_secret_files()
+
     parser = argparse.ArgumentParser(prog="os-platform", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
 

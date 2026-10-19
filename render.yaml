@@ -4,6 +4,16 @@
 # - Cloudflare Pages / Workers for packages/web (with CELA_API_TOKEN kept server-side)
 # Secrets are marked sync: false and must NEVER be committed to Git.
 #
+# Whole-system alternative (ADR-0021): instead of filling each sync:false
+# variable, add ONE Render Secret File named `.env` holding the same
+# KEY=VALUE lines (Dashboard -> Environment -> Secret Files -> Add Secret File).
+# Blueprints cannot declare secret files, so render.yaml only
+# documents this; the file itself is uploaded in the Dashboard. Render makes
+# it available during builds and at runtime from the app root and at
+# /etc/secrets/.env, and os_server.secret_file loads whichever variables the
+# real environment lacks. Environment variables always take precedence over
+# the file, so the two sources can be mixed and migration is reversible.
+#
 # This blueprint ships in PREVIEW mode: CELA_USE_LIVE_PROVIDER=0 keeps the
 # server in the offline scripted demo, so a Blueprint deploy succeeds without
 # any API key and the UI's execution disclosure says "scripted".

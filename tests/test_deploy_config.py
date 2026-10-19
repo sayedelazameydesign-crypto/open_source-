@@ -90,6 +90,24 @@ def test_render_never_carries_a_secret_literal(
     assert "postgres://" not in declared
 
 
+def test_render_documents_secret_file_without_declaring_its_contents(
+    api_service: dict[str, Any],
+) -> None:
+    """Render secret files are Dashboard-only; the Blueprint may point, never carry.
+
+    ADR-0021: one secret file named ``.env`` can feed the whole system, but
+    Blueprints cannot declare secret files. ``render.yaml`` therefore documents
+    the Dashboard step in comments and must not gain an invented key (e.g.
+    ``secretFiles``) or any file content.
+    """
+    raw = RENDER.read_text(encoding="utf-8")
+    assert "Add Secret File" in raw
+    assert "/etc/secrets/.env" in raw
+    assert "secretFiles" not in api_service
+    assert "file-platform-token" not in raw
+    assert ".env" in (ROOT / ".gitignore").read_text(encoding="utf-8")
+
+
 def test_blueprint_ships_preview_mode_so_it_deploys_without_a_key(
     env_vars: dict[str, dict[str, Any]],
 ) -> None:

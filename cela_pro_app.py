@@ -61,6 +61,18 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for headless CI witho
 
     gr = _DummyGradio()  # type: ignore[assignment]
 
+# ---------- ملف الأسرار للنظام بالكامل (ADR-0021) ----------
+# On Render, a secret file named `.env` (app root or /etc/secrets/.env) fills
+# any variable the real environment lacks; existing env values always win.
+# This app is standalone by design, so a missing os_server package only means
+# "env-only", never a failed import.
+try:
+    from os_server.secret_file import load_secret_files as _load_secret_files
+except ImportError:  # pragma: no cover - standalone copy without os_server
+    _load_secret_files = None  # type: ignore[assignment]
+if _load_secret_files is not None:
+    _load_secret_files()
+
 # ---------- الألوان (HEX فقط) ----------
 BG = "#0b0f19"
 PANEL = "#111827"
