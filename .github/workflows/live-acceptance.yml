@@ -34,11 +34,11 @@ jobs:
           pip install -e ".[dev,server]"
       - name: Preflight — kill switch and credential present
         env:
-          CELA_LIVE_KEY: ${{ secrets.GEMINI_API_KEY }}
+          CELA_EVAL_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           ALLOW_LIVE_EXTERNAL_CALLS: ${{ secrets.ALLOW_LIVE_EXTERNAL_CALLS }}
         run: |
           set -euo pipefail
-          if [ -z "${CELA_LIVE_KEY:-}" ]; then
+          if [ -z "${CELA_EVAL_API_KEY:-}" ]; then
             echo "::error title=Preflight::Repository secret GEMINI_API_KEY is empty or unset. Add it in Settings > Secrets and variables > Actions, then re-run."
             exit 1
           fi
@@ -50,12 +50,12 @@ jobs:
       - name: Run A1/A6 acceptance test
         if: env.SKIP_LIVE != '1'
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          CELA_EVAL_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           # Pinned constant: a dispatched run cannot choose the destination.
           CELA_PROVIDER_BASE_URL: "https://generativelanguage.googleapis.com/v1beta/openai"
           # Optional repository variable selects the model, not the destination.
           CELA_PROVIDER_MODEL: ${{ vars.CELA_LIVE_MODEL || 'gemini-2.5-flash' }}
-          CELA_PROVIDER_CREDENTIAL_VAR: GEMINI_API_KEY
+          CELA_PROVIDER_CREDENTIAL_VAR: CELA_EVAL_API_KEY
           CELA_USE_LIVE_PROVIDER: "1"
           CELA_API_TOKEN: ci-live-acceptance-only
           CELA_LEDGER_PATH: "off"
