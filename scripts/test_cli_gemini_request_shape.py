@@ -161,8 +161,27 @@ async def _main() -> int:
     # Second request includes the tool observation.
     assert len(recorder.requests) >= 2, "expected at least one tool-result round trip"
     second = recorder.requests[1]
-    tool_messages = [m for m in second["body"]["messages"] if m.get("role") == "tool"]
+    second_messages = second["body"]["messages"]
+    assistant_tool_messages = [
+        m for m in second_messages if m.get("role") == "assistant" and m.get("tool_calls")
+    ]
+    assert assistant_tool_messages, "follow-up must preserve the assistant tool-call envelope"
+    assistant_tool_message = assistant_tool_messages[-1]
+    assert assistant_tool_message["tool_calls"] == [
+        {
+            "id": "call_mock",
+            "type": "function",
+            "function": {
+                "name": "python_execute",
+                "arguments": '{"code":"print(7*8)"}',
+            },
+        }
+    ], f"assistant tool call was not serialized in the follow-up: {assistant_tool_message!r}"
+    tool_messages = [m for m in second_messages if m.get("role") == "tool"]
     assert tool_messages, "second call must carry the tool observation"
+    assert tool_messages[-1].get("tool_call_id") == "call_mock", (
+        f"tool observation must reference the originating call id: {tool_messages[-1]!r}"
+    )
     # The observation is the real python_execute sandbox output for
     # ``print(7*8)``: a fixed reply here would prove only that JSON parsed.
     assert "56" in str(tool_messages[-1].get("content", "")), (

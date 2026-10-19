@@ -11,13 +11,21 @@ Two implementations of :class:`ChatModel`:
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable, Sequence
 from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
 
+from os_core.redact import scrub_credentials
 from os_core.tokens import TokenCalibration, TokenEstimator, estimate
 from os_core.types import ExecutionInfo, Message, ModelResponse, ToolCall, Usage
+
+_PROVIDER_SECRET_ASSIGNMENT = re.compile(
+    r"(?i)\b((?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|token|key|"
+    r"secret(?:[_ -]?key)?|password|passwd|authorization|credential)\b\s*[:=]\s*)"
+    r"(?:\"[^\"]*\"|'[^']*'|[^\s,;}\]]+)"
+)
 
 
 @runtime_checkable
@@ -145,7 +153,7 @@ class OpenAICompatModel(BaseModel):
 
         payload: dict[str, Any] = {
             "model": self.model_id,
-            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "messages": [_serialize_message(message) for message in messages],
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
@@ -153,13 +161,30 @@ class OpenAICompatModel(BaseModel):
             payload["tools"] = list(tools)
             payload["tool_choice"] = "auto"
 
+        headers = self._headers()
         async with httpx.AsyncClient(timeout=self.timeout, transport=self.transport) as client:
             resp = await client.post(
                 f"{self.base_url.rstrip('/')}/chat/completions",
-                headers=self._headers(),
+                headers=headers,
                 json=payload,
             )
-            resp.raise_for_status()
+            try:
+                resp.raise_for_status()
+            except httpx.HTTPStatusError:
+                detail = _provider_error_detail(
+                    resp,
+                    credential=_credential_from_headers(
+                        headers, self.auth_header, self.auth_prefix
+                    ),
+                )
+                message = f"provider returned HTTP {resp.status_code}"
+                if detail:
+                    message += f"; response_body={detail}"
+                # Avoid echoing the request URL (which may itself contain credentials)
+                # or retaining an unsanitized chained HTTPStatusError in diagnostics.
+                raise httpx.HTTPStatusError(
+                    message, request=resp.request, response=resp
+                ) from None
             data = resp.json()
 
         choice = data["choices"][0]
@@ -197,6 +222,92 @@ class OpenAICompatModel(BaseModel):
             finish_reason=choice.get("finish_reason", "stop"),
             usage=usage,
         )
+
+
+def _serialize_message(message: Message) -> dict[str, Any]:
+    """Encode the full OpenAI chat-completions shape for one transcript message."""
+    content: str | None = message.content
+    if message.role == "assistant" and message.tool_calls and not content:
+        # A tool-call turn with no accompanying prose uses the nullable content
+        # shape accepted by OpenAI-compatible chat-completions endpoints.
+        content = None
+    encoded: dict[str, Any] = {"role": message.role, "content": content}
+    if message.tool_call_id is not None:
+        encoded["tool_call_id"] = message.tool_call_id
+    if message.tool_calls:
+        encoded["tool_calls"] = [
+            {
+                "id": call.id,
+                "type": "function",
+                "function": {
+                    "name": call.name,
+                    "arguments": json.dumps(call.args, ensure_ascii=False, separators=(",", ":")),
+                },
+            }
+            for call in message.tool_calls
+        ]
+    return encoded
+
+
+def _credential_from_headers(
+    headers: dict[str, str], auth_header: str, auth_prefix: str
+) -> str:
+    """Return the credential portion of the configured auth header for redaction."""
+    value = next(
+        (value for name, value in headers.items() if name.casefold() == auth_header.casefold()),
+        "",
+    )
+    if auth_header.casefold() == "authorization" and value.startswith(auth_prefix):
+        return value[len(auth_prefix) :]
+    return value
+
+
+def _provider_error_detail(response: Any, *, credential: str = "") -> str:
+    """Return the full response body with credential-shaped values redacted."""
+    raw_body = response.text
+    if credential:
+        raw_body = raw_body.replace(credential, "[REDACTED]")
+    try:
+        body = json.loads(raw_body)
+    except (ValueError, UnicodeError):
+        return _scrub_provider_error_text(raw_body)
+    safe_body = _redact_provider_error_value(body, credential)
+    return json.dumps(safe_body, ensure_ascii=False, separators=(",", ":"))
+
+
+def _redact_provider_error_value(value: Any, credential: str) -> Any:
+    """Redact sensitive JSON fields recursively while retaining the full body."""
+    if isinstance(value, dict):
+        safe: dict[str, Any] = {}
+        for key, item in value.items():
+            normalized = re.sub(r"[^a-z0-9]", "", str(key).casefold())
+            if normalized == "key" or any(
+                normalized.endswith(suffix)
+                for suffix in (
+                    "apikey",
+                    "token",
+                    "secret",
+                    "password",
+                    "passwd",
+                    "authorization",
+                    "credential",
+                )
+            ):
+                safe[key] = "[REDACTED]"
+            else:
+                safe[key] = _redact_provider_error_value(item, credential)
+        return safe
+    if isinstance(value, list):
+        return [_redact_provider_error_value(item, credential) for item in value]
+    if isinstance(value, str):
+        text = value.replace(credential, "[REDACTED]") if credential else value
+        return _scrub_provider_error_text(text)
+    return value
+
+
+def _scrub_provider_error_text(text: str) -> str:
+    text = _PROVIDER_SECRET_ASSIGNMENT.sub(r"\1[REDACTED]", text)
+    return scrub_credentials(text)
 
 
 def _safe_json(text: str) -> dict[str, Any]:
