@@ -59,7 +59,7 @@ make evidence-check    # يفشل إن كانت الكتلة لا تطابق م�
 | `make check` | `ruff` نظيف · `evidence-check` مطابق · `1265 passed, 2 deselected` |
 | `pytest --collect-only -q` | `1267` اختبارًا مجمَّعًا (١٢٦٥ مُختارًا + ٢ مُستبعَدين) |
 | اختبارات تنقيح جسم خطأ المزوّد | ١٧ اسم حقل (`api_key`, `secret_key`, `private_key`, `access_key`, `client_secret`, `private_token`, …) × شكلَي الجسم (JSON ونص) = ٣٤ حالة مُعامَلة، كلها تُخفي القيمة؛ + اختبار يُثبت إخفاء المفتاح المُرسَل في الترويسات حين يعيده الجسم |
-| A1/A6 الحي (Gemini) | نجح حيًّا: run 39257796587 عند `5484fff` — **كل المعايير PASS**، ومنها المعيار ٦: `tool_calls_in_one_turn=2`, `tool_results=2`, `ids_round_trip=True`, `followup_http=200`، والمزوّد أعاد الإجابتين (55 و1024). تُقرأ التفاصيل من تعليقات التشغيل (Checks API) لا من الـArtifact |
+| A1/A6 الحي (Gemini) | نجح حيًّا: run 39258093213 عند `fe43a7f` — **7/7 معايير PASS**، ومنها المعيار ٦: `tool_calls_in_one_turn=2`، `tool_results=2`، `ids_round_trip=True`، `followup_http=200`، والمزوّد أعاد الإجابتين (55 و1024). التفاصيل تُقرأ من تعليقات التشغيل (Checks API) لا من الـArtifact |
 | C5 (Render) | **لم يُنفَّذ** |
 | C6 (PostgreSQL) | **لم يُنفَّذ** — لا قاعدة اختبار حيّة |
 
