@@ -152,9 +152,19 @@ class ReActAgent(BaseModel):
             self.router.charge(response.usage.total)
             run.tokens_used += response.usage.total
 
-            if response.content:
-                messages.append(Message(role="assistant", content=response.content))
-                await self.bus.thought(response.content, step_id=step.id)
+            if response.content or response.tool_calls:
+                # Keep the assistant's tool-call envelope in the transcript. The
+                # provider needs it on the next turn to pair each tool result with
+                # the call id that produced it (Gemini follows this OpenAI shape).
+                messages.append(
+                    Message(
+                        role="assistant",
+                        content=response.content,
+                        tool_calls=response.tool_calls,
+                    )
+                )
+                if response.content:
+                    await self.bus.thought(response.content, step_id=step.id)
 
             if not response.wants_tools:
                 step.status = StepStatus.DONE

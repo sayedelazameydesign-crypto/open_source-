@@ -40,16 +40,6 @@ class ExecutionInfo(BaseModel):
     goal_verification: Literal["not_verified"] = "not_verified"
 
 
-class Message(BaseModel):
-    role: Role
-    content: str = ""
-    tool_call_id: str | None = None
-
-    def render(self) -> str:
-        prefix = {"system": "SYS", "user": "USR", "assistant": "AST", "tool": "OBS"}[self.role]
-        return f"[{prefix}] {self.content}"
-
-
 class ToolCall(BaseModel):
     """A model's request to invoke a tool."""
 
@@ -62,6 +52,20 @@ class ToolCall(BaseModel):
         import json
 
         return f"{self.name}:{json.dumps(self.args, sort_keys=True, default=str)}"
+
+
+class Message(BaseModel):
+    role: Role
+    content: str = ""
+    tool_call_id: str | None = None
+    # Preserve an assistant's tool-call envelope across the observe/continue
+    # boundary. OpenAI-compatible APIs require the follow-up tool result to be
+    # linked to this call by id; content alone is not a valid conversation turn.
+    tool_calls: list[ToolCall] = Field(default_factory=list)
+
+    def render(self) -> str:
+        prefix = {"system": "SYS", "user": "USR", "assistant": "AST", "tool": "OBS"}[self.role]
+        return f"[{prefix}] {self.content}"
 
 
 class ToolStatus(StrEnum):

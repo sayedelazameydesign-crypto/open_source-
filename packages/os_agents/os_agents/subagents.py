@@ -212,9 +212,16 @@ class SubAgent(BaseModel):
                 temperature=cfg.temperature,
                 max_tokens=cfg.max_tokens,
             )
-            if response.content:
-                messages.append(Message(role="assistant", content=response.content))
-                last_assistant = response.content
+            if response.content or response.tool_calls:
+                messages.append(
+                    Message(
+                        role="assistant",
+                        content=response.content,
+                        tool_calls=response.tool_calls,
+                    )
+                )
+                if response.content:
+                    last_assistant = response.content
 
             if not response.wants_tools:
                 result.ok = True

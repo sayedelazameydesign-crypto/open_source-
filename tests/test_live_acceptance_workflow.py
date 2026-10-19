@@ -57,9 +57,11 @@ def test_kill_switch_gates_the_live_call(spec: dict) -> None:
 
 
 def test_key_travels_only_through_the_named_env_var(spec: dict) -> None:
+    preflight = _step(spec, "Preflight")
     run_step = _step(spec, "Run A1/A6")
-    assert run_step["env"]["GEMINI_API_KEY"] == "${{ secrets.GEMINI_API_KEY }}"
-    assert run_step["env"]["CELA_PROVIDER_CREDENTIAL_VAR"] == "GEMINI_API_KEY"
+    assert preflight["env"]["CELA_EVAL_API_KEY"] == "${{ secrets.GEMINI_API_KEY }}"
+    assert run_step["env"]["CELA_EVAL_API_KEY"] == "${{ secrets.GEMINI_API_KEY }}"
+    assert run_step["env"]["CELA_PROVIDER_CREDENTIAL_VAR"] == "CELA_EVAL_API_KEY"
     script = run_step["run"]
     assert "secrets." not in script
     assert "GEMINI_API_KEY" not in script

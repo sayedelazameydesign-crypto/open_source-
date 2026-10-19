@@ -151,6 +151,34 @@ async def test_happy_path_reads_and_reports(tmp_path) -> None:
     assert result.resource is not None and result.resource.ok
 
 
+async def test_subagent_preserves_assistant_tool_calls_in_followup(tmp_path) -> None:
+    (tmp_path / "notes.md").write_text("runbook contents", encoding="utf-8")
+    registry = ToolRegistry()
+    registry.add(file_reader_tool(tmp_path))
+    call = ToolCall(
+        id="call_file_reader",
+        name="file_reader",
+        args={"path": "notes.md"},
+    )
+    model = ScriptedModel(
+        script=[ModelResponse(tool_calls=[call]), ModelResponse(content="done")]
+    )
+    sub = SubAgent(
+        config=SubAgentConfig(name="explorer", allowed_tools=["file_reader"], required_ram_gb=0.0),
+        model=model,
+        registry=registry,
+    )
+
+    result = await sub.run("read notes")
+
+    assert result.ok
+    followup = model.calls[1]
+    assistant_message = next(message for message in followup if message.role == "assistant")
+    tool_message = next(message for message in followup if message.role == "tool")
+    assert assistant_message.tool_calls == [call]
+    assert tool_message.tool_call_id == "call_file_reader"
+
+
 async def test_hub_delegation_and_tools(tmp_path) -> None:
     (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
     configs = tmp_path / "configs"

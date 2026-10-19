@@ -3,11 +3,11 @@
 
 Run from the repository root:
 
-    read -rsp "Gemini API key: " GEMINI_API_KEY && printf '\\n'
-    export GEMINI_API_KEY
+    read -rsp "Gemini API key: " CELA_EVAL_API_KEY && printf '\\n'
+    export CELA_EVAL_API_KEY
     export CELA_PROVIDER_BASE_URL="https://generativelanguage.googleapis.com/v1beta/openai"
     export CELA_PROVIDER_MODEL="gemini-2.5-flash"
-    export CELA_PROVIDER_CREDENTIAL_VAR=GEMINI_API_KEY
+    export CELA_PROVIDER_CREDENTIAL_VAR=CELA_EVAL_API_KEY
     export CELA_USE_LIVE_PROVIDER=1
     export CELA_API_TOKEN=test-token-only
     python scripts/test_gemini_provider.py
@@ -55,13 +55,14 @@ from os_core.redact import scrub_credentials  # noqa: E402
 
 DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
 DEFAULT_MODEL = "gemini-2.5-flash"
-DEFAULT_KEY_VAR = "GEMINI_API_KEY"
+DEFAULT_KEY_VAR = "CELA_EVAL_API_KEY"
 
 # Every environment variable that can select or authenticate a provider. The
 # fail-closed probes remove all of them, then re-add only the base URL/model so
 # the test exercises "endpoint configured, credential missing" — the realistic
 # misconfiguration — rather than an empty-URL error.
 _PROVIDER_ENV_KEYS = (
+    "CELA_EVAL_API_KEY",
     "GEMINI_API_KEY",
     "GROQ_API_KEY",
     "OPENROUTER_API_KEY",
@@ -386,12 +387,16 @@ async def main() -> int:
         calls = _tool_calls(events)
         results_ev = _tool_results(events)
         logs = "\n".join(_log_lines(events))
-        for text in (logs, state.final_answer or "", state.error or ""):
+        fallback_reason = getattr(platform.model, "fallback_reason", None) or ""
+        for text in (logs, state.final_answer or "", state.error or "", fallback_reason):
             assert_no_key_leak(text, api_key)
         assert_no_key_leak(json.dumps(transport.requests), api_key)
 
         requests = transport.requests
         statuses = [r["status"] for r in requests]
+        if any(status >= 400 for status in statuses):
+            print("\n--- Sanitized provider HTTP error response body ---")
+            print(fallback_reason or "No provider error body was captured by the adapter.")
         endpoint_ok = bool(requests) and all(
             r["url"].startswith(f"{base_url}/") and r["url"].endswith("/chat/completions")
             for r in requests
