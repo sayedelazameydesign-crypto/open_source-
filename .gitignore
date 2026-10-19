@@ -16,32 +16,32 @@ dist/
 *.egg-info/
 .eggs/
 wheels/
-
 # Virtual environments
 .venv/
 venv/
 env/
-
 # Editors / OS
 .idea/
 .vscode/
 *.swp
 .DS_Store
 Thumbs.db
-
 # Local run-outcome ledger (default $CELA_LEDGER_PATH is ./.cela/ledger.jsonl)
 .cela/
-
 # Local SQLite run store (CELA_RUN_STORE_URL="sqlite:///./cela_runs.db")
 cela_runs.db
 cela_runs.db-*
-
 # Secrets — never commit these
 .env
 .env.*
 !.env.example
 *.pem
 *.key
-
 # Local web test compilation and verification scratch files
 .cache/
+# Render MCP — local credentials, never commit
+.mcp.json
+.agents/mcp.json
+.claude/
+agent/
+.agents/
