@@ -82,7 +82,7 @@ async def generate_response(request: PromptRequest, api_key: str = Security(get_
 
 ---
 
-## 5. الكود المصحح والمؤمن (Production-Ready Code)
+## 5. الكود المصحح والمؤمّن (Hardened Code)
 
 إليك النسخة النهائية من ملف `main.py` بمبدأ الفشل المبكر (Fail-Fast): يتوقف الخادم عند بدء التشغيل إذا لم يُضبط متغير البيئة `CUSTOM_API_KEY`، ولا توجد قيمة افتراضية ثابتة للمفتاح:
 

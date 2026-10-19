@@ -65,34 +65,42 @@ def parse(log_text: str) -> tuple[str, list[tuple[bool, str, str]]]:
     return sha, [(ok, name, detail) for ok, name, detail in verdicts]
 
 
-def annotations(sha: str, verdicts: list[tuple[bool, str, str]]) -> list[str]:
+def annotations(
+    sha: str, verdicts: list[tuple[bool, str, str]], *, title: str = "A1/A6"
+) -> list[str]:
     lines: list[str] = []
     if not verdicts:
         lines.append(
-            "::notice title=A1/A6::no PASS/FAIL line in the log — the live step "
+            f"::notice title={title}::no PASS/FAIL line in the log — the live step "
             "was skipped or failed before any criterion ran"
         )
         return lines
     passed = sum(1 for ok, _, _ in verdicts if ok)
     lines.append(
-        f"::notice title=A1/A6 at {sha}::{passed}/{len(verdicts)} criteria passed"
+        f"::notice title={title} at {sha}::{passed}/{len(verdicts)} criteria passed"
     )
     for ok, criterion, detail in verdicts:
         level = "notice" if ok else "error"
         state = "PASS" if ok else "FAIL"
         text = f"{criterion} — {detail}" if detail else criterion
         body = _escape(text[:_MAX_BODY])
-        lines.append(f"::{level} title=A1/A6 {state}::{body}")
+        lines.append(f"::{level} title={title} {state}::{body}")
     return lines
 
 
 def main(argv: list[str]) -> int:
-    path = pathlib.Path(argv[1] if len(argv) > 1 else "live-acceptance.log")
+    args = argv[1:]
+    title = "A1/A6"
+    if "--title" in args:
+        index = args.index("--title")
+        title = args[index + 1] if index + 1 < len(args) else title
+        args = args[:index] + args[index + 2 :]
+    path = pathlib.Path(args[0] if args else "live-acceptance.log")
     if not path.exists():
-        print("::notice title=A1/A6::no log file was produced")
+        print(f"::notice title={title}::no log file was produced")
         return 0
     sha, verdicts = parse(path.read_text(encoding="utf-8", errors="replace"))
-    for line in annotations(sha, verdicts):
+    for line in annotations(sha, verdicts, title=title):
         print(line)
     return 0
 
