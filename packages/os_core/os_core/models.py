@@ -21,11 +21,44 @@ from os_core.redact import scrub_credentials
 from os_core.tokens import TokenCalibration, TokenEstimator, estimate
 from os_core.types import ExecutionInfo, Message, ModelResponse, ToolCall, Usage
 
+#: Key names whose *value* is a credential, already normalized (casefolded, with
+#: every non-alphanumeric character removed). One list drives both redaction
+#: passes — the JSON dict-key walk and the free-text assignment regex — because
+#: they had already drifted once: a body carrying ``"secret_key": "…"`` was
+#: redacted as prose but not as JSON. A provider error body is untrusted input;
+#: the two passes must agree on the same vocabulary or the weaker one decides.
+_SECRET_KEY_EXACT = frozenset(
+    {"key", "secret", "token", "auth", "authorization", "credentials", "passwd", "password"}
+)
+_SECRET_KEY_SUFFIXES = (
+    "apikey",
+    "secretkey",
+    "privatekey",
+    "accesskey",
+    "clientsecret",
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "authorization",
+    "credential",
+)
+
+#: The same vocabulary as written in an error body, so the text pass recognizes
+#: ``access_key``, ``private key`` and ``client_secret`` exactly like the JSON
+#: pass recognizes the matching field names.
 _PROVIDER_SECRET_ASSIGNMENT = re.compile(
-    r"(?i)\b((?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|token|key|"
-    r"secret(?:[_ -]?key)?|password|passwd|authorization|credential)\b\s*[:=]\s*)"
+    r"(?i)\b((?:api[_ -]?key|access[_ -]?key|private[_ -]?key|secret[_ -]?key|"
+    r"client[_ -]?secret|access[_ -]?token|refresh[_ -]?token|private[_ -]?token|"
+    r"token|key|secret|password|passwd|authorization|credential)\b\s*[:=]\s*)"
     r"(?:\"[^\"]*\"|'[^']*'|[^\s,;}\]]+)"
 )
+
+
+def _is_secret_key(key: object) -> bool:
+    """True when a JSON field name denotes a credential, in any spelling."""
+    normalized = re.sub(r"[^a-z0-9]", "", str(key).casefold())
+    return normalized in _SECRET_KEY_EXACT or normalized.endswith(_SECRET_KEY_SUFFIXES)
 
 
 @runtime_checkable
@@ -280,19 +313,7 @@ def _redact_provider_error_value(value: Any, credential: str) -> Any:
     if isinstance(value, dict):
         safe: dict[str, Any] = {}
         for key, item in value.items():
-            normalized = re.sub(r"[^a-z0-9]", "", str(key).casefold())
-            if normalized == "key" or any(
-                normalized.endswith(suffix)
-                for suffix in (
-                    "apikey",
-                    "token",
-                    "secret",
-                    "password",
-                    "passwd",
-                    "authorization",
-                    "credential",
-                )
-            ):
+            if _is_secret_key(key):
                 safe[key] = "[REDACTED]"
             else:
                 safe[key] = _redact_provider_error_value(item, credential)

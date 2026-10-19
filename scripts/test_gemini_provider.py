@@ -12,8 +12,9 @@ Run from the repository root:
     export CELA_API_TOKEN=test-token-only
     python scripts/test_gemini_provider.py
 
-The script never prints the key. It reports PASS/FAIL for the five acceptance
-criteria from the deployment plan:
+The script never prints the key. Its header records the full commit sha, so a
+PASS line can be tied to the tree that produced it. It reports PASS/FAIL for the
+acceptance criteria from the deployment plan:
 
   1. a real outbound HTTP request reaches the configured provider and its 200
      response drives the task; the key never appears in output, events, logs,
@@ -26,6 +27,11 @@ criteria from the deployment plan:
   5. missing credentials fail closed at the *real* entry points:
      ``create_app()`` raises before serving and ``os_server.cli run --live``
      exits non-zero. Neither silently serves scripted output.
+  6. two ``tool_calls`` in one assistant turn survive a real follow-up: the
+     envelope is synthesized (a provider cannot be asked for exactly two calls
+     on demand, and this is stated in the recorded detail), both calls execute,
+     and the provider accepts the continuation carrying both call ids. The
+     follow-up request and its 200 are real.
 
 This is a LIVE test: it performs real network calls and may spend provider
 quota. It is intentionally not part of CI. Exit codes: 0 = all criteria pass,
@@ -102,6 +108,31 @@ RESET = "\033[0m"
 results: list[dict[str, Any]] = []
 
 
+def commit_sha() -> str:
+    """The commit this evidence belongs to, printed with every run.
+
+    An acceptance log without a commit is a log about *some* checkout: the
+    number alone cannot be matched to the tree that produced it. In Actions the
+    runner supplies ``GITHUB_SHA``; locally we ask git and degrade to
+    ``unknown`` rather than failing an otherwise valid live run.
+    """
+    for name in ("GITHUB_SHA", "CI_COMMIT_SHA"):
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    try:
+        return subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+
+
 def record(name: str, ok: bool, detail: str) -> None:
     results.append({"name": name, "ok": ok, "detail": detail})
     mark = f"{GREEN}PASS{RESET}" if ok else f"{RED}FAIL{RESET}"
@@ -176,6 +207,64 @@ class RecordingTransport(httpx.AsyncHTTPTransport):
                 "has_authorization": bool(request.headers.get("authorization")),
             }
         )
+        return response
+
+
+class TwoCallThenRealTransport(httpx.AsyncHTTPTransport):
+    """Inject one assistant turn with two tool calls, then speak to the provider.
+
+    A provider cannot be *asked* to emit exactly two calls in one turn, so the
+    envelope is synthesized — but only the first turn. The follow-up request
+    that carries ``assistant.tool_calls`` plus both ``role=tool`` results is a
+    real HTTPS call to the configured provider, which is precisely the exchange
+    that fails when call ids are dropped. The injected turn is labelled as such
+    in the recorded detail; nothing here is presented as provider output.
+    """
+
+    def __init__(
+        self,
+        tool_calls: list[dict[str, Any]],
+        delegate: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        super().__init__()
+        self.tool_calls = tool_calls
+        # Tests swap in a mock so the probe's own logic is covered offline; the
+        # live run leaves this None and every follow-up is real HTTPS.
+        self.delegate = delegate
+        self.synthetic_responses = 0
+        self.first_payload: dict[str, Any] | None = None
+        self.followup_payload: dict[str, Any] | None = None
+        self.followup_status: int | None = None
+
+    async def handle_async_request(self, request: Any) -> Any:
+        if self.synthetic_responses == 0:
+            self.synthetic_responses += 1
+            self.first_payload = json.loads(request.content.decode("utf-8"))
+            return httpx.Response(
+                200,
+                request=request,
+                json={
+                    "model": self.first_payload.get("model", ""),
+                    "choices": [
+                        {
+                            "index": 0,
+                            "finish_reason": "tool_calls",
+                            "message": {
+                                "role": "assistant",
+                                "content": "",
+                                "tool_calls": self.tool_calls,
+                            },
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+                },
+            )
+        self.followup_payload = json.loads(request.content.decode("utf-8"))
+        if self.delegate is not None:
+            response = await self.delegate.handle_async_request(request)
+        else:
+            response = await super().handle_async_request(request)
+        self.followup_status = response.status_code
         return response
 
 
@@ -289,6 +378,117 @@ def _fail_closed_probe(base_url: str, model_id: str) -> tuple[bool, str]:
     )
 
 
+async def _multi_call_probe(
+    base_url: str,
+    model_id: str,
+    key_var: str,
+    api_key: str,
+    *,
+    followup_transport: httpx.AsyncBaseTransport | None = None,
+) -> tuple[bool, str]:
+    """Two tool calls in one assistant turn, then a *real* provider follow-up.
+
+    This closes the case that started all of this: a provider rejecting the
+    continuation after a successful tool call. Both calls execute for real, both
+    results travel back with matching call ids, and the provider's answer to
+    that request is the evidence — not a mock's.
+    """
+    from os_server.demo import build_demo_platform
+
+    calls = [
+        {
+            "id": "call_sum_12",
+            "type": "function",
+            "function": {
+                "name": "python_execute",
+                "arguments": json.dumps({"code": "print(sum(range(1, 11)))"}),
+            },
+        },
+        {
+            "id": "call_pow_12",
+            "type": "function",
+            "function": {
+                "name": "python_execute",
+                "arguments": json.dumps({"code": "print(2**10)"}),
+            },
+        },
+    ]
+    transport = TwoCallThenRealTransport(calls, delegate=followup_transport)
+    platform = build_demo_platform(
+        mode="react",
+        use_env_provider=True,
+        interactive=True,
+        transport=transport,
+    )
+    from os_core.models import OpenAICompatModel
+
+    primary = getattr(platform.model, "primary", None)
+    identity_ok = (
+        isinstance(primary, OpenAICompatModel)
+        and primary.model_id == model_id
+        and primary.base_url.rstrip("/") == base_url
+        and primary.api_key_env == key_var
+    )
+    report = await run_and_collect(
+        platform,
+        "Two independent computations were prepared for you in this turn.",
+        prefix="multicall",
+    )
+    state = report["state"]
+    events = report["events"]
+
+    results_ev = _tool_results(events)
+    python_results = [r for r in results_ev if r.get("name") == "python_execute"]
+    outputs = [str(r.get("output", "")) for r in python_results]
+    both_succeeded = len(python_results) == 2 and all(
+        r.get("status") == "success" for r in python_results
+    )
+    expected_outputs = any("55" in out for out in outputs) and any(
+        "1024" in out for out in outputs
+    )
+
+    payload = transport.followup_payload or {}
+    messages = payload.get("messages") or []
+    assistant_calls = [
+        m for m in messages if m.get("role") == "assistant" and m.get("tool_calls")
+    ]
+    ids_sent = (
+        [c["id"] for c in assistant_calls[0]["tool_calls"]] if assistant_calls else []
+    )
+    tool_messages = [m for m in messages if m.get("role") == "tool"]
+    ids_returned = [m.get("tool_call_id") for m in tool_messages]
+    envelope_ok = (
+        len(assistant_calls) == 1
+        and ids_sent == ["call_sum_12", "call_pow_12"]
+        and ids_returned == ids_sent
+    )
+
+    logs = "\n".join(_log_lines(events))
+    for text in (logs, state.final_answer or "", state.error or ""):
+        assert_no_key_leak(text, api_key)
+
+    ok = (
+        identity_ok
+        and transport.synthetic_responses == 1
+        and transport.followup_status == 200
+        and both_succeeded
+        and expected_outputs
+        and envelope_ok
+        and state.status.value == "completed"
+        and bool((state.final_answer or "").strip())
+    )
+    detail = (
+        f"identity_matches_config={identity_ok}; "
+        f"tool_calls_in_one_turn={len(calls)} (synthetic envelope, labelled); "
+        f"tool_results={len(python_results)}; outputs_ok={expected_outputs}; "
+        f"ids_round_trip={envelope_ok}; followup_http={transport.followup_status}; "
+        f"run_status={state.status.value}; "
+        f"answer={scrub_credentials(state.final_answer or '')[:120]!r}; "
+        "key leak check: passed"
+    )
+    return ok, detail
+
+
 async def main() -> int:
     from os_core.models import OpenAICompatModel, ScriptedModel
     from os_server.demo import ResilientModel, build_demo_platform, demo_react_model
@@ -299,6 +499,9 @@ async def main() -> int:
     print("=" * 72)
     print("Gemini provider acceptance test (A1/A6)")
     print("=" * 72)
+    # The commit is part of the evidence: a count or a PASS without the tree it
+    # came from cannot be reproduced. Full 40-char sha, never a branch name.
+    print(f"  commit sha     : {commit_sha()}")
     # The URL may carry userinfo and the credential variable name is
     # credential-shaped, so neither is printed: only whether they are set.
     print(f"  base_url       : {'configured' if base_url else '(not set)'}")
@@ -437,6 +640,27 @@ async def main() -> int:
             exec_after.kind == "provider_adapter" and not fallback_triggered and identity_ok,
             f"kind={exec_after.kind}; fallback_triggered={fallback_triggered}; "
             f"identity_matches_config={identity_ok}",
+        )
+
+    # ---- Criterion 6: two tool calls in one turn, real follow-up ------------
+    # Only meaningful with a resolved live provider: with no provider there is no
+    # follow-up to send, and a probe would report a transport error as if it were
+    # evidence about the transcript.
+    if exec_before.kind == "provider_adapter":
+        print("\n--- Two tool calls in one assistant turn, then a real follow-up ---")
+        multi_ok, multi_detail = await _multi_call_probe(
+            base_url, model_id, key_var, api_key
+        )
+        record(
+            "6. two tool calls in one turn survive a real provider follow-up",
+            multi_ok,
+            multi_detail,
+        )
+    else:
+        record(
+            "6. two tool calls in one turn survive a real provider follow-up",
+            False,
+            "no live provider was resolved, so no follow-up was attempted",
         )
 
     # ---- Criterion 4: forced failure -> scripted fallback -------------------

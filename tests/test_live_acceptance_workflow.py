@@ -72,3 +72,12 @@ def test_log_is_uploaded_even_when_a_criterion_fails(spec: dict) -> None:
     upload = _step(spec, "Upload log")
     assert upload.get("if") == "always()"
     assert upload["with"]["path"] == "live-acceptance.log"
+
+
+def test_log_records_the_commit_sha(spec: dict) -> None:
+    """A PASS line without a commit cannot be matched to the tree it describes."""
+    preflight = _step(spec, "Preflight")
+    assert "GITHUB_SHA" in preflight["run"]
+    # Printed by the preflight step, which runs even when the live call is
+    # skipped: a skipped run must still say *which* commit skipped.
+    assert 'echo "commit sha: ${GITHUB_SHA}"' in preflight["run"]
