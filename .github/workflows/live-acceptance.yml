@@ -66,6 +66,14 @@ jobs:
         run: |
           set -o pipefail
           python scripts/test_gemini_provider.py 2>&1 | tee live-acceptance.log
+      - name: Publish criteria as check annotations
+        # The artifact is a zip behind a signed URL; annotations are readable
+        # through the Checks API by anyone reviewing the run, so the verdict and
+        # the commit it belongs to do not live only in a download. Each criterion
+        # is printed twice in the log (on record, then in SUMMARY); the publisher
+        # folds duplicates by name so 7 criteria never read as 14.
+        if: always()
+        run: python scripts/publish_acceptance_annotations.py live-acceptance.log
       - name: Upload log
         # Always: a failed criterion is exactly the evidence someone needs.
         if: always()
