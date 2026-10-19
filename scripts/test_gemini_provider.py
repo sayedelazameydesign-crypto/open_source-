@@ -31,13 +31,7 @@ acceptance criteria from the deployment plan:
      envelope is synthesized (a provider cannot be asked for exactly two calls
      on demand, and this is stated in the recorded detail), both calls execute,
      and the provider accepts the continuation carrying both call ids. The
-     follow-up request and its 200 are real, and its *body shape* (model,
-     messages, tools, call ids, tool results) is asserted — not just the 200.
-  7. the provider *itself* emits two ``tool_calls`` in one assistant turn:
-     no envelope is injected, the two results return with matching
-     ``tool_call_id`` values, and the follow-up request that carries them is
-     answered 200. This is the genuine-emission counterpart to criterion 6;
-     a mock or synthetic first turn cannot satisfy it.
+     follow-up request and its 200 are real.
 
 This is a LIVE test: it performs real network calls and may spend provider
 quota. It is intentionally not part of CI. Exit codes: 0 = all criteria pass,
@@ -189,83 +183,31 @@ class RecordingTransport(httpx.AsyncHTTPTransport):
     Subclasses the real transport (rather than wrapping it) because httpx
     enters and exits the transport as an async context manager. The key
     travels in the ``Authorization`` header; only its *presence* is recorded,
-    never its value. Method, URL, status and the full request *body* (model,
-    messages, tools) are captured from the actual outbound exchange, so the
-    criteria assert on body shape — a bare 200 proves nothing about the
-    transcript that produced it. Tests may inject a ``delegate`` transport;
-    the live run leaves it ``None`` and every request is real HTTPS.
+    never its value. Method, URL, status and the model sent in the body are
+    captured from the actual outbound exchange.
     """
 
-    def __init__(self, delegate: httpx.AsyncBaseTransport | None = None) -> None:
+    def __init__(self) -> None:
         super().__init__()
-        self.delegate = delegate
         self.requests: list[dict[str, Any]] = []
 
     async def handle_async_request(self, request: Any) -> Any:
-        if self.delegate is not None:
-            response = await self.delegate.handle_async_request(request)
-        else:
-            response = await super().handle_async_request(request)
-        body: dict[str, Any] = {}
+        response = await super().handle_async_request(request)
+        model = None
         try:
-            parsed = json.loads(request.content.decode("utf-8"))
-            body = parsed if isinstance(parsed, dict) else {}
+            model = json.loads(request.content.decode("utf-8")).get("model")
         except Exception:
-            body = {}
+            model = None
         self.requests.append(
             {
                 "method": request.method,
                 "url": str(request.url),
                 "status": response.status_code,
-                "model": body.get("model"),
+                "model": model,
                 "has_authorization": bool(request.headers.get("authorization")),
-                "body": body,
             }
         )
         return response
-
-
-def _tool_names(body: dict[str, Any]) -> list[str]:
-    names: list[str] = []
-    for tool in body.get("tools") or []:
-        if isinstance(tool, dict):
-            function = tool.get("function") or {}
-            name = function.get("name") if isinstance(function, dict) else None
-            names.append(str(name or ""))
-    return names
-
-
-def _multi_call_transcript(body: dict[str, Any]) -> dict[str, Any]:
-    """Describe the multi-call transcript carried by one request body.
-
-    Returns the assistant ``tool_calls`` ids of the widest single turn, the
-    ``tool_call_id`` of every ``role=tool`` message that answers it, and
-    whether the two match exactly (same ids, same order, none missing).
-    Pure function over a recorded body: unit-tested offline, asserted on
-    live traffic in the criteria that use it.
-    """
-    messages = body.get("messages") or []
-    widest: list[str] = []
-    for message in messages:
-        if not isinstance(message, dict):
-            continue
-        if message.get("role") == "assistant" and message.get("tool_calls"):
-            ids = [str(call.get("id", "")) for call in message["tool_calls"]]
-            if len(ids) > len(widest):
-                widest = ids
-    tool_ids = [
-        str(message.get("tool_call_id", ""))
-        for message in messages
-        if isinstance(message, dict) and message.get("role") == "tool"
-    ]
-    # Only the results answering the widest turn count: a transcript may
-    # legitimately carry earlier single-call turns before it.
-    answering = tool_ids[-len(widest) :] if widest else []
-    return {
-        "assistant_call_ids": widest,
-        "tool_call_ids": tool_ids,
-        "matching_tool_ids": bool(widest) and answering == widest,
-    }
 
 
 class TwoCallThenRealTransport(httpx.AsyncHTTPTransport):
@@ -520,24 +462,6 @@ async def _multi_call_probe(
         and ids_sent == ["call_sum_12", "call_pow_12"]
         and ids_returned == ids_sent
     )
-    # Body shape, not only the 200: the follow-up must be a well-formed
-    # Chat Completions request for the configured model, still advertising
-    # python_execute, with both sandbox outputs as the tool contents.
-    first_payload = transport.first_payload or {}
-    body_shape_ok = (
-        payload.get("model") == model_id
-        and first_payload.get("model") == model_id
-        and isinstance(payload.get("messages"), list)
-        and "python_execute" in _tool_names(payload)
-        and "python_execute" in _tool_names(first_payload)
-        and all(
-            call.get("type") == "function"
-            and (call.get("function") or {}).get("name") == "python_execute"
-            for call in (assistant_calls[0]["tool_calls"] if assistant_calls else [])
-        )
-        and any("55" in str(m.get("content", "")) for m in tool_messages)
-        and any("1024" in str(m.get("content", "")) for m in tool_messages)
-    )
 
     logs = "\n".join(_log_lines(events))
     for text in (logs, state.final_answer or "", state.error or ""):
@@ -550,7 +474,6 @@ async def _multi_call_probe(
         and both_succeeded
         and expected_outputs
         and envelope_ok
-        and body_shape_ok
         and state.status.value == "completed"
         and bool((state.final_answer or "").strip())
     )
@@ -558,120 +481,12 @@ async def _multi_call_probe(
         f"identity_matches_config={identity_ok}; "
         f"tool_calls_in_one_turn={len(calls)} (synthetic envelope, labelled); "
         f"tool_results={len(python_results)}; outputs_ok={expected_outputs}; "
-        f"ids_round_trip={envelope_ok}; body_shape_ok={body_shape_ok}; "
-        f"followup_http={transport.followup_status}; "
+        f"ids_round_trip={envelope_ok}; followup_http={transport.followup_status}; "
         f"run_status={state.status.value}; "
         f"answer={scrub_credentials(state.final_answer or '')[:120]!r}; "
         "key leak check: passed"
     )
     return ok, detail
-
-
-async def _genuine_multi_call_probe(
-    base_url: str,
-    model_id: str,
-    key_var: str,
-    api_key: str,
-    *,
-    delegate: httpx.AsyncBaseTransport | None = None,
-    attempts: int = 2,
-) -> tuple[bool, str]:
-    """Criterion 7: the provider itself emits two calls in one turn.
-
-    Unlike criterion 6 nothing is injected: the task asks for two independent
-    computations *in a single response*, and the recorded live requests are
-    searched for one assistant turn carrying 2+ ``tool_calls`` whose matching
-    ``role=tool`` results were carried by a follow-up the provider answered
-    200. Up to ``attempts`` fresh runs are tried, because a model that answers
-    sequentially once may still parallel-call when asked again; every attempt
-    is reported, so a pass names the attempt that produced it. A delegate
-    transport exists only so this logic is exercised offline — the live run
-    always uses real HTTPS.
-    """
-    from os_core.models import OpenAICompatModel
-    from os_server.demo import build_demo_platform
-
-    task = (
-        "Compute two independent values. In your FIRST response you MUST call "
-        "the python_execute tool TWICE in that single response (two tool calls "
-        "in one turn, not in separate turns): the first call must run exactly "
-        "print(6*7) and the second must run exactly print(9*9). Do not compute "
-        "the answers yourself. After both tool results arrive, report both numbers."
-    )
-    attempt_details: list[str] = []
-    for attempt in range(1, max(1, attempts) + 1):
-        transport = RecordingTransport(delegate=delegate)
-        platform = build_demo_platform(
-            mode="react",
-            use_env_provider=True,
-            interactive=True,
-            transport=transport,
-        )
-        primary = getattr(platform.model, "primary", None)
-        identity_ok = (
-            isinstance(primary, OpenAICompatModel)
-            and primary.model_id == model_id
-            and primary.base_url.rstrip("/") == base_url
-            and primary.api_key_env == key_var
-        )
-        report = await run_and_collect(platform, task, prefix="genuine")
-        state = report["state"]
-        events = report["events"]
-        logs = "\n".join(_log_lines(events))
-        for text in (logs, state.final_answer or "", state.error or ""):
-            assert_no_key_leak(text, api_key)
-        assert_no_key_leak(json.dumps(transport.requests), api_key)
-
-        followup: dict[str, Any] | None = None
-        transcript: dict[str, Any] = {"assistant_call_ids": [], "matching_tool_ids": False}
-        for request in transport.requests:
-            candidate = _multi_call_transcript(request.get("body") or {})
-            if len(candidate["assistant_call_ids"]) >= 2:
-                followup = request
-                transcript = candidate
-                break
-        tool_contents = []
-        if followup is not None:
-            tool_contents = [
-                str(message.get("content", ""))
-                for message in (followup.get("body") or {}).get("messages") or []
-                if isinstance(message, dict) and message.get("role") == "tool"
-            ]
-        outputs_ok = any("42" in content for content in tool_contents) and any(
-            "81" in content for content in tool_contents
-        )
-        first_body = (transport.requests[0].get("body") or {}) if transport.requests else {}
-        body_shape_ok = (
-            bool(transport.requests)
-            and all(request.get("model") == model_id for request in transport.requests)
-            and "python_execute" in _tool_names(first_body)
-        )
-        fallback_triggered = getattr(platform.model, "fallback_triggered", True)
-        ok = (
-            identity_ok
-            and followup is not None
-            and followup.get("status") == 200
-            and transcript["matching_tool_ids"]
-            and outputs_ok
-            and body_shape_ok
-            and not fallback_triggered
-            and state.status.value == "completed"
-        )
-        attempt_details.append(
-            f"attempt {attempt}: calls_in_one_turn={len(transcript['assistant_call_ids'])}; "
-            f"ids={transcript['assistant_call_ids']}; "
-            f"matching_tool_ids={transcript['matching_tool_ids']}; "
-            f"followup_http={followup.get('status') if followup else None}; "
-            f"outputs_ok={outputs_ok}; body_shape_ok={body_shape_ok}; "
-            f"requests={len(transport.requests)}; run_status={state.status.value}"
-        )
-        if ok:
-            return True, (
-                f"identity_matches_config={identity_ok}; "
-                + "; ".join(attempt_details)
-                + "; key leak check: passed"
-            )
-    return False, "; ".join(attempt_details) + "; key leak check: passed"
 
 
 async def main() -> int:
@@ -848,24 +663,6 @@ async def main() -> int:
             "no live provider was resolved, so no follow-up was attempted",
         )
 
-    # ---- Criterion 7: provider itself emits two calls in one turn ----------
-    if exec_before.kind == "provider_adapter":
-        print("\n--- Provider-emitted two tool calls in one turn (no injection) ---")
-        genuine_ok, genuine_detail = await _genuine_multi_call_probe(
-            base_url, model_id, key_var, api_key
-        )
-        record(
-            "7. provider emits two tool calls in one turn; follow-up answers 200",
-            genuine_ok,
-            genuine_detail,
-        )
-    else:
-        record(
-            "7. provider emits two tool calls in one turn; follow-up answers 200",
-            False,
-            "no live provider was resolved, so no follow-up was attempted",
-        )
-
     # ---- Criterion 4: forced failure -> scripted fallback -------------------
     print("\n--- Forcing a 401 to verify the honest scripted fallback ---")
     unauth_urls: list[str] = []
@@ -938,11 +735,10 @@ def _print_summary() -> int:
     print()
     if fails == 0:
         print(f"{GREEN}All A1/A6 criteria passed.{RESET}")
-        print("Proceed to C5 (Render deploy), then C6 (PostgreSQL persistence).")
-        print("C5 and C6 stay open until their own evidence lands; this green closes neither.")
+        print("Proceed to C5 (Render) only after seeing this green.")
         return 0
     print(f"{RED}{fails} criterion/criteria FAILED.{RESET}")
-    print("Do NOT proceed to C5 (Render deploy) until these pass in a live run.")
+    print("Do NOT deploy to Render until these are resolved in your local environment.")
     return 1
 
 

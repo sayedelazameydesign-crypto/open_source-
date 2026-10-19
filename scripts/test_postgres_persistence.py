@@ -56,7 +56,6 @@ import argparse
 import asyncio
 import hashlib
 import os
-import subprocess
 import sys
 import time
 from typing import Any
@@ -93,30 +92,6 @@ from os_server.storage import PostgresRunStore  # noqa: E402
 GREEN = "\033[32m"
 RED = "\033[31m"
 RESET = "\033[0m"
-
-
-def commit_sha() -> str:
-    """The commit this evidence belongs to, printed with every run.
-
-    Same contract as the A1/A6 script: ``GITHUB_SHA`` in Actions, else
-    ``git rev-parse HEAD``, else ``unknown`` — a PASS line without a commit
-    cannot be matched to the tree that produced it.
-    """
-    for name in ("GITHUB_SHA", "CI_COMMIT_SHA"):
-        value = os.environ.get(name, "").strip()
-        if value:
-            return value
-    try:
-        return subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=_ROOT,
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=True,
-        ).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        return "unknown"
 
 _TABLES = ("run_artifacts", "run_events", "run_states", "run_meta", "ws_tickets")
 
@@ -489,7 +464,6 @@ def main(argv: list[str] | None = None) -> int:
     print("=" * 72)
     print("C6 — PostgreSQL persistence acceptance test")
     print("=" * 72)
-    print(f"  commit sha: {commit_sha()}")
     print(f"  target: {_db_identity(dsn)}")
     reference = _production_reference(args)
     if reference:

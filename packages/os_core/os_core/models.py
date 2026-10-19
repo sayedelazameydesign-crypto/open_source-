@@ -17,38 +17,48 @@ from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
 
-from os_core.redact import is_sensitive_key_name, scrub_credentials
+from os_core.redact import scrub_credentials
 from os_core.tokens import TokenCalibration, TokenEstimator, estimate
 from os_core.types import ExecutionInfo, Message, ModelResponse, ToolCall, Usage
 
-#: ``name: value`` / ``name=value`` assignments inside a provider error body.
-#: The name is captured whole and judged by
-#: :func:`os_core.redact.is_sensitive_key_name` — the *same* test the JSON
-#: dict-key walk uses — so the two passes cannot drift: ``access_key``,
-#: ``GEMINI_API_KEY``, ``api_keys`` and ``master_key`` are recognized in prose
-#: exactly as they are as JSON field names. Unlike the prose scrub in
-#: ``os_core.redact`` there is no minimum value length here: an error body is
-#: diagnostics, not stored prose, so over-redacting it is always the safe
-#: side. ``Bearer <token>`` counts as one value, and a bare ``Bearer`` token
-#: is redacted too — replacing only the word ``Bearer`` and leaving the
-#: credential behind it was a live leak in this pass.
-_PROVIDER_SECRET_ASSIGNMENT = re.compile(
-    r"(?P<name>[A-Za-z0-9_.\-]+)(?P<sep>\s*[:=]\s*)"
-    r"(?P<value>\"[^\"]*\"|'[^']*'|Bearer\s+[^\s,;}\]]+|[^\s,;}\]]+)",
-    re.IGNORECASE,
+#: Key names whose *value* is a credential, already normalized (casefolded, with
+#: every non-alphanumeric character removed). One list drives both redaction
+#: passes — the JSON dict-key walk and the free-text assignment regex — because
+#: they had already drifted once: a body carrying ``"secret_key": "…"`` was
+#: redacted as prose but not as JSON. A provider error body is untrusted input;
+#: the two passes must agree on the same vocabulary or the weaker one decides.
+_SECRET_KEY_EXACT = frozenset(
+    {"key", "secret", "token", "auth", "authorization", "credentials", "passwd", "password"}
 )
-_BARE_BEARER = re.compile(r"(?i)\bBearer\s+[^\s,;}\]]+")
+_SECRET_KEY_SUFFIXES = (
+    "apikey",
+    "secretkey",
+    "privatekey",
+    "accesskey",
+    "clientsecret",
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "authorization",
+    "credential",
+)
+
+#: The same vocabulary as written in an error body, so the text pass recognizes
+#: ``access_key``, ``private key`` and ``client_secret`` exactly like the JSON
+#: pass recognizes the matching field names.
+_PROVIDER_SECRET_ASSIGNMENT = re.compile(
+    r"(?i)\b((?:api[_ -]?key|access[_ -]?key|private[_ -]?key|secret[_ -]?key|"
+    r"client[_ -]?secret|access[_ -]?token|refresh[_ -]?token|private[_ -]?token|"
+    r"token|key|secret|password|passwd|authorization|credential)\b\s*[:=]\s*)"
+    r"(?:\"[^\"]*\"|'[^']*'|[^\s,;}\]]+)"
+)
 
 
 def _is_secret_key(key: object) -> bool:
     """True when a JSON field name denotes a credential, in any spelling."""
-    return is_sensitive_key_name(key)
-
-
-def _redact_assignment(match: re.Match[str]) -> str:
-    if not _is_secret_key(match.group("name")):
-        return match.group(0)
-    return f"{match.group('name')}{match.group('sep')}[REDACTED]"
+    normalized = re.sub(r"[^a-z0-9]", "", str(key).casefold())
+    return normalized in _SECRET_KEY_EXACT or normalized.endswith(_SECRET_KEY_SUFFIXES)
 
 
 @runtime_checkable
@@ -317,8 +327,7 @@ def _redact_provider_error_value(value: Any, credential: str) -> Any:
 
 
 def _scrub_provider_error_text(text: str) -> str:
-    text = _PROVIDER_SECRET_ASSIGNMENT.sub(_redact_assignment, text)
-    text = _BARE_BEARER.sub("Bearer [REDACTED]", text)
+    text = _PROVIDER_SECRET_ASSIGNMENT.sub(r"\1[REDACTED]", text)
     return scrub_credentials(text)
 
 
