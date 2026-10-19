@@ -127,6 +127,17 @@ $ gh api repos/sayedelazameydesign-crypto/open_source-/commits/d52cfb7…/status
   "nextCommitStatus": "DEPLOYED"}]}
 ```
 
+وتأكّد ذلك حيًا في هذه الجلسة: دفع commit توثيق Vercel هذا إلى فرع العمل
+`arena/12a908dd-open-source` أنشأ نشر Vercel تلقائيًا بلا أي workflow (الـhash
+أدناه هو النسخة المدفوعة الأولى؛ عُدّلت بعدها هذه الفقرة فصار hash الـcommit
+الحامل لها مختلفًا، والرابط يبقى دليلًا على آلية النشر لا على hash بعينه):
+
+```text
+$ gh api repos/sayedelazameydesign-crypto/open_source-/commits/9889d43/status --jq …
+{"state":"success","statuses":[{"context":"Vercel","state":"success",
+ "target_url":"https://vercel.com/celia-fashions-projects/open-source/F4NwyK2nN2y8NTe2roVx64QvaCou"}]}
+```
+
 **النتيجة:** متغيرات وقت التشغيل تُضبط في **Dashboard → Settings → Environment
 Variables** (Production **و** Preview)، لا عبر أسرار Actions. التوثيق في
 `docs/DEPLOY_FREE_TIER_RUNBOOK.md` §3.5 و`docs/publish-runbook.md`
@@ -187,6 +198,19 @@ $ vercel.list_deployments (team celia-fashions-projects) → {"deployments": []}
 بلا `teamId`). ما لم يُثبت: لم تُقرأ سجلات متغيرات البيئة، فلم يُتحقق من وجود
 `CELA_WEB_ACCESS_SECRET` في Production أو Preview في هذه الجلسة.
 
+### finding خارج النطاق ظهر أثناء `git push`
+
+```text
+remote: GitHub found 1 vulnerability on sayedelazameydesign-crypto/open_source-'s
+        default branch (1 moderate). … /security/dependabot/1
+$ gh api repos/…/dependabot/alerts/1
+{"message":"Resource not accessible by integration","status":"403"}
+```
+
+التنبيه **موجود** (قاله `remote` نفسه)، أما تفاصيله **فغير مُثبتة هنا**: توكن
+التكامل لا يملك صلاحية `dependabot:alerts`. يُقرأ من Dashboard → Security →
+Dependabot alerts. لا علاقة له بمسار Vercel، وسُجّل حتى لا يُنسى.
+
 ## 7) ما هو مُثبت وما ليس مُثبتًا
 
 | الادّعاء | الحالة |
@@ -202,6 +226,7 @@ $ vercel.list_deployments (team celia-fashions-projects) → {"deployments": []}
 | `CELA_WEB_ACCESS_SECRET` موجود في Production و/أو غائب في Preview | **غير مُثبت في هذه الجلسة** — التوكن لا يقرأ env vars؛ التدقيق السابق (`Production` فقط) يبقى بلا تحقق مستقل هنا |
 | رابط Production النهائي (`*.vercel.app` أو نطاق مخصص) | **غير مُثبت** — `open-source.vercel.app` يعيد `404: NOT_FOUND` من Vercel؛ الرابط الصحيح يؤخذ من Dashboard → Deployments |
 | أن الاختبارات الأربعة (`enforced` / `401` / الكوكي / `200 أو 502`) ستنجح بعد ضبط المتغيرات | **غير مُثبت** — يحتاج أولًا رفع حماية النشر، ثم نشر جديد |
+| تنبيه Dependabot واحد (moderate) على الفرع الافتراضي | **موجود** بحسب رسالة `remote` عند الدفع؛ **تفاصيله غير مُثبتة** — `403 Resource not accessible by integration` |
 
 ## 8) الترتيب العملي المقترح (خارج الكود)
 
