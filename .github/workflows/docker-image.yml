@@ -40,9 +40,10 @@ concurrency:
   group: docker-image-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  IMAGE: ghcr.io/${{ github.repository }}
-  IMAGE_SHA: ghcr.io/${{ github.repository }}:sha-${{ github.sha }}
+# NOTE: image names are computed at runtime (not here) because Docker
+# references must start/end with an alphanumeric — and this repository's name
+# ("open_source-") ends with a hyphen, which is an invalid reference format.
+# The compute step strips invalid trailing characters.
 
 permissions:
   contents: read
@@ -56,8 +57,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ghcr.io/<owner>/<repo>, lowercased, with invalid trailing separators
+      # stripped: "open_source-" -> "open_source" (valid Docker reference).
+      - name: Compute docker-safe image name
+        run: |
+          set -euo pipefail
+          name="${GITHUB_REPOSITORY,,}"
+          while [[ "$name" =~ [-._]$ ]]; do name="${name%?}"; done
+          echo "IMAGE=ghcr.io/${name}"        >> "$GITHUB_ENV"
+          echo "IMAGE_SHA=ghcr.io/${name}:sha-${GITHUB_SHA}" >> "$GITHUB_ENV"
+          echo "image: ghcr.io/${name}"
+
       - name: Build image (same Dockerfile the container platforms build)
-        run: docker build -t "$IMAGE_SHA" .
+        run: |
+          set -uo pipefail
+          if ! docker build -t "$IMAGE_SHA" . > docker-build.log 2>&1; then
+            echo "::error::docker build failed: $(tail -c 600 docker-build.log | tr '\n' ' ')"
+            exit 1
+          fi
 
       - name: Smoke test — container boots, /health ok, auth gate rejects
         run: |
