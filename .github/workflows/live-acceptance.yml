@@ -38,6 +38,10 @@ jobs:
           ALLOW_LIVE_EXTERNAL_CALLS: ${{ secrets.ALLOW_LIVE_EXTERNAL_CALLS }}
         run: |
           set -euo pipefail
+          # Evidence is only evidence with the tree it came from: the log names
+          # the exact commit, so a PASS line can be matched to a checkout later.
+          echo "commit sha: ${GITHUB_SHA}"
+          echo "ref: ${GITHUB_REF}"
           if [ -z "${CELA_EVAL_API_KEY:-}" ]; then
             echo "::error title=Preflight::Repository secret GEMINI_API_KEY is empty or unset. Add it in Settings > Secrets and variables > Actions, then re-run."
             exit 1
