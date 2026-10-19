@@ -114,7 +114,9 @@ Next.js على Vercel يعمل دائماً بـ `NODE_ENV=production`. بلا `
 والواجهة المنشورة لا تصل إلى الـbackend إطلاقاً. آمن لكنه مكسور — و`deploy_doctor`
 لم يكن ينبّه عنه حتى هذا التحديث.
 
-### متغيرات Vercel (Production وPreview)
+### متغيرات Vercel (Production وPreview — كلاهما مطلوب)
+
+> **تدقيق 2026-10-19:** `open-source` في Vercel مربوط بـ GitHub. `Production` على `main` (`83088b5`) و`Preview` على `9e7c207` كان `READY` لكن الفحص وجد السجل في `Production` فقط وغائب في `Preview`. متغيرات Dashboard لا تُطبّق على عمليات النشر السابقة؛ يلزم نشر جديد بعد إضافة السر في Preview.
 
 | المتغير | النوع | القيمة |
 |---|---|---|
@@ -132,10 +134,11 @@ Next.js على Vercel يعمل دائماً بـ `NODE_ENV=production`. بلا `
 1. **GitHub → Settings → Secrets and variables → Actions**: أضف
    `CELA_BACKEND_URL`, `CELA_API_TOKEN`, `CELA_PRIVATE_API_TOKEN`,
    `CELA_WEB_ACCESS_SECRET`, `VERCEL_TOKEN`, `VERCEL_PROJECT_ID`, `VERCEL_ORG_ID`.
-2. **مرّرها كـ `--build-env`** عند الاستدعاء — لا في نصّ الـworkflow ولا في `NEXT_PUBLIC_*`:
+2. **مرّرها كـ `--env` (وقت التشغيل)** عند الاستدعاء — لا في نصّ الـworkflow ولا في `NEXT_PUBLIC_*`.
+   `--build-env` للبناء فقط، أما `app/api/*` فيقرأ `process.env` وقت الطلب، لذا يجب أن يكون السر متاحًا في بيئة التشغيل (Dashboard أو `--env`):
 
 ```yaml
-- run: npx vercel deploy --prod --build-env CELA_BACKEND_URL=$CELA_BACKEND_URL --build-env CELA_API_TOKEN=$CELA_API_TOKEN --build-env CELA_PRIVATE_API_TOKEN=$CELA_PRIVATE_API_TOKEN --build-env CELA_WEB_ACCESS_SECRET=$CELA_WEB_ACCESS_SECRET --build-env CELA_WEB_GATE_REQUIRED=$CELA_WEB_GATE_REQUIRED
+- run: npx vercel deploy --prod --env CELA_BACKEND_URL=$CELA_BACKEND_URL --env CELA_API_TOKEN=$CELA_API_TOKEN --env CELA_PRIVATE_API_TOKEN=$CELA_PRIVATE_API_TOKEN --env CELA_WEB_ACCESS_SECRET=$CELA_WEB_ACCESS_SECRET --env CELA_WEB_GATE_REQUIRED=$CELA_WEB_GATE_REQUIRED
   env:
     CELA_BACKEND_URL: ${{ secrets.CELA_BACKEND_URL }}
     CELA_API_TOKEN: ${{ secrets.CELA_API_TOKEN }}
@@ -146,7 +149,7 @@ Next.js على Vercel يعمل دائماً بـ `NODE_ENV=production`. بلا `
 ```
 
 > لا تُمكّن `Sync production keys to Vercel` إن وُجد؛ المرجع هو سرّ Actions
-> مع `--build-env` فقط.
+> مع `--env` (وقت التشغيل) — انظر `vercel.com/docs/cli` (`--env` vs `--build-env`).
 
 ### أثر غياب السر ومتى يفشل الفحص
 
@@ -195,5 +198,5 @@ curl -sS -H "X-Celia-Access: $CELA_WEB_ACCESS_SECRET" $SITE/api/backend/health  
 | Render hook leaks to logs | Hook URL not routed through `config.secrets()` |
 | Portal renders `503 not_configured` + `missing[]` | Expected — set the named env vars, client must not retry blind |
 | Button green but name shows "غير مهيأ" | False-positive config detection — re-check `config.load()` names |
-| `503 access_gate_unconfigured` على كل `/api/backend/*` على Vercel | `CELA_WEB_ACCESS_SECRET` غائب و`NODE_ENV=production` يفشل مغلقاً | أضف `CELA_WEB_ACCESS_SECRET` + `CELA_WEB_GATE_REQUIRED=1` في Vercel (Production وPreview) أو كسرّ Actions مع `--build-env`، ثم أعد النشر |
+| `503 access_gate_unconfigured` على كل `/api/backend/*` على Vercel | `CELA_WEB_ACCESS_SECRET` غائب و`NODE_ENV=production` يفشل مغلقاً | أضف `CELA_WEB_ACCESS_SECRET` + `CELA_WEB_GATE_REQUIRED=1` في Vercel (Production وPreview) **كمتغيرات تشغيل (`--env` أو Dashboard → Environment Variables → Production+Preview)** — لا `--build-env` — ثم أعد النشر |
 | `401 access_required` بلا كوكي على Vercel | البوابة `enforced` بلا إثبات | افتح `/api/access` وأدخل السر، أو استخدم `X-Celia-Access` للأتمتة |

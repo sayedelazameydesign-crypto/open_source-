@@ -100,10 +100,12 @@ CELA_BACKEND_URL=http://127.0.0.1:8080 CELA_API_TOKEN=... CELA_PRIVATE_API_TOKEN
 
 | المتغير | النوع | أين يُوضع عند النشر عبر Actions |
 |---|---|---|
-| `CELA_BACKEND_URL` | Secret | سرّ GitHub Secrets يُمرَّر إلى `vercel deploy --build-env CELA_BACKEND_URL=...` — لا في نص الـworkflow ولا في `NEXT_PUBLIC_*`. |
-| `CELA_API_TOKEN` / `CELA_PRIVATE_API_TOKEN` | Secret | نفس المسار — `--build-env` لكل سر. |
-| `CELA_WEB_ACCESS_SECRET` | Secret | **إلزامي على Vercel** (Production وPreview) — نفس مسار `--build-env`. غيابه = `503` على كل وكيل. |
+| `CELA_BACKEND_URL` | Secret | سرّ GitHub Secrets يُمرَّر إلى `vercel deploy --env CELA_BACKEND_URL=...` (**وقت التشغيل** — لا `--build-env` ولا `NEXT_PUBLIC_*`). |
+| `CELA_API_TOKEN` / `CELA_PRIVATE_API_TOKEN` | Secret | نفس المسار — `--env` لكل سر وقت التشغيل. |
+| `CELA_WEB_ACCESS_SECRET` | Secret | **إلزامي على Vercel** (Production وPreview) — نفس مسار `--env` وقت التشغيل. غيابه = `503` على كل وكيل. |
 | `CELA_WEB_GATE_REQUIRED` | Plain | `1` صراحةً (لتوثيق اشتراط البوابة). `0` = فتح مقصود فقط. |
+
+> `--build-env` للبناء فقط، `--env` للتشغيل — مسارات `app/api/*` تقرأ `process.env` وقت الطلب (انظر `vercel.com/docs/cli`).
 
 الفحص المحلي قبل النشر:
 

@@ -542,7 +542,7 @@ def check_deployment_readiness(
                     "Next.js دائمًا بـ NODE_ENV=production، فغياب السر يعني فشلًا مغلقًا: كل "
                     "/api/backend/* يعيد 503 access_gate_unconfigured والواجهة المنشورة لا تصل "
                     "إلى الـbackend إطلاقاً. أضف السر في إعدادات Vercel (Production وPreview) "
-                    "أو كسرّ Actions يُمرَّر إلى vercel deploy --build-env، ولا تضعه في نص "
+                    "أو كسرّ Actions يُمرَّر إلى vercel deploy --env، ولا تضعه في نص "
                     "الـworkflow ولا في NEXT_PUBLIC_*."
                 ),
             }

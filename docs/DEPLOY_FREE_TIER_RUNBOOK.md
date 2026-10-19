@@ -211,6 +211,8 @@ Vercel → المشروع → **Settings → Environment Variables** (Production
 | `CELA_WEB_ACCESS_SECRET` | Secret | **إلزامي على Vercel** — سر وصول المشغّل. غيابه = `503` على كل وكيل (انظر أعلاه). |
 | `CELA_WEB_GATE_REQUIRED` | Plain | `1` صراحةً لتوثيق اشتراط البوابة. (`0` = فتح مقصود فقط.) |
 
+> **مهم — التدقيق 2026-10-19:** المشروع مربوط بـ GitHub، لذا دفع `main` ينشر تلقائياً. غير أن متغيرات Vercel لا تُطبّق بأثر رجعي — أي تعديل في **Dashboard → Environment Variables** (أو عبر `--env`) يتطلب **نشرًا جديدًا**. التدقيق وجد `CELA_WEB_ACCESS_SECRET` مسجلاً في **Production** فقط وغائبًا في **Preview**؛ النتيجة: `Preview` الحالي (commit `9e7c207` بحالة `READY`) لا يملك سر التشغيل والبوابة تفشل مغلقة. أضف السر في **Preview وProduction معاً** ثم أعد النشر للتحقق (`GET /api/access`).
+
 ##### النشر عبر GitHub Actions (لا عبر موصّل Vercel)
 
 النشر عندك **عبر Actions secrets**، لا عبر موصّل Vercel. لا تضع السر في نصّ
@@ -220,11 +222,14 @@ Vercel → المشروع → **Settings → Environment Variables** (Production
    `CELA_BACKEND_URL`, `CELA_API_TOKEN`, `CELA_PRIVATE_API_TOKEN`,
    `CELA_WEB_ACCESS_SECRET`, `CELA_WEB_GATE_REQUIRED=1`, `VERCEL_TOKEN`,
    `VERCEL_PROJECT_ID`, `VERCEL_ORG_ID` (أو `VERCEL_TEAM_ID`).
-2. مرّرها كـ **build env** عند النشر (الأسرار تبقى في بيئة Actions، لا تُكتب في YAML):
+2. مرّرها كـ **runtime env** عند النشر (الأسرار تبقى في بيئة Actions، لا تُكتب في YAML).
+   **تنبيه:** `--build-env` يوفّر المتغير لمرحلة البناء فقط، بينما مسارات
+   Next.js تقرأ `process.env.CELA_WEB_ACCESS_SECRET` **وقت التشغيل** عند كل طلب.
+   لذلك استخدم `--env` (وليس `--build-env`) لأسرار الخادم، وإلا يبقى النشر بلا سر وقت التشغيل ويفشل مغلقاً بـ `503`:
 
 ```yaml
 # داخل workflow — لا تكتب قيمة سر في النص
-- run: npx vercel deploy --prod --build-env CELA_BACKEND_URL=$CELA_BACKEND_URL --build-env CELA_API_TOKEN=$CELA_API_TOKEN --build-env CELA_PRIVATE_API_TOKEN=$CELA_PRIVATE_API_TOKEN --build-env CELA_WEB_ACCESS_SECRET=$CELA_WEB_ACCESS_SECRET --build-env CELA_WEB_GATE_REQUIRED=$CELA_WEB_GATE_REQUIRED
+- run: npx vercel deploy --prod --env CELA_BACKEND_URL=$CELA_BACKEND_URL --env CELA_API_TOKEN=$CELA_API_TOKEN --env CELA_PRIVATE_API_TOKEN=$CELA_PRIVATE_API_TOKEN --env CELA_WEB_ACCESS_SECRET=$CELA_WEB_ACCESS_SECRET --env CELA_WEB_GATE_REQUIRED=$CELA_WEB_GATE_REQUIRED
   env:
     CELA_BACKEND_URL: ${{ secrets.CELA_BACKEND_URL }}
     CELA_API_TOKEN: ${{ secrets.CELA_API_TOKEN }}
@@ -237,9 +242,9 @@ Vercel → المشروع → **Settings → Environment Variables** (Production
 ```
 
 > لا تُمكّن workflow لمزامنة المفاتيح إلى Vercel إن كان موجوداً — اكتبه
-> يدوياً كـ `--build-env` فقط، واجعل `CELA_WEB_ACCESS_SECRET` سرّ Actions
-> يُمرَّر إلى `vercel deploy --build-env` (لا في `NEXT_PUBLIC_*` ولا في
-> سجلّ الـbuild).
+> يدوياً كـ `--env` (وقت التشغيل) فقط، واجعل `CELA_WEB_ACCESS_SECRET` سرّ Actions
+> يُمرَّر إلى `vercel deploy --env` (لا في `NEXT_PUBLIC_*` ولا في سجلّ الـbuild).
+> المرجع: `vercel.com/docs/deployments/environments#environment-variables` و `vercel.com/docs/cli` (`--env` للتشغيل، `--build-env` للبناء فقط).
 
 #### 3.5.3 الفحص قبل النشر (يحاكي بيئة بناء Vercel)
 
@@ -300,7 +305,7 @@ grep -c "CELA_API_TOKEN\|local-dev-token" <(curl -sS $SITE/) || true  # 0 — ل
 | `401 invalid or missing private API token` على `/cela/v1/*` | استخدام الرمز العام | استخدم `CELA_PRIVATE_API_TOKEN` |
 | الصفحة تعمل و`/api/backend/*` يعطي 404 على Pages | مجلد الإخراج أو دالة الحافة غير منشورة | تأكد من `out` ووجود `functions/` في جذر المشروع |
 | صفحة بيضاء بعد النشر | `CELA_STATIC_EXPORT` غير مفعّل فبُنيت نسخة Node | استخدم `npm run build:pages` |
-| `503 access_gate_unconfigured` على كل `/api/backend/*` على Vercel | `CELA_WEB_ACCESS_SECRET` غائب و`NODE_ENV=production` يفشل مغلقاً | أضف `CELA_WEB_ACCESS_SECRET` + `CELA_WEB_GATE_REQUIRED=1` في Vercel (Production وPreview) أو كسرّ Actions مع `--build-env`، ثم أعد النشر |
+| `503 access_gate_unconfigured` على كل `/api/backend/*` على Vercel | `CELA_WEB_ACCESS_SECRET` غائب و`NODE_ENV=production` يفشل مغلقاً | أضف `CELA_WEB_ACCESS_SECRET` + `CELA_WEB_GATE_REQUIRED=1` في Vercel (Production وPreview) **كمتغيرات تشغيل (Dashboard أو `vercel deploy --env`)** — لا `--build-env` — ثم أعد النشر |
 | `401 access_required` بلا كوكي على Vercel | البوابة `enforced` بلا إثبات | افتح `/api/access` وأدخل السر، أو استخدم `X-Celia-Access` للأتمتة |
 
 ---
