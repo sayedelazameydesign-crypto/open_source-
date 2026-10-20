@@ -152,6 +152,10 @@ ul {
   position: sticky;
   top: 0;
   height: 100dvh;
+  /* The console group makes the sidebar taller than a short laptop viewport;
+     scrolling keeps the notes and footer reachable instead of clipped. */
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .brand {
   display: flex;
@@ -2359,3 +2363,296 @@ ul {
 }
 
 
+
+/* ------------------------------------------------------------------ */
+/* Platform console — /launchpad, /devbox, /database, /registry        */
+/* Read-only views: facts, measured probes and explicit absences.      */
+/* ------------------------------------------------------------------ */
+.console-page {
+  padding-bottom: 48px;
+}
+.console-heading {
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+.console-heading .heading-actions {
+  flex-wrap: wrap;
+}
+.console-lede {
+  margin-top: 7px;
+  max-width: 74ch;
+  color: var(--mut);
+  font-size: 13.5px;
+  line-height: 1.9;
+}
+.console-lede strong {
+  color: var(--txt);
+}
+.console-panel .panel-heading {
+  align-items: flex-start;
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+.console-panel-status,
+.console-panel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.console-nav {
+  margin-bottom: 18px;
+}
+.primary-nav + .nav-label {
+  margin-top: 20px;
+}
+.fact-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 11px;
+}
+.fact {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--soft);
+}
+.fact-label {
+  color: var(--mut);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+}
+.fact-value {
+  color: var(--txt);
+  font-size: 13px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.fact-value.mono,
+.console-code,
+.registry-reference,
+.console-origin code,
+.console-limits code,
+.console-steps code,
+.console-table td[dir="ltr"],
+.tool-chips li {
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+}
+.fact-note {
+  color: var(--mut);
+  font-size: 11.5px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.fact-missing {
+  color: var(--rust);
+  font-weight: 700;
+}
+.console-origin {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 15px;
+  padding-top: 11px;
+  border-top: 1px dashed var(--line);
+  color: var(--mut);
+  font-size: 11.5px;
+  line-height: 1.85;
+}
+.console-origin code {
+  direction: ltr;
+  unicode-bidi: isolate;
+  background: #f2f5ef;
+  border-radius: 5px;
+  padding: 1px 5px;
+}
+.console-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 15px;
+}
+.console-limits,
+.console-steps {
+  margin: 0;
+  padding-inline-start: 19px;
+  display: grid;
+  gap: 9px;
+  color: var(--mut);
+  font-size: 12.5px;
+  line-height: 1.85;
+}
+.console-limits strong,
+.console-steps strong {
+  color: var(--txt);
+}
+.console-limits code,
+.console-steps code {
+  direction: ltr;
+  unicode-bidi: isolate;
+  background: #f2f5ef;
+  border-radius: 5px;
+  padding: 1px 5px;
+}
+.console-code,
+.registry-reference {
+  direction: ltr;
+  text-align: left;
+  background: #223c32;
+  color: #eef6ee;
+  border-radius: 10px;
+  padding: 11px 13px;
+  margin: 10px 0;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.registry-reference {
+  font-size: 13px;
+  border: 1px solid #1b3128;
+}
+.copy-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.copy-status {
+  color: var(--mut);
+  font-size: 11.5px;
+}
+.tool-chips {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding: 0;
+}
+.tool-chips li {
+  direction: ltr;
+  background: #f1f4ee;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px 10px;
+  color: #3f5749;
+}
+.probe-note {
+  margin-top: 12px;
+  padding: 10px 13px;
+  border-radius: 10px;
+  font-size: 12.5px;
+  line-height: 1.8;
+}
+.probe-note.ok {
+  background: #eef5ec;
+  border: 1px solid #cfe0cd;
+  color: #2c5a3c;
+}
+.probe-note.bad {
+  background: #fbf0eb;
+  border: 1px solid #ecd3c6;
+  color: #8a4a2b;
+}
+.outcome-bars {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 13px;
+}
+.outcome-chip {
+  border: 1px solid var(--line);
+  background: #fff;
+  border-radius: 999px;
+  padding: 4px 11px;
+  font-size: 11.5px;
+  color: var(--mut);
+}
+.outcome-chip strong {
+  color: var(--txt);
+}
+.outcome-chip.success {
+  border-color: #cfe0cd;
+  background: #eef5ec;
+}
+.outcome-chip.failed {
+  border-color: #ecd3c6;
+  background: #fbf0eb;
+}
+.console-table-wrap {
+  overflow-x: auto;
+  margin-top: 4px;
+}
+.console-table {
+  width: 100%;
+  min-width: 560px;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.console-table th {
+  text-align: start;
+  color: var(--mut);
+  font-size: 10.5px;
+  letter-spacing: 0.4px;
+  font-weight: 700;
+  padding: 8px 9px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.console-table td {
+  padding: 10px 9px;
+  border-bottom: 1px solid #eef1ea;
+  vertical-align: top;
+}
+.console-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+.console-table .table-task {
+  display: block;
+  max-width: 34ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--txt);
+  font-weight: 700;
+}
+.console-table td small {
+  display: block;
+  margin-top: 3px;
+  color: var(--mut);
+  font-size: 10.5px;
+}
+.console-run-list small .status-pill {
+  vertical-align: middle;
+}
+.console-grid .evidence-column .panel:last-child {
+  margin-bottom: 0;
+}
+@media (max-width: 1100px) {
+  .console-grid .evidence-column {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin-top: 4px;
+  }
+}
+@media (max-width: 760px) {
+  .console-heading {
+    display: block;
+  }
+  .console-heading .heading-actions {
+    margin-top: 13px;
+  }
+  .fact-grid {
+    grid-template-columns: 1fr;
+  }
+  .console-grid .evidence-column {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+}

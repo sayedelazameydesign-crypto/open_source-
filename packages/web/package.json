@@ -15,7 +15,8 @@
     "test:next-proxy": "node ../../tests/web/run-nextjs-proxy.cjs",
     "test:gate-parity": "node ../../tests/web/run-gate-parity.cjs",
     "test:access-gate": "node ../../tests/web/run-access-gate-ui.cjs",
-    "test:ai-tools": "node ../../tests/web/run-ai-tools.cjs"
+    "test:ai-tools": "node ../../tests/web/run-ai-tools.cjs",
+    "test:platform-console": "node ../../tests/web/run-platform-console.cjs"
   },
   "dependencies": {
     "next": "^15.5.28",

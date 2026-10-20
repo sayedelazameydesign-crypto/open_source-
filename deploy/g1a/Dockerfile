@@ -22,6 +22,17 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# Build identity — injected by .github/workflows/docker-image.yml and read
+# back by GET /platform/info for the Image Registry page. Empty by default so
+# a local `docker build .` reports honestly that no image metadata is set
+# instead of guessing a tag.
+ARG CELA_IMAGE_REF=""
+ARG CELA_BUILD_SHA=""
+ARG CELA_BUILD_TIME=""
+ENV CELA_IMAGE_REF=${CELA_IMAGE_REF} \
+    CELA_BUILD_SHA=${CELA_BUILD_SHA} \
+    CELA_BUILD_TIME=${CELA_BUILD_TIME}
+
 # Install the service with only the server + distributed (Postgres/Redis)
 # extras — no browser/sandbox/ai toolchains. Build context is the repo root.
 COPY . /app

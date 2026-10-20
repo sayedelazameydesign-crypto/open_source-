@@ -47,6 +47,37 @@ function Navigation({ onNavigate }: { onNavigate?: () => void }) {
           <Icon name="shield" /> حالة المنصة
         </a>
       </nav>
+      <div className="nav-label">المنصة</div>
+      <nav aria-label="أدوات المنصة" className="primary-nav console-nav">
+        <a
+          href="/launchpad"
+          aria-current={pathname === "/launchpad" ? "page" : undefined}
+          onClick={onNavigate}
+        >
+          <Icon name="grid" /> App Launchpad
+        </a>
+        <a
+          href="/devbox"
+          aria-current={pathname === "/devbox" ? "page" : undefined}
+          onClick={onNavigate}
+        >
+          <Icon name="activity" /> Devbox
+        </a>
+        <a
+          href="/database"
+          aria-current={pathname === "/database" ? "page" : undefined}
+          onClick={onNavigate}
+        >
+          <Icon name="folder" /> Database
+        </a>
+        <a
+          href="/registry"
+          aria-current={pathname === "/registry" ? "page" : undefined}
+          onClick={onNavigate}
+        >
+          <Icon name="layers" /> Image Registry
+        </a>
+      </nav>
       <div className="sidebar-note">
         <span className="small-icon">
           <Icon name="layers" />
@@ -108,8 +139,15 @@ export function AppShell({ children }: { children: ReactNode }) {
       /* localStorage optional */
     }
   };
+  const consoleTitles: Record<string, string> = {
+    "/launchpad": "App Launchpad · التطبيق المنشور",
+    "/devbox": "Devbox · بيئة التنفيذ",
+    "/database": "Database · المخزن والسجل",
+    "/registry": "Image Registry · صورة الحاوية",
+  };
   const title =
-    pathname === "/documents"
+    consoleTitles[pathname] ??
+    (pathname === "/documents"
       ? "المستندات النصية"
       : pathname === "/status"
         ? "حالة المنصة الحية"
@@ -117,7 +155,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           ? "AI Tools for Developers"
           : pathname === "/"
             ? "مساحة العمل · Mission OS"
-            : "أدوات المشروع";
+            : "أدوات المشروع");
   return (
     <div className="app-frame">
       <AccessGate />

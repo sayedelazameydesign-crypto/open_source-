@@ -171,8 +171,28 @@ CELA_PRIVATE_API_TOKEN=<توكن مختلف ≥32 حرفًا>
 
 كلاهما داخل رصيد $5/شهر بهامش كبير. بدون بطاقة وبدون دفع — الخطة Free تكفي.
 
+### 10.1 شاشات المنصة الأربع بعد النشر
+
+الصورة تحمل الآن هويتها وقت البناء: الـ workflow يمرّر `CELA_IMAGE_REF` (المرجع
+`:sha-<commit>`)، و`CELA_BUILD_SHA`، و`CELA_BUILD_TIME` كـ `--build-arg`، ويقرأها
+`GET /platform/info`. لذلك بعد أول بناء جديد لـ `:edge`:
+
+| الشاشة | المتوقع على ClawCloud |
+|---|---|
+| `/launchpad` | `mode: demo`، الإصدار، مدة التشغيل، المخزن `InMemoryRunStore` (stateless) |
+| `/devbox` | `code_exec_mode: disabled` و`executes_untrusted_code: false` (مضمّنة في الصورة) |
+| `/database` | المخزن في الذاكرة، ومسار السجل داخل الحاوية — للحفظ الدائم اضبط `CELA_RUN_STORE_URL` |
+| `/registry` | مرجع `ghcr.io/.../open_source:sha-…` وبصمة البناء ووقته |
+
+> إن أعادت المنصة بناء الصورة من المستودع بنفسها دون تمرير الوسوم، ستظهر شاشة
+> Registry «غير مضبوط» بصدق. استخدم صورة GHCR الجاهزة أو مرّر نفس `--build-arg`.
+
+الشاشات الأربع **قراءة فقط**: لا تنشر ولا تسحب صورة ولا تنشئ قاعدة بيانات. التفاصيل:
+[`PLATFORM_CONSOLE.md`](PLATFORM_CONSOLE.md).
+
 ### بعد النشر — التحقق
 
 1. انتظر حالة **Active** (لحظات — الصورة جاهزة فلا بناء).
 2. افتح **Public Address** (يظهر في تفاصيل التطبيق بعد تفعيل External Access؛ ثابت لا يتغير بين إعادة التشغيل).
 3. `GET /health` ⇒ `{"status":"ok"}` • `/docs` لواجهة Swagger • `/cela/v1/runs` بالتوكن الخاص ⇒ 200.
+4. `GET /platform/info` بالتوكن العام ⇒ 200، ثم افتح `/registry` و`/devbox` للتأكد من ظهور الهوية ووضع التنفيذ.
