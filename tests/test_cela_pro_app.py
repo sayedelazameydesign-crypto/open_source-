@@ -57,11 +57,11 @@ def _clean_provider_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iter
     # مكتبة الأبحاث والمهارات معزولة لكل اختبار: لا قراءة من مكتبة المطوّر ولا كتابة فيها.
     monkeypatch.setenv("CELA_PRO_DATA_DIR", str(tmp_path / "cela-pro-data"))
     yield
-    for knowledge, _papers, skills, _skills in cela_pro_app._RESOURCE_BUNDLES.values():
-        for store in (knowledge, skills):
+    for layers in (cela_pro_app._KNOW_LAYERS, cela_pro_app._SKILL_LAYERS):
+        for store, _retriever in layers.values():
             with contextlib.suppress(Exception):
                 store.close()
-    cela_pro_app._RESOURCE_BUNDLES.clear()
+        layers.clear()
 
 
 def _install_scripted_client(
@@ -631,9 +631,9 @@ def test_reading_an_empty_library_creates_no_store_files(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """14) فتح الصفحة أو البحث أو المحادثة لا يُنشئ ملفات مكتبة؛ أول كتابة وحدها تفعل."""
+    """14) فتح الصفحة أو البحث أو المحادثة لا يُنشئ ملفات مكتبة؛ أول كتابة وحدها تفعل — لكل مخزن."""
     monkeypatch.setenv("GROQ_API_KEY", "gsk_library_test")
-    calls = _install_scripted_client(monkeypatch, ["رد"])
+    calls = _install_scripted_client(monkeypatch, ["رد", "رد مع إرشاد"])
     assert "لا توجد أوراق" in cela_pro_app._paper_library_text()
     assert "لا توجد مهارات" in cela_pro_app._skill_library_text()
     assert "لا توجد مقاطع" in cela_pro_app._search_research_papers("anything")
@@ -647,5 +647,15 @@ def test_reading_an_empty_library_creates_no_store_files(
     assert "missing-license" in status
     status, skills = cela_pro_app._import_skill_resource(_SKILL_MD_TEXT, None, "operator-secret")
     assert "candidate" in status and "summarize-research" in skills
-    names = {path.name for path in _library_files(tmp_path)}
-    assert {"knowledge.sqlite3", "skills.sqlite3"} <= names
+    assert "skills.sqlite3" in {path.name for path in _library_files(tmp_path)}
+
+    # PR-lens (#69): وجود مخزن واحد لا يُنشئ الآخر عند القراءة — كل مخزن يُقرَّر وحده.
+    cela_pro_app._SKILL_LAYERS.clear()  # كما بعد إعادة تشغيل العملية
+    assert "لا توجد أوراق" in cela_pro_app._paper_library_text()
+    assert "لا توجد مقاطع" in cela_pro_app._search_research_papers("summarize research paper")
+    reply = cela_pro_app.chat_fn("summarize a research paper", history=[], provider="Groq")
+    assert reply == "رد مع إرشاد"
+    guided_turn = calls[1]["json"]["messages"][-1]["content"]
+    assert "<<<imported-skill" in guided_turn and "لا يمنح صلاحيات" in guided_turn
+    assert "summarize-research" in cela_pro_app._skill_library_text()
+    assert not (tmp_path / "cela-pro-data" / "knowledge.sqlite3").exists()
