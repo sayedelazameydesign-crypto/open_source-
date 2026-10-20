@@ -34,10 +34,10 @@ jobs:
     # Push to main is the merge commit itself; manual dispatch remains available on main.
     if: github.event_name == 'workflow_dispatch' || github.ref_name != 'main'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
@@ -92,7 +92,7 @@ jobs:
 
       - name: Upload verification log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: indigo-live-check-log
           path: indigo-live-check.log
