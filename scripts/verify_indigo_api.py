@@ -55,13 +55,12 @@ def resolve_commit_sha() -> str:
 
 
 class VerdictRecorder:
-    def __init__(self, secret: str) -> None:
-        self._secret = secret
+    def __init__(self) -> None:
         self.rows: list[tuple[bool, str, str]] = []
 
     def record(self, ok: bool, criterion: str, detail: str) -> None:
-        safe_criterion = scrub_indigo_secret(criterion, self._secret)
-        safe_detail = scrub_indigo_secret(detail, self._secret)
+        safe_criterion = scrub_credentials(criterion)
+        safe_detail = scrub_credentials(detail)
         state = "PASS" if ok else "FAIL"
         self.rows.append((ok, safe_criterion, safe_detail))
         print(f"[{state}] {safe_criterion}")
@@ -79,7 +78,7 @@ class VerdictRecorder:
         return 1 if failed else 0
 
 
-def run_offline_checks(rec: VerdictRecorder, active_secret: str) -> None:
+def run_offline_checks(rec: VerdictRecorder) -> None:
     # 1. Core isolation: app boots & serves /health with INDIGO_API_KEY absent,
     #    and deploy_doctor stays ready with zero warnings on core configs.
     clean_env = {"CELA_USE_LIVE_PROVIDER": "0"}
@@ -149,16 +148,13 @@ def run_offline_checks(rec: VerdictRecorder, active_secret: str) -> None:
         f"configured={status_doc.json().get('configured')}",
     )
 
-    # 3. Redaction hygiene for AI Indigo key shapes and active secret values.
+    # 3. Redaction hygiene for AI Indigo key shapes and literal secret scrubbing.
     synthetic_key = "ai_live_" + ("x9Z7" * 5)
+    canary_value = f"opaque-indigo-canary-{os.getpid()}"
     scrubbed_shape = scrub_credentials(f"header X-API-Key: {synthetic_key} failed")
-    scrubbed_active = (
-        scrub_indigo_secret(f"upstream leaked {active_secret}", active_secret)
-        if active_secret
-        else "no_active_secret"
-    )
+    scrubbed_active = scrub_indigo_secret(f"upstream leaked {canary_value}", canary_value)
     leaked_shape = synthetic_key in scrubbed_shape or not contains_secret(synthetic_key)
-    leaked_active = bool(active_secret and active_secret in scrubbed_active)
+    leaked_active = canary_value in scrubbed_active
     rec.record(
         (not leaked_shape) and (not leaked_active),
         "Credential redaction strips AI Indigo keys and active secrets",
@@ -169,14 +165,13 @@ def run_offline_checks(rec: VerdictRecorder, active_secret: str) -> None:
 def run_live_checks(
     rec: VerdictRecorder,
     *,
-    credential_var: str,
-    secret: str,
-    require_key: bool,
+    var_name: str,
+    require_configured: bool,
 ) -> None:
     service = IndigoService(
         enabled=True,
         base_url=DEFAULT_INDIGO_BASE_URL,
-        credential_var=credential_var,
+        credential_var=var_name,
     )
     app = create_app(
         api_token=PLATFORM_TOKEN,
@@ -232,15 +227,14 @@ def run_live_checks(
                 f"transport={unauth_resp.transport_used} ct={unauth_ct.split(';')[0]}",
             )
 
-        if not secret:
+        if not service.status()["configured"]:
             msg = (
-                f"repository/environment secret {credential_var} is empty or unset — "
-                "authenticated AI Indigo checks were NOT executed"
+                "INDIGO_API_KEY is empty or unset — authenticated AI Indigo checks were NOT run"
             )
-            if require_key:
+            if require_configured:
                 rec.record(
                     False,
-                    f"Authenticated live check ({credential_var})",
+                    "Authenticated live check (INDIGO_API_KEY)",
                     msg,
                 )
             else:
@@ -270,7 +264,7 @@ def run_live_checks(
             and search_priv.status_code == 200
             and isinstance(results, list)
             and len(results) >= 1,
-            f"Authenticated search succeeds ({credential_var}) on public and private namespaces",
+            "Authenticated search succeeds (INDIGO_API_KEY) on public and private namespaces",
             f"pub_http={search_pub.status_code} priv_http={search_priv.status_code} "
             f"results={results_count} limit={rate.get('limit')} "
             f"remaining={rate.get('remaining')} latency_ms={search_ms}",
@@ -322,22 +316,21 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    credential_var = resolve_indigo_credential_var()
-    secret = os.environ.get(credential_var, "").strip()
+    var_name = resolve_indigo_credential_var()
+    is_present = bool(IndigoService(enabled=True, credential_var=var_name).status()["configured"])
 
     sha = resolve_commit_sha()
     print(f"commit sha: {sha}")
     print(f"target: {DEFAULT_INDIGO_BASE_URL}")
-    print(f"credential_var: {credential_var} (present={bool(secret)})")
+    print(f"auth configured: {'yes' if is_present else 'no'}")
 
-    rec = VerdictRecorder(secret)
-    run_offline_checks(rec, secret)
+    rec = VerdictRecorder()
+    run_offline_checks(rec)
     if not args.offline_only:
         run_live_checks(
             rec,
-            credential_var=credential_var,
-            secret=secret,
-            require_key=args.require_key,
+            var_name=var_name,
+            require_configured=args.require_key,
         )
     return rec.summary()
 
