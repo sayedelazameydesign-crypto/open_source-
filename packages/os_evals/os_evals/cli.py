@@ -88,12 +88,21 @@ def _real_factory(
 
 def _retrieval(args) -> int:
     """``python -m os_evals retrieval`` — the three-way gate. Exit code is the verdict."""
+    from os_tools.embedding import embedding_backend_from_env
     from os_tools.local_ai import LocalAIEngine
 
     from os_evals.retrieval import load_golden, measure, write_report
     from os_know import KnowRetriever, know_store_from_url
 
-    store = know_store_from_url(args.store_url)
+    try:
+        # ``off`` when the environment says nothing, so the default run is the
+        # sparse run this command published before Gate 4. A broken backend is a
+        # configuration error (exit 2), never a silent downgrade to sparse.
+        embedder = embedding_backend_from_env()
+    except (RuntimeError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    store = know_store_from_url(args.store_url, embedder=embedder)
     try:
         rows = load_golden(args.golden, store=store, corpus_ids=args.corpus)
         report = measure(

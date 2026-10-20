@@ -2,8 +2,9 @@
 
 Gate 1 (ADR-0022) adds three columns to ``chunks`` and nothing else: a token
 count of the *search* text, a packed ``CEV1`` blob, and the space tag
-``model@dim``. The dense arm is not wired here — embeddings stay empty until
-an embedder is passed in a later gate. What this file must get right:
+``model@dim``. Gate 4 (ADR-0023) makes the embedder an **optional constructor
+argument**, so the default store is byte-for-byte the sparse store it was.
+What this file must get right:
 
 * **Idempotent migration.** ``CREATE TABLE IF NOT EXISTS`` leaves an old file
   alone, so :func:`_ensure_columns` ``ADD COLUMN``s what is missing and is a
@@ -16,6 +17,10 @@ an embedder is passed in a later gate. What this file must get right:
   invent a third spelling.
 * **Legacy rows stay searchable.** A null blob / empty model is sparse-only,
   never an exception. Corrupt bytes decode to ``[]``.
+* **Write-side embedding fails loudly.** When an embedder is wired, a backend
+  outage raises instead of writing a half-embedded index (ADR-0022 decision 5).
+  The read side already degrades with a reason; the write side must not hide a
+  corpus that was only partially vectorized.
 
 Deletion is the part that has to be *complete*: a document stays reachable only
 as long as its chunks do. So :meth:`SQLiteKnowStore.delete_document` removes the
@@ -29,7 +34,7 @@ import threading
 import time
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from os_core.tokens import count_tokens
 from os_core.vectors import VectorError, embedding_column_type, pack, unpack
@@ -131,7 +136,40 @@ def _packed_blob(chunk: Chunk) -> bytes | None:
     return None
 
 
-def _build_record(document: DocumentInput) -> tuple[Document, list[Chunk]]:
+def _attach_embeddings(chunks: list[Chunk], embedder: Any) -> None:
+    """Embed every chunk and tag the space **after** the vectors exist.
+
+    ADR-0022 lesson 3: writing the tag before ``embed()`` lets a backend that
+    discovers its dimension later retag the first document silently. Here the
+    tag is read after the call, and a backend that cannot name a space is
+    refused rather than allowed to write untaggable floats.
+    """
+    if not chunks:
+        return
+    from os_core.vectors import embedding_space
+    from os_tools.embedding import validate_vectors
+
+    texts = [chunk.search_text() for chunk in chunks]
+    backend = str(getattr(embedder, "name", "embedder"))
+    vectors = validate_vectors(
+        embedder.embed(texts),
+        expected=len(texts),
+        dim=int(getattr(embedder, "dim", 0) or 0),
+        backend=backend,
+    )
+    space = embedding_space(embedder)  # after embed(): a late dimension is now declared
+    if not space:
+        raise RuntimeError(
+            "embedder declares no embedding space (model@dim); refusing to store "
+            "vectors no reader can validate"
+        )
+    for chunk, vector in zip(chunks, vectors, strict=True):
+        chunk.bind_embedding(vector, model=space)
+
+
+def _build_record(
+    document: DocumentInput, embedder: Any = None
+) -> tuple[Document, list[Chunk]]:
     """One builder for both stores so in-memory and SQLite cannot drift."""
     text = document.text or ""
     sha = short_hash(text)
@@ -161,6 +199,8 @@ def _build_record(document: DocumentInput) -> tuple[Document, list[Chunk]]:
         )
         for draft in drafts
     ]
+    if embedder is not None:
+        _attach_embeddings(chunks, embedder)
     record = Document(
         doc_id=doc_id,
         corpus_id=document.corpus_id,
@@ -194,9 +234,12 @@ class InMemoryKnowStore:
     disagree about what an empty embedding means: sparse-only, never an error.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, embedder: Any = None) -> None:
         self.corpora: dict[str, Corpus] = {}
         self.documents: dict[str, tuple[Document, list[Chunk]]] = {}
+        #: Optional ``os_tools.embedding`` backend. ``None`` — the default — keeps
+        #: every chunk sparse, exactly as before Gate 4.
+        self.embedder = embedder
         self._lock = threading.RLock()
 
     def add_corpus(self, corpus: Corpus) -> Corpus:
@@ -209,7 +252,7 @@ class InMemoryKnowStore:
             return [c.model_copy(deep=True) for c in self.corpora.values()]
 
     def index_document(self, document: DocumentInput) -> Document:
-        record, chunks = _build_record(document)
+        record, chunks = _build_record(document, self.embedder)
         with self._lock:
             self.corpora.setdefault(document.corpus_id, Corpus(corpus_id=document.corpus_id))
             self.documents[record.doc_id] = (record, chunks)
@@ -237,6 +280,17 @@ class InMemoryKnowStore:
             if wanted is None or chunk.corpus_id in wanted
         ]
 
+    def embedding_stats(self) -> dict[str, Any]:
+        """Coverage by space — the first question after switching a backend."""
+        with self._lock:
+            chunks = [chunk for _, group in self.documents.values() for chunk in group]
+        spaces: dict[str, int] = {}
+        for chunk in chunks:
+            if chunk.embedding:
+                key = chunk.embedding_model or "unknown"
+                spaces[key] = spaces.get(key, 0) + 1
+        return {"chunks": len(chunks), "vectors": sum(spaces.values()), "spaces": spaces}
+
     def close(self) -> None:
         pass
 
@@ -249,8 +303,11 @@ class SQLiteKnowStore:
     that walks a repo safe to run on every commit.
     """
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, *, embedder: Any = None) -> None:
         self.path = Path(path)
+        #: See :class:`InMemoryKnowStore`: absent by default, so the sparse path
+        #: stays the one every existing database was written with.
+        self.embedder = embedder
         if str(self.path) != ":memory:":
             self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
@@ -288,7 +345,7 @@ class SQLiteKnowStore:
         return [Corpus.model_validate_json(r[0]) for r in rows]
 
     def index_document(self, document: DocumentInput) -> Document:
-        record, chunks = _build_record(document)
+        record, chunks = _build_record(document, self.embedder)
         placeholders = ",".join("?" for _ in _CHUNK_INSERT_COLUMNS)
         insert_sql = (
             f"INSERT INTO chunks({', '.join(_CHUNK_INSERT_COLUMNS)}) VALUES({placeholders})"
@@ -408,12 +465,26 @@ class SQLiteKnowStore:
             self._conn.execute("DELETE FROM documents WHERE doc_id=?", (doc_id,))
         return dropped
 
+    def embedding_stats(self) -> dict[str, Any]:
+        """Coverage by space, counted in SQL rather than by materialising chunks."""
+        with self._lock:
+            total, vectors = self._conn.execute(
+                "SELECT COUNT(*), SUM(CASE WHEN embedding IS NOT NULL THEN 1 ELSE 0 END) "
+                "FROM chunks"
+            ).fetchone()
+            rows = self._conn.execute(
+                "SELECT embedding_model, COUNT(*) FROM chunks "
+                "WHERE embedding IS NOT NULL GROUP BY embedding_model"
+            ).fetchall()
+        spaces = {(str(row[0]) or "unknown"): int(row[1]) for row in rows}
+        return {"chunks": int(total or 0), "vectors": int(vectors or 0), "spaces": spaces}
+
     def close(self) -> None:
         with self._lock:
             self._conn.close()
 
 
-def know_store_from_url(url: str | None) -> KnowStore:
+def know_store_from_url(url: str | None, *, embedder: Any = None) -> KnowStore:
     """``memory://`` / ``sqlite:///<path>`` / a bare path. Unknown schemes raise.
 
     The rule is copied from ``skill_store_from_url`` for one reason: a silently
@@ -425,12 +496,12 @@ def know_store_from_url(url: str | None) -> KnowStore:
     (``BYTEA``), not a guess.
     """
     if not url or url == "memory://":
-        return InMemoryKnowStore()
+        return InMemoryKnowStore(embedder)
     if url.startswith("sqlite:///"):
-        return SQLiteKnowStore(url[len("sqlite:///") :])
+        return SQLiteKnowStore(url[len("sqlite:///") :], embedder=embedder)
     if "://" in url:
         raise ValueError(f"unsupported knowledge store url: {url!r}")
-    return SQLiteKnowStore(url)
+    return SQLiteKnowStore(url, embedder=embedder)
 
 
 __all__ = [

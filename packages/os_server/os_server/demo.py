@@ -384,12 +384,16 @@ def demo_know_layer(ai_engine: Any = None) -> tuple[Any, Any] | None:
     if not url:
         return None
     if _KNOW_LAYER is None:
+        from os_tools.embedding import embedding_backend_from_env
         from os_tools.local_ai import LocalAIEngine
 
         from os_know import KnowRetriever, know_store_from_url
 
         engine = ai_engine if ai_engine is not None else LocalAIEngine()
-        store = know_store_from_url(url)
+        # Same switch as the CLI: unset ``CELA_EMBED_BACKEND`` means ``off`` and the
+        # store stays sparse. A named-but-broken backend raises here on purpose, so
+        # a server cannot come up claiming hybrid retrieval it cannot perform.
+        store = know_store_from_url(url, embedder=embedding_backend_from_env())
         _KNOW_LAYER = (store, KnowRetriever(store, engine))
     return _KNOW_LAYER
 

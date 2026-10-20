@@ -513,6 +513,8 @@ def _memory_layer(store_url: str | None, namespace: str | None = None):
 
 
 def _know_layer(store_url: str | None):
+    from os_core.vectors import embedding_space
+    from os_tools.embedding import embedding_backend_from_env
     from os_tools.local_ai import LocalAIEngine
 
     from os_know import KnowRetriever, know_store_from_url
@@ -520,7 +522,19 @@ def _know_layer(store_url: str | None):
     url = _store_url(store_url, "CELA_KNOW_STORE_URL", "knowledge")
     if url is None:
         return None
-    store = know_store_from_url(url)
+    try:
+        embedder = embedding_backend_from_env()
+    except (RuntimeError, ValueError) as exc:
+        # A backend the operator named but cannot run is a configuration error:
+        # exiting 2 is the honest answer, not indexing sparse and calling it dense.
+        print(f"error: {exc}", file=sys.stderr)
+        return None
+    store = know_store_from_url(url, embedder=embedder)
+    if embedder is not None:
+        print(
+            f"embedding: {getattr(embedder, 'name', '?')} space={embedding_space(embedder)}",
+            file=sys.stderr,
+        )
     return store, KnowRetriever(store, LocalAIEngine(), min_score=0.01)
 
 
