@@ -16,7 +16,14 @@ import re
 import time
 from enum import StrEnum
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+def count_search_tokens(text: str) -> int:
+    """Token count of the text a retriever actually ranks — never a guess at raw length."""
+    from os_core.tokens import count_tokens
+
+    return count_tokens(text)
 
 #: The tag every recalled block is wrapped in. ``os_core.redact.sanitize_boundaries``
 #: uses it to make sure no stored text can close the block early.
@@ -114,6 +121,17 @@ class MemoryRecord(BaseModel):
     last_used_at: float | None = None
     ttl_at: float | None = None  # None = never expires
 
+    #: Platform token count of :meth:`search_text`. Filled on construction when
+    #: left at 0 so the three backends never disagree about the unit.
+    token_count: int = 0
+    #: Dense vector, base64 of ``os_core.vectors.pack`` — stored *in the record*
+    #: rather than in a column so all three backends (memory, SQLite, Postgres)
+    #: carry it with no schema change (ADR-0022). Empty = sparse-only.
+    vector_b64: str = ""
+    #: Which model produced it. A vector without this is not "probably fine";
+    #: it is unusable, and :meth:`vector` says so by returning ``[]``.
+    embedding_model: str = ""
+
     uses: int = 0
     successes: int = 0
     failures: int = 0
@@ -149,6 +167,54 @@ class MemoryRecord(BaseModel):
             "status": MemoryStatus.QUARANTINED.value,
         }[field]
         return fallback
+
+    @model_validator(mode="after")
+    def _fill_token_count(self) -> MemoryRecord:
+        if self.token_count <= 0:
+            self.token_count = count_search_tokens(self.search_text())
+        return self
+
+    def set_vector(self, values: list[float], *, model: str) -> None:
+        """Pack a freshly embedded vector onto the record (no-op on an empty one)."""
+        if not values:
+            self.vector_b64 = ""
+            self.embedding_model = ""
+            return
+        import base64
+
+        from os_core.vectors import pack
+
+        self.vector_b64 = base64.b64encode(pack([float(v) for v in values])).decode("ascii")
+        self.embedding_model = model
+
+    def vector(self, *, expect_model: str | None = None) -> list[float]:
+        """The stored vector, or ``[]`` when it is missing, corrupt, or foreign.
+
+        ``expect_model`` enforces the rule that makes stored vectors safe to mix
+        across a model upgrade: only vectors from the *current* space may join a
+        ranking. A cosine between two spaces is not a weak signal, it is noise
+        wearing a signal's clothes.
+        """
+        if not self.vector_b64:
+            return []
+        if expect_model is not None and (self.embedding_model or "") != expect_model:
+            return []
+        import base64
+
+        from os_core.vectors import VectorError, unpack
+
+        try:
+            return unpack(base64.b64decode(self.vector_b64, validate=True))
+        except (VectorError, ValueError, TypeError):
+            return []
+
+    @property
+    def embedding(self) -> list[float]:
+        """Same payload as :meth:`vector` under the name Gate 1 pins on both models."""
+        return self.vector()
+
+    def has_usable_vector(self, *, expect_model: str | None = None) -> bool:
+        return bool(self.vector(expect_model=expect_model))
 
     @property
     def fingerprint(self) -> str:
