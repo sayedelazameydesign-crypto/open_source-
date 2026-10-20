@@ -347,3 +347,18 @@ def test_cli_memory_wires_embedder_from_env_and_exits_2_on_invalid_config(
         "spaces": {"feature-hash-v1@512": 1},
     }
     assert full["stats"]["vector_errors"] == 0
+
+
+def test_cli_serve_and_run_exit_2_on_broken_embedding_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("CELA_MEMORY_STORE_URL", f"sqlite:///{tmp_path / 'mem.sqlite'}")
+    monkeypatch.setenv("CELA_API_TOKEN", "x" * 32)
+    monkeypatch.setenv("CELA_EMBED_BACKEND", "invalid-backend")
+
+    assert cli_main(["serve"]) == 2
+    assert "invalid-backend" in capsys.readouterr().err
+
+    assert cli_main(["run", "--demo", "ping"]) == 2
+    assert "invalid-backend" in capsys.readouterr().err
+

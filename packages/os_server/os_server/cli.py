@@ -1376,9 +1376,17 @@ def main(argv: list[str] | None = None) -> int:
         return _telemetry_export(args)
 
     if args.command == "serve":
+        from os_tools.embedding import embedding_backend_from_env
+
         from os_server.app import serve
         from os_server.demo import build_demo_platform_for
         from os_server.runtime import resolve_private_token, resolve_token
+
+        try:
+            embedding_backend_from_env()
+        except (RuntimeError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
 
         api_token = resolve_token()
         if not api_token:
@@ -1437,12 +1445,19 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     from os_core.models import describe_execution
+    from os_tools.embedding import embedding_backend_from_env
 
     from os_server.demo import (
         build_demo_platform,
         free_tier_model_from_env,
         is_live_provider_enabled,
     )
+
+    try:
+        embedding_backend_from_env()
+    except (RuntimeError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
 
     mode = "flow" if args.command == "flow" else "react"
     demo_forced = bool(getattr(args, "demo", False))
