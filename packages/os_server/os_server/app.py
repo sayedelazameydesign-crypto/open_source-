@@ -36,6 +36,18 @@ WaAPI namespace (server-side credentials only, explicitly opt-in via
 ``GET  /api/waapi/notifications/{id}``       safe delivery status
 ``POST /api/webhooks/waapi/{secret}``        secret-protected incoming text message
 
+AI Indigo namespace (ADR-0021, optional external directory integration, opt-in via
+``CELA_INDIGO_ENABLE=1`` and completely independent of core C5/C6 startup):
+``GET  /api/indigo/status``                 secret-safe surface readiness
+``GET  /api/indigo/search``                 keyword/semantic/hybrid tool search
+``GET  /api/indigo/tools``                  catalog listing with filters
+``GET  /api/indigo/tools/compare``          side-by-side comparison of two slugs
+``GET  /api/indigo/tools/{slug}``           single tool detail
+``GET  /api/indigo/categories``             categories and counts
+``GET  /api/indigo/categories/{slug}``      single category detail
+``GET  /api/indigo/trending``               rising tools window (public upstream)
+``GET  /cela/v1/indigo/...``                the same surface in the private namespace
+
 MCP namespace (ADR-0017, behind the token of its parent API, opt-in via
 ``CELA_MCP_ENABLE=1`` + ``CELA_MCP_CONFIG``; read-only — connections are made
 at startup, never per request):
@@ -89,6 +101,13 @@ from os_server.demo import (
     build_demo_platform_for,
     free_tier_model_from_env,
     is_live_provider_enabled,
+)
+from os_server.indigo_api import (
+    INDIGO_API_PREFIX,
+    INDIGO_PRIVATE_PREFIX,
+    IndigoService,
+    create_indigo_router,
+    indigo_enabled_from_env,
 )
 from os_server.launcher_api import (
     LAUNCHER_API_PREFIX,
@@ -147,6 +166,9 @@ def create_app(
     launcher_enabled: bool | None = None,
     launcher_service: LauncherService | None = None,
     launcher_policy: EgressPolicy | None = None,
+    indigo_enabled: bool | None = None,
+    indigo_service: IndigoService | None = None,
+    indigo_policy: EgressPolicy | None = None,
     waapi_service: WaapiService | None = None,
     ledger: RunLedger | None = None,
     mcp_enabled_flag: bool | None = None,
@@ -202,6 +224,14 @@ def create_app(
         rt.egress_policy = egress_policy
 
     waapi = waapi_service if waapi_service is not None else WaapiService()
+    indigo = (
+        indigo_service
+        if indigo_service is not None
+        else IndigoService(
+            enabled=indigo_enabled_from_env() if indigo_enabled is None else indigo_enabled,
+            policy=indigo_policy,
+        )
+    )
 
     bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -256,6 +286,7 @@ def create_app(
                     await waapi_worker
             if layer is not None:
                 await layer.close()
+            await indigo.aclose()
             await waapi.aclose()
 
     app = FastAPI(
@@ -555,6 +586,19 @@ def create_app(
             service=launcher,
             require_auth=private_auth_dependency(private_api_token),
             prefix=LAUNCHER_PRIVATE_PREFIX,
+        )
+    )
+    app.state.indigo = indigo
+    app.include_router(
+        create_indigo_router(
+            service=indigo, require_auth=require_api_auth, prefix=INDIGO_API_PREFIX
+        )
+    )
+    app.include_router(
+        create_indigo_router(
+            service=indigo,
+            require_auth=private_auth_dependency(private_api_token),
+            prefix=INDIGO_PRIVATE_PREFIX,
         )
     )
     app.include_router(create_waapi_router(waapi, require_api_auth))

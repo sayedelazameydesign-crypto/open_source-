@@ -1,0 +1,100 @@
+name: AI Indigo live check (INDIGO_API_KEY)
+
+# Secret-injected verification of the optional AI Indigo external API integration.
+# Security invariants (guarded by tests/test_indigo_workflow_security.py):
+#   1. Destination is pinned to https://aiindigo.com/api/v1 — no dispatch input can
+#      redirect INDIGO_API_KEY to another host.
+#   2. INDIGO_API_KEY travels only from repository secret -> step env -> client.
+#   3. Verdict criteria are published as Check Annotations and uploaded as artifact.
+on:
+  workflow_dispatch:
+    inputs:
+      require_key:
+        description: "Fail the run if repository secret INDIGO_API_KEY is empty"
+        required: false
+        default: false
+        type: boolean
+  push:
+    paths:
+      - ".github/workflows/indigo-live-check.yml"
+      - "packages/os_server/os_server/indigo_api.py"
+      - "scripts/verify_indigo_api.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: indigo-live-check-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  indigo-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Push to main is the merge commit itself; manual dispatch remains available on main.
+    if: github.event_name == 'workflow_dispatch' || github.ref_name != 'main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,server,browser]"
+          command -v google-chrome >/dev/null || python -m playwright install chromium
+
+      - name: Preflight — pin commit and inspect credential state safely
+        env:
+          INDIGO_API_KEY: ${{ secrets.INDIGO_API_KEY }}
+          ALLOW_LIVE_EXTERNAL_CALLS: ${{ secrets.ALLOW_LIVE_EXTERNAL_CALLS }}
+          REQUIRE_KEY: ${{ inputs.require_key }}
+        run: |
+          set -euo pipefail
+          echo "commit sha: ${GITHUB_SHA}"
+          echo "ref: ${GITHUB_REF}"
+          if [ "${ALLOW_LIVE_EXTERNAL_CALLS:-true}" = "false" ]; then
+            echo "::notice title=Indigo live call skipped::ALLOW_LIVE_EXTERNAL_CALLS is explicitly 'false'; running offline checks only."
+            echo "OFFLINE_ONLY=1" >> "$GITHUB_ENV"
+          fi
+          if [ -z "${INDIGO_API_KEY:-}" ]; then
+            if [ "${REQUIRE_KEY:-false}" = "true" ]; then
+              echo "::error title=Preflight::Repository secret INDIGO_API_KEY is empty or unset in Settings > Secrets and variables > Actions."
+              exit 1
+            fi
+            echo "::warning title=INDIGO_API_KEY unset::Repository secret INDIGO_API_KEY is empty or unset; public endpoint + unauthenticated 401 baseline will still run, while authenticated endpoints are skipped until INDIGO_API_KEY is saved in Actions Secrets."
+          else
+            echo "::notice title=INDIGO_API_KEY present::Repository secret INDIGO_API_KEY is set (value never printed); executing full live authenticated verification."
+          fi
+
+      - name: Run AI Indigo verification
+        env:
+          INDIGO_API_KEY: ${{ secrets.INDIGO_API_KEY }}
+          CELA_INDIGO_BASE_URL: "https://aiindigo.com/api/v1"
+          CELA_INDIGO_CREDENTIAL_VAR: "INDIGO_API_KEY"
+          REQUIRE_KEY: ${{ inputs.require_key }}
+        run: |
+          set -o pipefail
+          args=()
+          if [ "${OFFLINE_ONLY:-0}" = "1" ]; then
+            args+=(--offline-only)
+          elif [ "${REQUIRE_KEY:-false}" = "true" ]; then
+            args+=(--require-key)
+          fi
+          python scripts/verify_indigo_api.py "${args[@]}" 2>&1 | tee indigo-live-check.log
+
+      - name: Publish criteria as check annotations
+        if: always()
+        run: python scripts/publish_acceptance_annotations.py indigo-live-check.log
+
+      - name: Upload verification log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: indigo-live-check-log
+          path: indigo-live-check.log
+          if-no-files-found: warn
+          retention-days: 14
