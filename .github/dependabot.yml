@@ -1,0 +1,77 @@
+# Dependabot version updates.
+# Docs: https://docs.github.com/en/code-security/dependabot/dependabot-version-updates
+#
+# Policy in one paragraph: every dependency surface in this repo is checked
+# weekly and arrives as a small, reviewable PR — including the GitHub Actions
+# `uses:` pins, which are bumped here instead of being hand-edited inside
+# workflow files. The single exception is the vendored Cargo workspace,
+# which must never receive an automated PR (see the cargo entry below).
+# Security updates (Dependabot alerts) are a separate channel and are not
+# configured by this file.
+version: 2
+updates:
+  # GitHub Actions — the `uses:` pins under .github/workflows/. Grouped into
+  # one weekly PR so action bumps are reviewed (and reverted) as a unit.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  # Python — pyproject.toml at the repo root ([project] + optional extras).
+  # Minor/patch bumps ride together; majors get their own PR for review.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    groups:
+      python-minor-patch:
+        update-types: ["minor", "patch"]
+
+  # Web app — packages/web/package.json + package-lock.json. Same grouping
+  # rule as Python: minor/patch together, majors alone.
+  - package-ecosystem: "npm"
+    directory: "/packages/web"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    groups:
+      web-minor-patch:
+        update-types: ["minor", "patch"]
+
+  # Docker base images. The root Dockerfile is a mirror of
+  # deploy/g1a/Dockerfile (see its header comment), so both directories are
+  # tracked — otherwise one mirror silently drifts on an old base image.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+  - package-ecosystem: "docker"
+    directory: "/deploy/g1a"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+
+  # Cargo — PRs DISABLED on purpose via open-pull-requests-limit: 0.
+  #
+  # packages/craft-launcher is a byte-identical vendored snapshot of
+  # storytold/craft-launcher (ADR-0015 / ADR-0018), guarded offline by
+  # tests/test_vendored_integrity.py and against upstream by the
+  # `provenance` job in .github/workflows/launcher-ci.yml. Any automated
+  # Cargo.toml / Cargo.lock edit inside that tree breaks the recorded
+  # integrity manifest by construction, so Dependabot must never open PRs
+  # here. The schedule below exists only because the schema requires one;
+  # the zero limit is what enforces "no PRs, ever". Crate advisories still
+  # surface through Dependabot alerts and are handled by re-vendoring a
+  # newer upstream snapshot — never by patching this tree in place.
+  - package-ecosystem: "cargo"
+    directory: "/packages/craft-launcher"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 0

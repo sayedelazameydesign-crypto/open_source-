@@ -30,6 +30,9 @@ on:
         default: true
         type: boolean
 
+permissions:
+  contents: read
+
 jobs:
   eval:
     runs-on: ubuntu-latest
