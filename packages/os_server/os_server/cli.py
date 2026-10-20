@@ -871,6 +871,7 @@ def _know_stats(retriever, *, corpus: str | None = None, as_json: bool = False) 
         return 0
     vectors = report.get("vectors", {})
     print(
+        f"backend={report['backend']} space={report.get('space') or 'none'} "
         f"fusion={report['fusion']} arms={','.join(report['arms'])} "
         f"chunks={vectors.get('chunks', 0)} vectors={vectors.get('vectors', 0)} "
         f"spaces={json.dumps(vectors.get('spaces', {}), sort_keys=True)}"
@@ -936,15 +937,16 @@ def _know_reindex(
 def _know_eval(
     store,
     retriever,
-    golden_path: str,
+    golden_path: str | None,
     *,
     k: int,
     corpus: list[str] | None = None,
     arm: str = "all",
 ) -> int:
-    from os_evals.retrieval import load_golden, measure
+    from os_evals.retrieval import DEFAULT_GOLDEN, load_golden, measure
 
-    rows = load_golden(golden_path, store=store)
+    resolved = pathlib.Path(golden_path) if golden_path else DEFAULT_GOLDEN
+    rows = load_golden(resolved, store=store)
     report = measure(
         retriever,
         rows,
@@ -1236,7 +1238,11 @@ def main(argv: list[str] | None = None) -> int:
     k.add_argument("--json", action="store_true", help="machine-readable reindex report")
     k.add_argument("--store-url", default=None, help="sqlite:///<path> or CELA_KNOW_STORE_URL")
     k = know_sub.add_parser("eval", help="recall@k / MRR against a golden JSONL set")
-    k.add_argument("--golden", required=True, help='JSONL: {"q": ..., "docs": [...]}')
+    k.add_argument(
+        "--golden",
+        default=None,
+        help='JSONL: {"q": ..., "docs": [...]} (default: tests/fixtures/golden.jsonl)',
+    )
     k.add_argument("--corpus", default=None, help="restrict scoring to these corpora")
     k.add_argument("--k", type=int, default=5)
     k.add_argument(

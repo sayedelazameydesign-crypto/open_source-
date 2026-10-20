@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from os_evals.cli import main as evals_main
 from os_evals.retrieval import (
+    DEFAULT_CORPUS_DIR,
     DEFAULT_GOLDEN,
     MRR_FLOOR,
     RECALL_FLOOR,
@@ -18,7 +19,15 @@ from os_evals.retrieval import (
 from os_server.cli import main as cela_main
 from os_tools.local_ai import LocalAIEngine
 
-from os_know import DocumentInput, InMemoryKnowStore, KnowRetriever, know_store_from_url
+from os_know import (
+    MAX_TOKENS,
+    DocumentInput,
+    InMemoryKnowStore,
+    KnowRetriever,
+    chunk_markdown,
+    index_path,
+    know_store_from_url,
+)
 
 
 def _load_know_fixtures():
@@ -200,3 +209,113 @@ def test_os_evals_retrieval_command(tmp_path, capsys) -> None:
     report = json.loads(capsys.readouterr().out)
     assert report["arms"]["sparse"]["recall_at_k"] >= RECALL_FLOOR
     assert report["n"] == 21
+
+
+def test_golden_corpus_files_match_in_memory_corpus_byte_for_byte() -> None:
+    assert DEFAULT_CORPUS_DIR.is_dir()
+    files = {p.stem: p.read_text(encoding="utf-8") for p in DEFAULT_CORPUS_DIR.glob("*.md")}
+    assert files == CORPUS_TEXTS
+
+    from_disk = InMemoryKnowStore()
+    for md in sorted(DEFAULT_CORPUS_DIR.glob("*.md")):
+        index_path(from_disk, md, corpus_id="docs")
+    from_mem = _indexed()
+    assert {d.title: d.doc_id for d in from_disk.list_documents()} == {
+        d.title: d.doc_id for d in from_mem.list_documents()
+    }
+
+
+def test_gate6_cli_reports_explicit_backend_and_space_for_off_and_local(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "gate6.sqlite"
+    url = f"sqlite:///{db}"
+    monkeypatch.setenv("CELA_KNOW_STORE_URL", url)
+    monkeypatch.delenv("CELA_EMBED_BACKEND", raising=False)
+    monkeypatch.delenv("CELA_EMBED_DIM", raising=False)
+
+    for md in sorted(DEFAULT_CORPUS_DIR.glob("*.md")):
+        assert cela_main(["know", "index", str(md), "--corpus", "docs"]) == 0
+    capsys.readouterr()
+
+    # 1. Default off: both CLIs pass with backend='off', space=None, Δ=0.
+    assert evals_main(["retrieval", "--arm", "all"]) == 0
+    off_evals = json.loads(capsys.readouterr().out)
+    assert off_evals["backend"] == "off"
+    assert off_evals["space"] is None
+    assert off_evals["engine"]["backend"] == "off"
+    assert off_evals["engine"]["space"] is None
+    assert off_evals["delta"] == {
+        "avg_context_chars": 0.0,
+        "dense_only_hits": 0,
+        "mrr": 0.0,
+        "recall_at_k": 0.0,
+    }
+
+    assert cela_main(["know", "eval", "--arm", "all"]) == 0
+    off_cela = json.loads(capsys.readouterr().out)
+    assert off_cela["backend"] == "off"
+    assert off_cela["space"] is None
+    assert off_cela["delta"] == off_evals["delta"]
+
+    # 2. Reindex into local (feature-hash-v1@512): Δ=0 on hybrid-vs-sparse, and
+    # standalone dense honestly fails the quality floor instead of faking a pass.
+    monkeypatch.setenv("CELA_EMBED_BACKEND", "local")
+    assert cela_main(["know", "reindex", "--yes", "--json"]) == 0
+    reindexed = json.loads(capsys.readouterr().out)
+    assert reindexed["space_before"] is None
+    assert reindexed["space_after"] == "feature-hash-v1@512"
+    assert reindexed["reindexed"] == 7
+
+    assert evals_main(["retrieval", "--arm", "all"]) == 1
+    local_evals = json.loads(capsys.readouterr().out)
+    assert local_evals["backend"] == "local"
+    assert local_evals["space"] == "feature-hash-v1@512"
+    assert local_evals["engine"]["backend"] == "local"
+    assert local_evals["engine"]["space"] == "feature-hash-v1@512"
+    assert local_evals["delta"] == {
+        "avg_context_chars": 0.0,
+        "dense_only_hits": 0,
+        "mrr": 0.0,
+        "recall_at_k": 0.0,
+    }
+    assert local_evals["arms"]["hybrid"]["modes"] == {"hybrid": 9, "sparse": 12}
+    assert local_evals["arms"]["dense"]["recall_at_k"] < RECALL_FLOOR
+
+    assert cela_main(["know", "eval", "--arm", "all"]) == 1
+    local_cela = json.loads(capsys.readouterr().out)
+    assert local_cela["backend"] == "local"
+    assert local_cela["space"] == "feature-hash-v1@512"
+    assert local_cela["delta"] == local_evals["delta"]
+
+    # Bare `python -m os_evals retrieval --arm all` with zero env vars also works out of the box.
+    monkeypatch.delenv("CELA_KNOW_STORE_URL", raising=False)
+    monkeypatch.delenv("CELA_EMBED_BACKEND", raising=False)
+    assert evals_main(["retrieval", "--arm", "all"]) == 0
+    bare_evals = json.loads(capsys.readouterr().out)
+    assert bare_evals["backend"] == "off"
+    assert bare_evals["space"] is None
+    assert bare_evals["delta"] == off_evals["delta"]
+
+
+def test_chunking_enforces_max_tokens_ceiling_on_arabic_without_shifting_english() -> None:
+    from os_core.tokens import estimate_model_tokens
+
+    arabic = "# دليل التشغيل\n\n" + "\n\n".join(
+        f"الفقرة {i}: تُطبَّق قواعد العزل والميزانية قبل تنفيذ أي أداة في البيئة المحمية."
+        for i in range(60)
+    )
+    english = "# Operations Guide\n\n" + "\n\n".join(
+        f"Paragraph {i}: isolation and budget rules are checked before running any sandboxed tool."
+        for i in range(60)
+    )
+
+    ar_legacy = chunk_markdown(arabic, max_tokens=None)
+    ar_capped = chunk_markdown(arabic, max_tokens=MAX_TOKENS)
+    assert max(estimate_model_tokens(c.text)[0] for c in ar_legacy) > MAX_TOKENS
+    assert max(estimate_model_tokens(c.text)[0] for c in ar_capped) <= MAX_TOKENS
+
+    en_legacy = chunk_markdown(english, max_tokens=None)
+    en_capped = chunk_markdown(english, max_tokens=MAX_TOKENS)
+    assert en_capped == en_legacy
+

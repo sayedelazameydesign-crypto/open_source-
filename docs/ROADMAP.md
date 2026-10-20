@@ -278,18 +278,25 @@ PyPI metadata. النتيجة: من ٢١ اسمًا متداولًا — ٣ تُ
       **معيار الخروج — مُتحقَّق:** بلا نقطة نهاية = **صفر** مقابلة شبكة (مثبَت)، ولا أسرار في أي span
       (`scrub_credentials` على كل خاصية وعلى المهمة والجواب وسبب الرفض)، وسقف ٥١٢ span، و٥٠٣/تعذُّر
       الاتصال **يُبلَّغان ولا يرفعان استثناءً** — أداة تشخيص لا يجوز أن تقتل التشغيل.
-- [ ] **٤-ب · متجهات مخزَّنة واسترجاع هجين — Gate 1–4 مُنفَّذة ([ADR-0022](../adr/0022-stored-vectors-and-hybrid-retrieval.md) · [ADR-0023](../adr/0023-embedding-backends-behind-flags.md)):**
-      جرد Gate Zero في [`docs/verification/gate-zero-pr31-2026-10-20.md`](verification/gate-zero-pr31-2026-10-20.md).
+- [ ] **٤-ب · متجهات مخزَّنة واسترجاع هجين — Gate 1–6 مُنفَّذة ([ADR-0022](../adr/0022-stored-vectors-and-hybrid-retrieval.md) · [ADR-0023](../adr/0023-embedding-backends-behind-flags.md)):**
+      جرد Gate Zero المنقول عن PR #31 في [`docs/verification/gate-zero-pr31-2026-10-20.md`](verification/gate-zero-pr31-2026-10-20.md)،
+      وإعادة القياس المباشر على الرأس الحالي في [`docs/verification/gate-six-retrieval-remeasurement-2026-10-20.md`](verification/gate-six-retrieval-remeasurement-2026-10-20.md).
       **Gate 1–3:** مخطط CEV1؛ مسار كثيف + RRF بعتبة 0.35؛ قياس ثلاثي
       (`os_evals.retrieval` + `tests/fixtures/golden.jsonl` + `cela know eval --arm all`)
       بسقوف `recall@5 ≥ 0.8` و`MRR ≥ 0.6`.
       **Gate 4:** `os_tools/embedding.py` بخلفيات `off` (افتراضي) و`local` (بلا شبكة)
       و`model` (خلف `[ai]`، بلا تنزيل إلا بإذن) و`provider` (HTTPS فقط، علمان + قائمة
-      مضيفين + `EgressPolicy(tool="embeddings")`، وبُعد معلن قبل أول طلب). المخازن تقبل
-      `embedder` اختياريًا والوسم يُكتب بعد `embed()`؛ عطل الكتابة يرمي.
-      الافتراضي `off`. لا يُعلَن تفوّق. لا مخزن متجهات عام في النواة.
-      **الباقي:** `cela know reindex` بعد تبديل الفضاء، وإعادة قياس Gate 2 على الرأس
-      الجديد قبل أي رقم هجين جديد.
+      مضيفين + `EgressPolicy(tool="embeddings")`، وبُعد معلن قبل أول طلب).
+      **Gate 5:** `cela know reindex` يعيد تضمين النص المخزَّن على دفعات ذرّية محدودة،
+      بلا إعادة قراءة الملفات الأصلية، ويدعم `--dry-run` ويشترط `--yes`، ويرفض بـ`exit 2`
+      عند `off`.
+      **Gate 6:** تقارير `os_evals.retrieval` و`KnowRetriever.retrieval_report()` تُخرج
+      `backend` و`space` صراحةً؛ على 21 سؤالًا / 6 مستندات: `off` (`space=null`) يحقق
+      `recall@5 = 1.0`, `MRR = 0.9762` (`exit 0`)، و`local` (`space=feature-hash-v1@512`)
+      يسجّل **`Δ = 0`** بين `hybrid` و`sparse` ويسقط منفردًا على `dense` (`0.4286 < 0.8`,
+      `exit 1`) — بلا ادّعاء تفوّق جودة وببقاء `off` افتراضيًا. وسقف `MAX_TOKENS = 512`
+      مُفعَّل في `os_know.chunking`.
+      **الباقي:** وصل `os_memory` بالمُضمِّن الاختياري (Gate 7).
 - [ ] **٥ · قناة Graphify — مؤجَّلة بقرار لا بنسيان:** ‏CLI ‏/ MCP (النقل موجود الآن: `os_mcp` — ADR-0017) خلف `[know]` مثبَّت **بـSHA**، argv بلا shell، سقف بايت، تدقيق،
       **مرفوض داخل الصندوق** — ويعمل غيابه إلى `off` بسبب مكتوب. التأجيل صريح: لا مستودع كود حقيقي
       في CI يستدعيه بعد، والتثبيت بـSHA يستلزم سلسة توريد لم تُكتب.

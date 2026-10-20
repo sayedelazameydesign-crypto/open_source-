@@ -1,9 +1,10 @@
 # ADR-0019: وحدة ميزانية التوكنز — تقدير مُسَمّى، ومعرّفات مستقرة، ومعايرة بمحاسبة المزوّد
 
 **التاريخ:** 2026-10-16 · **الحالة:** **معتمَد (accepted) — مُنفَّذ ومقيس**؛ وهذا قرار **مُنزَع
-من ADR مقترح أوسع**: المتجهات المخزَّنة والاسترجاع الهجين وبوابة A/B **مؤجَّلة** لقرار
-مستقل هو [`adr/0022`](0022-stored-vectors-and-hybrid-retrieval.md) (**مقترَح، غير مُنفَّذ** —
-Gate Zero في [`docs/verification/gate-zero-pr31-2026-10-20.md`](../docs/verification/gate-zero-pr31-2026-10-20.md)).
+من ADR مقترح أوسع**: المتجهات المخزَّنة والاسترجاع الهجين وبوابة A/B نُقلت إلى قرار
+مستقل هو [`adr/0022`](0022-stored-vectors-and-hybrid-retrieval.md) (**معتمَد ومُنفَّذ** —
+Gate Zero في [`docs/verification/gate-zero-pr31-2026-10-20.md`](../docs/verification/gate-zero-pr31-2026-10-20.md)
+وإعادة القياس على الرأس الحالي في [`docs/verification/gate-six-retrieval-remeasurement-2026-10-20.md`](../docs/verification/gate-six-retrieval-remeasurement-2026-10-20.md)).
 التمهيد: يمتدّ على [`adr/0003`](0003-adaptive-routing.md)
 (التوجيه التكيّفي) و[`adr/0012`](0012-real-model-eval-verification.md) (قاعدة «لا رقم بلا دليل»).
 

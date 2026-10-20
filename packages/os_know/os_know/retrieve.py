@@ -308,12 +308,26 @@ class KnowRetriever:
 
     def retrieval_report(self, *, corpus_ids: Iterable[str] | None = None) -> dict[str, Any]:
         """What the next :meth:`query` will actually do, in one auditable object."""
+        configured = self._resolve_embedder()
+        info = getattr(configured, "info", None)
+        backend = (
+            "off"
+            if configured is None
+            else str(
+                getattr(info, "backend", None)
+                or getattr(configured, "name", None)
+                or type(configured).__name__
+            )
+        )
+        space = embedding_space(configured)
         chunks = self.chunks_for(corpus_ids)
         embedder, note = (
             self._dense_capability(chunks) if chunks else (None, "no chunks in scope")
         )
         stats = getattr(self.store, "embedding_stats", None)
         return {
+            "backend": backend,
+            "space": space,
             "arms": ["sparse"] + (["dense"] if embedder is not None else []),
             "fusion": "rrf" if embedder is not None else "sparse-only",
             "weights": dict(self.weights),
