@@ -212,9 +212,10 @@ def run_live_checks(
         try:
             assert tc.portal is not None
             unauth_resp = tc.portal.call(
-                service.client().probe_raw,
-                "/search",
-                params={"q": "coding", "limit": 1},
+                lambda: service.client().probe_raw(
+                    "/search",
+                    params={"q": "coding", "limit": 1},
+                )
             )
             unauth_ct = unauth_resp.headers.get("content-type", "")
         except Exception as exc:
