@@ -58,3 +58,20 @@ python scripts/verify_indigo_api.py --offline-only
    - إما من تبويب **Actions → AI Indigo live check (INDIGO_API_KEY) → Run workflow**
    - أو عبر `gh workflow run indigo-live-check.yml` بعد دمج الفرع في `main`
 3. تُنشر جميع المعايير السبعة مربوطة بـ SHA الالتزام مباشرةً كـ Check Annotations في صفحة الفحص.
+
+---
+
+## 5. سجل التحقق الفعلي الموثَّق (SHA-Bound Live Evidence)
+
+- **الالتزام (Commit SHA):** `877abb51c53a466b48bcd6889061de269a9487fb`
+- **تشغيل GitHub Actions:** Run `39353716699` · Check Run `118403614267` (`AI Indigo live check (INDIGO_API_KEY)`)
+- **النتيجة المعلَنة في Check Annotations:** **7/7 معايير ناجحة (`PASS`)** مع عدم طباعة أو تسريب أي حرف من قيمة `INDIGO_API_KEY`:
+  1. `Core C5/C6 startup stays independent of INDIGO_API_KEY` — `doctor_ready=True health=200 disabled_indigo_status=503`
+  2. `Missing INDIGO_API_KEY fails closed before opening any socket` — `status=503 outbound_calls=0 configured=False`
+  3. `Credential redaction strips AI Indigo keys and active secrets` — `shape_redacted=True active_redacted=True`
+  4. `Live AI Indigo public endpoint responds (GET /api/v1/intelligence/trending)` — `http=200 items=3 code=ok`
+  5. `Unauthenticated /api/v1/search gate enforces key requirement` — `unauthenticated_http=401 transport=chromium ct=application/json`
+  6. `Authenticated search succeeds (INDIGO_API_KEY) on public and private namespaces` — `pub_http=200 priv_http=200 results=3 latency_ms=403`
+  7. `Authenticated categories and tools catalog scopes succeed` — `categories_http=200 categories_count=19 tools_http=200 tools_count=3`
+- **ملاحظة تشغيلية مُثبتة أثناء التحقق الحي:** يفرض Cloudflare على نطاق `aiindigo.com` تحدي Bot Fight (`HTTP 403` مع `cf-mitigated: challenge`) ضد طلبات مراكز البيانات الخام (`httpx`). يتعرّف `IndigoClient` تلقائيًا على هذا التحدي ويفصله عن أخطاء الصلاحيات (`indigo_waf_challenge` مقابل `indigo_scope_denied`)، وينتقل تلقائيًا إلى متصفح Chromium عبر الحزمة الاختيارية `.[browser]` ضمن نفس قيود `EgressPolicy` و`redirect: "manual"`.
+
