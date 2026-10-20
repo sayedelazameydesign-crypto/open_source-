@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -40,13 +43,25 @@ _PROVIDER_ENV_KEYS = (
     "OLLAMA_REQUEST_EXTRA_JSON",
     "GRADIO_USERNAME",
     "GRADIO_PASSWORD",
+    "CELA_PRO_ADMIN_TOKEN",
+    "CELA_KNOW_STORE_URL",
+    "CELA_SKILL_STORE_URL",
+    "GRADIO_TEMP_DIR",
 )
 
 
 @pytest.fixture(autouse=True)
-def _clean_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def _clean_provider_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[None]:
     for key in _PROVIDER_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
+    # مكتبة الأبحاث والمهارات معزولة لكل اختبار: لا قراءة من مكتبة المطوّر ولا كتابة فيها.
+    monkeypatch.setenv("CELA_PRO_DATA_DIR", str(tmp_path / "cela-pro-data"))
+    yield
+    for knowledge, _papers, skills, _skills in cela_pro_app._RESOURCE_BUNDLES.values():
+        for store in (knowledge, skills):
+            with contextlib.suppress(Exception):
+                store.close()
+    cela_pro_app._RESOURCE_BUNDLES.clear()
 
 
 def _install_scripted_client(
@@ -409,8 +424,10 @@ def test_colab_notebook_syncs_source_before_smoke_and_launch() -> None:
     assert "rev-parse" in sync_cell  # يُعلن التزام المصدر المستخدم بدل إخفائه
 
     smoke_cell = next(source for source in sources if "run_smoke_test" in source)
-    launch_cell = next(source for source in sources if "demo.launch" in source)
+    launch_cell = next(source for source in sources if "launch_cela_pro(" in source)
     assert sources.index(sync_cell) < sources.index(smoke_cell) < sources.index(launch_cell)
+    # التشغيل يمرّ عبر المساعد المشترك مع CLI حتى لا تُتجاوز المصادقة أو حد حجم الرفع.
+    assert not any("demo.launch(" in source for source in sources)
 
     # كل متغير بيئة يقرؤه التطبيق يجب أن يكون قابلًا للتحميل من Colab Secrets،
     # وإلا تعذّر توجيه مزوّد إلى عنوان مخصّص (مثل نقطة Modal الوسيطة لـ Kimi).
@@ -422,6 +439,12 @@ def test_colab_notebook_syncs_source_before_smoke_and_launch() -> None:
         if spec.get(key)
     }
     required_env |= {"GRADIO_USERNAME", "GRADIO_PASSWORD", "CELA_DEFAULT_PROVIDER"}
+    required_env |= {
+        "CELA_PRO_ADMIN_TOKEN",
+        "CELA_PRO_DATA_DIR",
+        "CELA_KNOW_STORE_URL",
+        "CELA_SKILL_STORE_URL",
+    }
     missing = sorted(env for env in required_env if f'"{env}"' not in secrets_cell)
     assert not missing, f"متغيرات بيئة ناقصة في خلية أسرار Colab: {missing}"
     assert "TOKEN_ID.TOKEN_SECRET" in secrets_cell  # توثيق صيغة مفتاح وسيط Modal
@@ -473,3 +496,156 @@ def test_provider_extra_body_is_optional_and_cannot_hijack_the_request(
     assert not_object.startswith("❌")
     assert "كائن JSON" in not_object
     assert len(calls) == 3
+
+
+_SKILL_MD_TEXT = """---
+name: summarize-research
+description: Summarize a research paper and cite the source.
+license: MIT
+---
+
+Read the abstract, identify the question, method, and limitations, then cite the paper.
+"""
+
+
+def _library_files(tmp_path: Path) -> list[Path]:
+    data_dir = tmp_path / "cela-pro-data"
+    return sorted(data_dir.rglob("*")) if data_dir.exists() else []
+
+
+def test_launch_auth_prefers_gradio_credentials_then_the_operator_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """11) المصادقة: GRADIO_* أولًا ثم operator + CELA_PRO_ADMIN_TOKEN، وتشغيل موحّد بحد رفع."""
+    assert cela_pro_app.get_launch_auth() is None
+    assert "CELA_PRO_ADMIN_TOKEN" in cela_pro_app.get_security_notice()
+
+    monkeypatch.setenv("CELA_PRO_ADMIN_TOKEN", "  operator-secret  ")
+    assert cela_pro_app.get_launch_auth() == ("operator", "operator-secret")
+    notice = cela_pro_app.get_security_notice()
+    assert "🔒" in notice and "CELA_PRO_ADMIN_TOKEN" in notice
+    assert "operator-secret" not in notice  # الرمز نفسه لا يظهر في الواجهة
+
+    monkeypatch.setenv("GRADIO_USERNAME", "cela_admin")
+    monkeypatch.setenv("GRADIO_PASSWORD", "cela_pass")
+    assert cela_pro_app.get_launch_auth() == ("cela_admin", "cela_pass")
+    assert "GRADIO_USERNAME" in cela_pro_app.get_security_notice()
+
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(cela_pro_app.demo, "launch", lambda **kwargs: captured.update(kwargs))
+    cela_pro_app.launch_cela_pro(share=False)
+    assert captured["auth"] == ("cela_admin", "cela_pass")
+    assert captured["max_file_size"] == cela_pro_app.MAX_UPLOAD_SIZE == "50mb"
+    assert captured["css"] == cela_pro_app.CSS
+    assert captured["share"] is False
+
+
+def test_library_writes_need_the_operator_token_and_feed_chat_as_untrusted_context(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """12) مكتبة الأبحاث: الكتابة برمز المشغّل فقط، والمؤلفون بـ «؛»، والاسترجاع في المحادثة."""
+    paper = (
+        "Robust Retrieval",
+        "أ. باحث؛ ب. عالم",
+        2024,
+        "10.1234/robust.retrieval",
+        "",
+        "CC-BY-4.0",
+        "abstract",
+        "Semantic retrieval with cited answers improves research assistants.",
+        None,
+    )
+    status, _listing = cela_pro_app._add_research_paper(*paper, "anything")
+    assert "CELA_PRO_ADMIN_TOKEN" in status  # الإضافة معطّلة بلا رمز
+    monkeypatch.setenv("CELA_PRO_ADMIN_TOKEN", "operator-secret")
+    status, _listing = cela_pro_app._add_research_paper(*paper, "wrong-token")
+    assert "رمز المشغّل غير صحيح" in status
+    assert _library_files(tmp_path) == []  # الرفض لا يلمس المكتبة
+
+    status, listing = cela_pro_app._add_research_paper(*paper, "operator-secret")
+    assert status.startswith("✅"), status
+    assert "Robust Retrieval" in listing
+    assert "أ. باحث; ب. عالم" in listing  # مؤلفان لا مؤلف واحد طويل
+    assert "DOI 10.1234/robust.retrieval" in listing
+
+    found = cela_pro_app._search_research_papers("semantic retrieval cited answers")
+    assert "Robust Retrieval" in found
+    assert "https://doi.org/10.1234/robust.retrieval" in found
+
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_library_test")
+    calls = _install_scripted_client(monkeypatch, ["رد مع استشهاد"])
+    reply = cela_pro_app.chat_fn("semantic retrieval cited answers", history=[], provider="Groq")
+    assert reply == "رد مع استشهاد"
+    messages = calls[0]["json"]["messages"]
+    assert "غير موثوقة" in messages[0]["content"]
+    user_turn = messages[-1]["content"]
+    assert user_turn.startswith("semantic retrieval cited answers")
+    assert "<retrieved-corpus" in user_turn
+    assert "untrusted-web" in user_turn and "10.1234/robust.retrieval" in user_turn
+
+
+def test_uploaded_files_are_confined_to_the_gradio_upload_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """13) الملف المرفوع يُقبل من مجلد رفع Gradio وحده: لا مسار اعتباطي ولا رابط رمزي ولا بادئة."""
+    uploads = tmp_path / "uploads"
+    (uploads / "abc123").mkdir(parents=True)
+    monkeypatch.setenv("GRADIO_TEMP_DIR", str(uploads))
+    monkeypatch.setenv("CELA_PRO_ADMIN_TOKEN", "operator-secret")
+
+    inside = uploads / "abc123" / "study.md"
+    inside.write_text("# Study\n\nLocal evidence about cited retrieval.", encoding="utf-8")
+    outside = tmp_path / "secret.md"
+    outside.write_text("# Secret\n\nnot an upload", encoding="utf-8")
+    sibling = tmp_path / "uploads-evil" / "study.md"  # بادئة مشابهة لمجلد الرفع
+    sibling.parent.mkdir()
+    sibling.write_text("# Evil\n\nprefix trick", encoding="utf-8")
+    link = uploads / "link.md"
+    link.symlink_to(outside)
+
+    assert cela_pro_app._uploaded_file_path(str(inside)) == os.path.realpath(inside)
+    for refused in (outside, sibling, link, uploads / ".." / "secret.md", uploads):
+        with pytest.raises(ValueError, match="مسار ملف غير مسموح"):
+            cela_pro_app._uploaded_file_path(str(refused))
+
+    no_text = ("", "", None, "", "", "unknown", "full-text", "")
+    status, _ = cela_pro_app._add_research_paper(*no_text, str(outside), "operator-secret")
+    assert "مسار ملف غير مسموح" in status
+    status, listing = cela_pro_app._add_research_paper(*no_text, str(inside), "operator-secret")
+    assert status.startswith("✅"), status
+    assert "• study —" in listing  # العنوان يُشتق من اسم الملف المرفوع
+
+    skill_upload = uploads / "def456" / "SKILL.md"
+    skill_upload.parent.mkdir()
+    skill_upload.write_text(_SKILL_MD_TEXT, encoding="utf-8")
+    status, _ = cela_pro_app._import_skill_resource("", str(outside), "operator-secret")
+    assert "مسار ملف غير مسموح" in status
+    status, skills = cela_pro_app._import_skill_resource("", str(skill_upload), "operator-secret")
+    assert "candidate" in status, status
+    assert "summarize-research — candidate — import — MIT" in skills
+
+
+def test_reading_an_empty_library_creates_no_store_files(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """14) فتح الصفحة أو البحث أو المحادثة لا يُنشئ ملفات مكتبة؛ أول كتابة وحدها تفعل."""
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_library_test")
+    calls = _install_scripted_client(monkeypatch, ["رد"])
+    assert "لا توجد أوراق" in cela_pro_app._paper_library_text()
+    assert "لا توجد مهارات" in cela_pro_app._skill_library_text()
+    assert "لا توجد مقاطع" in cela_pro_app._search_research_papers("anything")
+    assert cela_pro_app.chat_fn("مرحبًا", history=[], provider="Groq") == "رد"
+    assert calls[0]["json"]["messages"][-1] == {"role": "user", "content": "مرحبًا"}
+    assert _library_files(tmp_path) == []
+
+    monkeypatch.setenv("CELA_PRO_ADMIN_TOKEN", "operator-secret")
+    unlicensed = _SKILL_MD_TEXT.replace("license: MIT\n", "")
+    status, _ = cela_pro_app._import_skill_resource(unlicensed, None, "operator-secret")
+    assert "missing-license" in status
+    status, skills = cela_pro_app._import_skill_resource(_SKILL_MD_TEXT, None, "operator-secret")
+    assert "candidate" in status and "summarize-research" in skills
+    names = {path.name for path in _library_files(tmp_path)}
+    assert {"knowledge.sqlite3", "skills.sqlite3"} <= names

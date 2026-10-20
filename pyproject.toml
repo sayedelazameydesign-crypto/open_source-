@@ -50,6 +50,11 @@ server = [
 browser = [
     "playwright>=1.47",
 ]
+# Paper PDFs are untrusted input: the floor clears every pypdf DoS advisory
+# published up to 6.19.0 (GHSA-v247-6f48-mgcj, GHSA-php9-fj8v-98fj, …).
+papers = [
+    "pypdf>=6.19.0",
+]
 sandbox = [
     "e2b-code-interpreter>=1.5",
 ]

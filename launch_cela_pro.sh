@@ -9,6 +9,12 @@ if ! python -c "import gradio, httpx" 2>/dev/null; then
     echo "[*] تثبيت Gradio و httpx..."
     pip install --quiet --upgrade gradio httpx
 fi
+# قارئ PDF الاختياري لمكتبة الأبحاث؛ الحد الأدنى 6.19.0 لأن ملفات PDF مدخلات غير موثوقة
+# وما قبله متأثر بثغرات استنزاف موارد (DoS) منشورة.
+if ! python -c "import sys, pypdf; sys.exit(tuple(int(p) for p in pypdf.__version__.split('.')[:2]) < (6, 19))" 2>/dev/null; then
+    echo "[*] تثبيت/تحديث قارئ PDF الاختياري (pypdf>=6.19.0)..."
+    pip install --quiet --upgrade "pypdf>=6.19.0"
+fi
 
 # 2) إعدادات المزوّدين الافتراضية (دون كشف المفاتيح)
 export CELA_DEFAULT_PROVIDER="${CELA_DEFAULT_PROVIDER:-Groq}"
@@ -39,8 +45,14 @@ echo "[*] OPENROUTER_API_KEY: $([ -n "$OPENROUTER_API_KEY" ] && echo 'مُعيّ
 echo "[*] KIMI_API_KEY: $([ -n "$KIMI_API_KEY" ] && echo 'مُعيّن' || echo 'غير مُعيّن')"
 echo "[*] Ollama: ${OLLAMA_BASE_URL} (${OLLAMA_MODEL})"
 
-if [ -z "${GRADIO_USERNAME:-}" ] || [ -z "${GRADIO_PASSWORD:-}" ]; then
-    echo "[!] تحذير: لم يُعيّن GRADIO_USERNAME و GRADIO_PASSWORD؛ الرابط العام سيكون متاحًا بدون كلمة مرور."
+echo "[*] CELA_PRO_ADMIN_TOKEN: $([ -n "${CELA_PRO_ADMIN_TOKEN:-}" ] && echo 'مُعيّن (الإضافة إلى المكتبة مفعّلة)' || echo 'غير مُعيّن (المكتبة للقراءة فقط)')"
+
+if [ -n "${GRADIO_USERNAME:-}" ] && [ -n "${GRADIO_PASSWORD:-}" ]; then
+    :
+elif [ -n "${CELA_PRO_ADMIN_TOKEN:-}" ]; then
+    echo "[*] الرابط العام محمي بتسجيل الدخول: المستخدم operator وكلمة المرور CELA_PRO_ADMIN_TOKEN."
+else
+    echo "[!] تحذير: لم يُعيّن GRADIO_USERNAME و GRADIO_PASSWORD (ولا CELA_PRO_ADMIN_TOKEN)؛ الرابط العام سيكون متاحًا بدون كلمة مرور."
 fi
 
 echo "[*] تشغيل CELA.PRO على 0.0.0.0:7860 (share=True)..."

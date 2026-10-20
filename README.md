@@ -333,7 +333,7 @@ cela mcp serve --demo                    # الاتجاه الآخر: المنص
 ```bash
 cela memory remember "أفضِل apt على npm" --key pkg.manager --provenance user
 cela memory recall "أي مدير حزم؟"          # يُحقن موسومًا <untrusted-memory>
-cela know index ./docs --corpus repo && cela know search "سياسة الخروج" --corpus repo
+cela know index ./docs/ARCHITECTURE.md --corpus repo && cela know search "سياسة الخروج" --corpus repo
 cela telemetry export --out trace.json     # OTLP/JSON بلا مجموعة جمع؛ ‏--send يحتاج CELA_OTEL_ENDPOINT
 ```
 
@@ -341,6 +341,31 @@ cela telemetry export --out trace.json     # OTLP/JSON بلا مجموعة جم�
 `candidate` لا يُرقَّى تلقائيًا أبدًا. ‏`python_execute` لا يقرأ الذاكرة. والأخطاء في الطبقتين **لا تُفشل
 تشغيلًا** — تُسجَّل كتحوّط وتُمضَى الجلسة. التفاصيل: [الخطة وأرقامها](docs/INTEGRATIONS_PLAN.md) ·
 [القرار](adr/0016-memory-and-retrieval-layer.md).
+
+### جمع الأبحاث والمهارات بطريقة مراجَعة
+
+يمكن للمشغّل بناء مكتبة محلية من أوراق البحث والمهارات دون زاحف غير مقيّد:
+
+```bash
+export CELA_KNOW_STORE_URL=sqlite:///./data/knowledge.sqlite
+export CELA_SKILL_STORE_URL=sqlite:///./data/skills.sqlite
+
+# ورقة PDF/Markdown/TXT واحدة؛ PDF يحتاج `pip install -e ".[papers]"`
+python -m os_server.cli know index ./papers/study.pdf --paper --title "Study title" --author "A. Researcher" --year 2025 --doi 10.1234/example --license CC-BY-4.0
+python -m os_server.cli know search "what did the study find?" --corpus research-papers
+
+# استيراد SKILL.md واحد فقط؛ الترخيص إلزامي والبطاقة تبدأ candidate
+python -m os_server.cli skills import ./skills/summarize/SKILL.md
+python -m os_server.cli skills list
+```
+
+الأبحاث تُفهرس محليًا مع DOI/المؤلفين/السنة والترخيص، وتُسترجع كمقتطفات **غير موثوقة مع استشهاد**؛
+لا تنزيل تلقائيًا ولا تدريب لأوزان النموذج. ملفات PDF الممسوحة تُرفض بلا OCR ضمني. المهارات
+المستوردة لا تحمل صلاحيات أدوات؛ `allowed-tools` تقييد لا منحة، ولا يُفعّل المحتوى غير المرخّص.
+واجهة CELA.PRO تقرأ المتغيرين نفسيهما (وإلا فـ SQLite داخل `CELA_PRO_DATA_DIR`)، وتحتاج
+`CELA_PRO_ADMIN_TOKEN` لعمليات الكتابة؛ وعند تعيينه — ما لم يُضبط `GRADIO_USERNAME`/`GRADIO_PASSWORD` —
+يتطلب رابط Gradio تسجيل الدخول باسم `operator` وكلمة مرور هي القيمة نفسها. لا تستورد أرشيف
+مهارات جماعيًا غير مُراجع.
 
 **فضاءات الذاكرة (`namespace`):** كل سجل يحمل فضاءً، والدمج (التأكيد/التجاوز) والاسترجاع **لا يعبران
 الفضاء أبدًا** — الجملة نفسها في فضاءين سجلان مستقلان. الخادم يربط ذاكرته كلّها بفضاء واحد يسمّيه
@@ -415,11 +440,14 @@ python -m os_server.cli run --demo "Sum the integers from 0 to 100"   # بلا �
 هو تطبيق محادثة متعدد المزوّدين (Groq · Gemini · OpenRouter · Kimi · Ollama) بمحرّك مهارات
 (`SkillEngine`) و`OrionAgent` بموافقة بشرية، وفحص اتصال يُصنَّف
 `BLOCKED` / `FAIL` / `INCONCLUSIVE` / `PASS`، وحجب تلقائي لقيمة المفتاح (`[REDACTED]`)
-في رسائل الخطأ ومخرجات الفحص.
+في رسائل الخطأ ومخرجات الفحص، ومكتبة أبحاث محلية واستيراد `SKILL.md` (انظر
+«جمع الأبحاث والمهارات بطريقة مراجَعة» أعلاه).
 
 **ما هو ليس كذلك — بصراحة:**
 
-* لا تستورده أي حزمة `os_*` ولا يستوردها هو؛ ولا يسجّل أدواته في `ToolRegistry`.
+* لا تستورده أي حزمة `os_*`. وهو يستورد — اختياريًا ومن نسخة المستودع نفسها — `os_know`
+  و`os_skills` و`os_core` لمكتبة الأبحاث واستيراد المهارات فقط؛ إن غابت تعمل المحادثة دونها.
+  ولا يسجّل أدواته في `ToolRegistry`.
 * لا يمرّ على `SSRFGuard` ولا `EgressPolicy`، ولا ينفّذ كوده داخل الصندوق المعزول،
   ولا يكتب في سجل النتائج. ضوابط المنصة أعلاه **لا تغطّيه**.
 * ليس ضمن حزم النشر: `pyproject` يضم حزم `os_*` وحدها.
@@ -429,11 +457,13 @@ python -m os_server.cli run --demo "Sum the integers from 0 to 100"   # بلا �
 **تشغيله:** `gradio` **ليس** في أي extra في هذا المشروع — `pip install -e ".[dev,server]"`
 لا يكفي لتشغيله؛ ثبّته بنفسك أو استخدم السكربت (يثبّته ويحذّر عند غياب حماية الرابط العام).
 متغيّراته: `CELA_DEFAULT_PROVIDER` و`*_API_KEY` و`*_BASE_URL` و`*_MODEL` و
-`GRADIO_USERNAME`/`GRADIO_PASSWORD` — نموذجها في [`.env.example`](.env.example).
+`GRADIO_USERNAME`/`GRADIO_PASSWORD`، ولمكتبته `CELA_PRO_ADMIN_TOKEN` و`CELA_PRO_DATA_DIR` و
+`CELA_KNOW_STORE_URL`/`CELA_SKILL_STORE_URL` — نموذجها في [`.env.example`](.env.example).
 
 **ضوابطه الأمنية الخاصة:** لا تبديل تلقائي بين المزوّدين عند الفشل (رسالة خطأ تخصّ
 المزوّد المختار) · «المفتاح مُعيّن» **لا** يعني «متصل» — الادعاء الوحيد بالاتصال هو `PASS` ·
-اختيار المزوّد يعرض حالة الإعداد فقط ولا يرسل قيمة المفتاح إلى الواجهة.
+اختيار المزوّد يعرض حالة الإعداد فقط ولا يرسل قيمة المفتاح إلى الواجهة · الكتابة في المكتبة برمز
+المشغّل وحده، والملف المرفوع لا يُفتح إلا من داخل مجلد رفع Gradio.
 
 اختباراته [`tests/test_cela_pro_app.py`](tests/test_cela_pro_app.py): محلية بالكامل،
 بلا نداءات API حقيقية، وتتحقّق من سلامة دفتر Colab أيضًا (وتعمل ببديل وهمي حين لا يكون
