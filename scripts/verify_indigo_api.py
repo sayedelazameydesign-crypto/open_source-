@@ -26,7 +26,6 @@ from os_server.app import create_app
 from os_server.automation import check_deployment_readiness
 from os_server.indigo_api import (
     DEFAULT_INDIGO_BASE_URL,
-    DEFAULT_INDIGO_USER_AGENT,
     INDIGO_API_PREFIX,
     INDIGO_PRIVATE_PREFIX,
     IndigoService,
@@ -208,21 +207,16 @@ def run_live_checks(
             f"code={trending_err or 'ok'} latency_ms={trending_ms}",
         )
 
-        # 5. Unauthenticated baseline check against key-gated search endpoint.
+        # 5. Unauthenticated baseline check against key-gated search endpoint
+        #    using the same WAF-aware client transport (with zero credentials).
         try:
-            unauth_resp = httpx.get(
-                f"{DEFAULT_INDIGO_BASE_URL}/search",
+            assert tc.portal is not None
+            unauth_resp = tc.portal.call(
+                service.client().probe_raw,
+                "/search",
                 params={"q": "coding", "limit": 1},
-                headers={
-                    "Accept": "application/json, text/plain, */*",
-                    "Accept-Language": "en-US,en;q=0.9",
-                    "User-Agent": DEFAULT_INDIGO_USER_AGENT,
-                },
-                follow_redirects=False,
-                timeout=15.0,
             )
             unauth_ct = unauth_resp.headers.get("content-type", "")
-            unauth_cf = unauth_resp.headers.get("cf-mitigated", "")
         except Exception as exc:
             rec.record(
                 False,
@@ -234,7 +228,7 @@ def run_live_checks(
                 unauth_resp.status_code in {401, 402} and "json" in unauth_ct.lower(),
                 "Unauthenticated /api/v1/search gate enforces key requirement",
                 f"unauthenticated_http={unauth_resp.status_code} "
-                f"ct={unauth_ct.split(';')[0]} cf={unauth_cf or 'none'}",
+                f"transport={unauth_resp.transport_used} ct={unauth_ct.split(';')[0]}",
             )
 
         if not secret:

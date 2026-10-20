@@ -5,26 +5,32 @@ Design & security boundaries (ADR-0021):
 * **Completely independent from core platform startup.** ``os_server``, Render
   (C5), and PostgreSQL persistence (C6) do **not** require ``INDIGO_API_KEY``.
   When ``CELA_INDIGO_ENABLE`` is unset or ``0``, no client is constructed and
-  every route except none — even ``/status`` reports ``enabled=False`` cleanly
-  while data routes fail closed with ``503``.
+  data routes fail closed with ``503``.
 * **Secret stays in process environment only (ADR-0011).** The key is read on
   demand from ``env[credential_var]`` (default ``INDIGO_API_KEY``), never stored
   on a serialized model, never echoed in ``repr()``, and scrubbed from every
   error message (both shape-based via :func:`os_core.redact.scrub_credentials`
   and literal replacement of the active key value).
-* **Pinned HTTPS egress.** Outbound calls pass through
-  :class:`~os_tools.egress.EgressPolicy` + :class:`~os_tools.ssrf.SSRFGuard`
+* **Pinned HTTPS egress + Cloudflare Bot-Fight fallback.** Outbound calls pass
+  through :class:`~os_tools.egress.EgressPolicy` + :class:`~os_tools.ssrf.SSRFGuard`
   allowing only ``aiindigo.com`` on HTTPS port ``443`` by default, with HTTP
-  redirects disabled (``follow_redirects=False``) so ``X-API-Key`` is never
-  forwarded to another host.
+  redirects disabled (``follow_redirects=False`` / ``redirect: "manual"``) so
+  ``X-API-Key`` is never forwarded to another host. When datacenter egress IPs
+  encounter Cloudflare's Bot Fight JS/TLS challenge on raw ``httpx``, the client
+  automatically falls back to headless Chromium (if optional ``playwright`` from
+  ``.[browser]`` is installed) on the same verified origin.
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
 import os
+import shutil
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, urlencode, urlsplit
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -49,6 +55,16 @@ DEFAULT_INDIGO_USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
+
+
+@dataclass(frozen=True)
+class RawIndigoResponse:
+    """Normalized transport response across ``httpx`` and Chromium fallback."""
+
+    status_code: int
+    headers: httpx.Headers
+    text: str
+    transport_used: str
 
 
 def indigo_enabled_from_env(env: Mapping[str, str] | None = None) -> bool:
@@ -87,6 +103,14 @@ def default_indigo_policy(*, resolve_dns: bool = False) -> EgressPolicy:
         )
     ]
     return EgressPolicy(rules=rules, guard=SSRFGuard(resolve_dns=resolve_dns))
+
+
+def _is_cloudflare_waf_challenge(status_code: int, headers: httpx.Headers) -> bool:
+    if status_code != 403:
+        return False
+    content_type = headers.get("content-type", "").lower()
+    cf_mitigated = headers.get("cf-mitigated", "").strip()
+    return bool(cf_mitigated or "text/html" in content_type)
 
 
 class IndigoRateLimit(BaseModel):
@@ -154,6 +178,7 @@ class IndigoClient:
         credential_var: str | None = None,
         policy: EgressPolicy | None = None,
         transport: Any = None,
+        browser_fetcher: Any = None,
         env: Mapping[str, str] | None = None,
         timeout: float = 15.0,
     ) -> None:
@@ -173,8 +198,14 @@ class IndigoClient:
         )
         self.policy = policy if policy is not None else default_indigo_policy()
         self._transport = transport
+        self._browser_fetcher = browser_fetcher
         self._timeout = timeout
         self._http: httpx.AsyncClient | None = None
+        self._pw: Any = None
+        self._pw_browser: Any = None
+        self._pw_context: Any = None
+        self._pw_page: Any = None
+        self._pw_loop: asyncio.AbstractEventLoop | None = None
 
     def _read_secret(self) -> str:
         source = self._env if self._env is not None else os.environ
@@ -206,10 +237,136 @@ class IndigoClient:
             )
         return self._http
 
+    async def _close_browser(self) -> None:
+        if self._pw_context is not None:
+            await self._pw_context.close()
+            self._pw_context = None
+        if self._pw_browser is not None:
+            await self._pw_browser.close()
+            self._pw_browser = None
+        if self._pw is not None:
+            await self._pw.stop()
+            self._pw = None
+        self._pw_page = None
+        self._pw_loop = None
+
     async def aclose(self) -> None:
         if self._http is not None:
             await self._http.aclose()
             self._http = None
+        await self._close_browser()
+
+    async def _fetch_via_playwright(
+        self, full_url: str, headers: Mapping[str, str]
+    ) -> RawIndigoResponse | None:
+        """Execute same-origin ``fetch`` inside headless Chromium when installed."""
+        if self._browser_fetcher is not None:
+            return await self._browser_fetcher(full_url, dict(headers))
+        if self._transport is not None:
+            return None
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            return None
+
+        loop = asyncio.get_running_loop()
+        if self._pw_page is not None and self._pw_loop is not loop:
+            await self._close_browser()
+
+        if self._pw_page is None:
+            parsed = urlsplit(full_url)
+            origin_probe = f"https://{parsed.hostname}/robots.txt"
+            self.policy.enforce(origin_probe, tool="indigo_api")
+
+            pw = await async_playwright().start()
+            launch_kwargs: dict[str, Any] = {
+                "headless": True,
+                "args": [
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                ],
+            }
+            if shutil.which("google-chrome"):
+                launch_kwargs["channel"] = "chrome"
+            browser = await pw.chromium.launch(**launch_kwargs)
+            context = await browser.new_context(
+                user_agent=DEFAULT_INDIGO_USER_AGENT,
+                locale="en-US",
+            )
+            await context.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
+            )
+            page = await context.new_page()
+            await page.goto(origin_probe, wait_until="domcontentloaded", timeout=20_000)
+            for _ in range(10):
+                title = (await page.title()).lower()
+                if "just a moment" not in title:
+                    break
+                await page.wait_for_timeout(1000)
+
+            self._pw = pw
+            self._pw_browser = browser
+            self._pw_context = context
+            self._pw_page = page
+            self._pw_loop = loop
+
+        result: dict[str, Any] = await self._pw_page.evaluate(
+            """async ({ url, headers }) => {
+                const resp = await fetch(url, {
+                    method: "GET",
+                    headers: { "Accept": "application/json", ...headers },
+                    credentials: "include",
+                    redirect: "manual",
+                });
+                if (resp.type === "opaqueredirect") {
+                    return { status: 302, headers: {}, body: "" };
+                }
+                const out = {};
+                resp.headers.forEach((value, key) => { out[key] = value; });
+                const body = await resp.text();
+                return { status: resp.status, headers: out, body };
+            }""",
+            {"url": full_url, "headers": dict(headers)},
+        )
+        return RawIndigoResponse(
+            status_code=int(result["status"]),
+            headers=httpx.Headers(result.get("headers") or {}),
+            text=str(result.get("body") or ""),
+            transport_used="chromium",
+        )
+
+    async def probe_raw(
+        self,
+        path: str,
+        *,
+        params: Mapping[str, Any] | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> RawIndigoResponse:
+        """Low-level policy-checked GET returning status, headers, and body."""
+        clean_path = "/" + path.lstrip("/")
+        base_target = f"{self.base_url}{clean_path}"
+        filtered_params = {
+            k: v for k, v in (params or {}).items() if v is not None and v != ""
+        }
+        full_url = (
+            f"{base_target}?{urlencode(filtered_params)}" if filtered_params else base_target
+        )
+        self.policy.enforce(full_url, tool="indigo_api")
+
+        req_headers = dict(headers or {})
+        raw = await self._client().get(base_target, params=filtered_params, headers=req_headers)
+        first = RawIndigoResponse(
+            status_code=raw.status_code,
+            headers=raw.headers,
+            text=raw.text,
+            transport_used="httpx",
+        )
+        if _is_cloudflare_waf_challenge(first.status_code, first.headers):
+            fallback = await self._fetch_via_playwright(full_url, req_headers)
+            if fallback is not None:
+                return fallback
+        return first
 
     async def request_json(
         self,
@@ -230,26 +387,18 @@ class IndigoClient:
                 ),
             )
 
-        clean_path = "/" + path.lstrip("/")
-        url = f"{self.base_url}{clean_path}"
+        headers: dict[str, str] = {}
+        if secret and require_key:
+            headers["X-API-Key"] = secret
+
         try:
-            self.policy.enforce(url, tool="indigo_api")
+            response = await self.probe_raw(path, params=params, headers=headers)
         except BlockedURLError as exc:
             raise IndigoError(
                 status_code=403,
                 code="egress_denied",
                 detail=f"egress denied: {scrub_indigo_secret(str(exc), secret)}",
             ) from None
-
-        headers: dict[str, str] = {}
-        if secret and require_key:
-            headers["X-API-Key"] = secret
-
-        filtered_params = {
-            k: v for k, v in (params or {}).items() if v is not None and v != ""
-        }
-        try:
-            response = await self._client().get(url, params=filtered_params, headers=headers)
         except Exception as exc:
             raise IndigoError(
                 status_code=502,
@@ -280,15 +429,15 @@ class IndigoClient:
                 rate_limit=rate,
             )
         if response.status_code == 403:
-            content_type = response.headers.get("content-type", "").lower()
-            cf_mitigated = response.headers.get("cf-mitigated", "").strip()
-            if cf_mitigated or "text/html" in content_type:
+            if _is_cloudflare_waf_challenge(response.status_code, response.headers):
+                cf_mitigated = response.headers.get("cf-mitigated", "").strip()
                 raise IndigoError(
                     status_code=502,
                     code="indigo_waf_challenge",
                     detail=(
                         "Cloudflare WAF/Bot challenge intercepted request before reaching "
-                        f"AI Indigo API (cf-mitigated={cf_mitigated or 'html'})"
+                        f"AI Indigo API (cf-mitigated={cf_mitigated or 'html'}); install "
+                        ".[browser] on datacenter hosts to enable Chromium transport fallback"
                     ),
                     rate_limit=rate,
                 )
@@ -323,7 +472,7 @@ class IndigoClient:
             )
 
         try:
-            payload = response.json()
+            payload = json.loads(response.text)
         except ValueError:
             raise IndigoError(
                 status_code=502,
@@ -417,6 +566,7 @@ class IndigoService:
         enabled: bool,
         policy: EgressPolicy | None = None,
         transport: Any = None,
+        browser_fetcher: Any = None,
         base_url: str | None = None,
         credential_var: str | None = None,
         env: Mapping[str, str] | None = None,
@@ -424,6 +574,7 @@ class IndigoService:
         self._enabled = enabled
         self._policy = policy
         self._transport = transport
+        self._browser_fetcher = browser_fetcher
         self._base_url = base_url
         self._credential_var = credential_var
         self._env = env
@@ -440,6 +591,7 @@ class IndigoService:
                 credential_var=self._credential_var,
                 policy=self._policy,
                 transport=self._transport,
+                browser_fetcher=self._browser_fetcher,
                 env=self._env,
             )
         return self._client
@@ -629,6 +781,7 @@ __all__ = [
     "IndigoError",
     "IndigoRateLimit",
     "IndigoService",
+    "RawIndigoResponse",
     "create_indigo_router",
     "default_indigo_policy",
     "indigo_enabled_from_env",

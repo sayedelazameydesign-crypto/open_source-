@@ -33,6 +33,7 @@ from os_server.indigo_api import (  # noqa: E402
     IndigoClient,
     IndigoError,
     IndigoService,
+    RawIndigoResponse,
     default_indigo_policy,
     scrub_indigo_secret,
 )
@@ -442,3 +443,43 @@ def test_verify_indigo_script_offline_mode_binds_sha_and_passes() -> None:
     assert "[PASS] Core C5/C6 startup stays independent of INDIGO_API_KEY" in proc.stdout
     assert "[PASS] Missing INDIGO_API_KEY fails closed before opening any socket" in proc.stdout
     assert "[PASS] Credential redaction strips AI Indigo keys and active secrets" in proc.stdout
+
+
+def test_browser_fallback_recovers_from_cloudflare_waf_challenge() -> None:
+    seen_browser_calls: list[tuple[str, dict[str, str]]] = []
+
+    async def fake_browser_fetcher(url: str, headers: dict[str, str]) -> RawIndigoResponse:
+        seen_browser_calls.append((url, headers))
+        return RawIndigoResponse(
+            status_code=200,
+            headers=httpx.Headers(
+                {"content-type": "application/json", "X-RateLimit-Remaining": "99"}
+            ),
+            text=json.dumps({"data": {"slug": "waf-challenge", "name": "Recovered"}}),
+            transport_used="chromium",
+        )
+
+    transport = CountingTransport(indigo_stub)
+    service = IndigoService(
+        enabled=True,
+        policy=default_indigo_policy(),
+        transport=transport,
+        browser_fetcher=fake_browser_fetcher,
+        env={"INDIGO_API_KEY": TEST_INDIGO_KEY},
+    )
+    app = create_app(
+        api_token=PLATFORM_TOKEN,
+        private_api_token=PRIVATE_TOKEN,
+        indigo_service=service,
+    )
+    with TestClient(app) as client:
+        ok = client.get(
+            f"{INDIGO_API_PREFIX}/tools/waf-challenge",
+            headers=_auth(PLATFORM_TOKEN),
+        )
+        assert ok.status_code == 200
+        assert ok.json()["upstream"]["data"]["name"] == "Recovered"
+        assert ok.json()["rate_limit"]["remaining"] == 99
+    assert len(seen_browser_calls) == 1
+    assert seen_browser_calls[0][1] == {"X-API-Key": TEST_INDIGO_KEY}
+

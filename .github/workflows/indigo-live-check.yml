@@ -44,7 +44,8 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev,server]"
+          pip install -e ".[dev,server,browser]"
+          command -v google-chrome >/dev/null || python -m playwright install chromium
 
       - name: Preflight — pin commit and inspect credential state safely
         env:
