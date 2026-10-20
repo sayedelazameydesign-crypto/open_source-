@@ -26,6 +26,7 @@ from os_server.app import create_app
 from os_server.automation import check_deployment_readiness
 from os_server.indigo_api import (
     DEFAULT_INDIGO_BASE_URL,
+    DEFAULT_INDIGO_USER_AGENT,
     INDIGO_API_PREFIX,
     INDIGO_PRIVATE_PREFIX,
     IndigoService,
@@ -199,23 +200,29 @@ def run_live_checks(
         trending_body: dict[str, Any] = trending_resp.json() if is_json else {}
         trending_items = (trending_body.get("upstream") or {}).get("data")
         items_count = len(trending_items) if isinstance(trending_items, list) else "n/a"
+        trending_err = (trending_body.get("detail") or {}).get("code", "")
         rec.record(
             trending_resp.status_code == 200 and isinstance(trending_items, list),
             "Live AI Indigo public endpoint responds (GET /api/v1/intelligence/trending)",
-            f"http={trending_resp.status_code} items={items_count} latency_ms={trending_ms}",
+            f"http={trending_resp.status_code} items={items_count} "
+            f"code={trending_err or 'ok'} latency_ms={trending_ms}",
         )
 
         # 5. Unauthenticated baseline check against key-gated search endpoint.
-        unauth_status = 0
         try:
             unauth_resp = httpx.get(
                 f"{DEFAULT_INDIGO_BASE_URL}/search",
                 params={"q": "coding", "limit": 1},
-                headers={"Accept": "application/json", "User-Agent": "cela-indigo-verify/0.1"},
+                headers={
+                    "Accept": "application/json, text/plain, */*",
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "User-Agent": DEFAULT_INDIGO_USER_AGENT,
+                },
                 follow_redirects=False,
                 timeout=15.0,
             )
-            unauth_status = unauth_resp.status_code
+            unauth_ct = unauth_resp.headers.get("content-type", "")
+            unauth_cf = unauth_resp.headers.get("cf-mitigated", "")
         except Exception as exc:
             rec.record(
                 False,
@@ -224,9 +231,10 @@ def run_live_checks(
             )
         else:
             rec.record(
-                unauth_status in {401, 402, 403},
+                unauth_resp.status_code in {401, 402} and "json" in unauth_ct.lower(),
                 "Unauthenticated /api/v1/search gate enforces key requirement",
-                f"unauthenticated_http={unauth_status}",
+                f"unauthenticated_http={unauth_resp.status_code} "
+                f"ct={unauth_ct.split(';')[0]} cf={unauth_cf or 'none'}",
             )
 
         if not secret:
@@ -257,10 +265,11 @@ def run_live_checks(
             params={"q": "cursor", "limit": 3},
             headers=priv_headers,
         )
-        pub_json = search_pub.json() if search_pub.status_code == 200 else {}
+        pub_json = search_pub.json() if "json" in search_pub.headers.get("content-type", "") else {}
         results = (pub_json.get("upstream") or {}).get("data")
         rate = pub_json.get("rate_limit") or {}
-        results_count = len(results) if isinstance(results, list) else "err"
+        err_code = (pub_json.get("detail") or {}).get("code", "")
+        results_count = len(results) if isinstance(results, list) else err_code or "err"
         rec.record(
             search_pub.status_code == 200
             and search_priv.status_code == 200

@@ -106,6 +106,12 @@ def indigo_stub(request: httpx.Request) -> httpx.Response:
         return httpx.Response(404, headers=headers, json={"error": "Not found"})
     if path == "/api/v1/tools/rate-limited":
         return httpx.Response(429, headers=headers, json={"error": "Rate limited"})
+    if path == "/api/v1/tools/waf-challenge":
+        return httpx.Response(
+            403,
+            headers={"content-type": "text/html; charset=UTF-8", "cf-mitigated": "challenge"},
+            text="<!DOCTYPE html><title>Just a moment...</title>",
+        )
     if path == "/api/v1/tools/redirect-trap":
         return httpx.Response(
             302, headers={**headers, "Location": "https://evil.example/steal"}
@@ -328,6 +334,13 @@ def test_upstream_errors_and_redirects_fail_safely_without_leaking_key() -> None
         )
         assert limited.status_code == 429
         assert limited.json()["detail"]["rate_limit"]["reset"] == 1792500000
+
+        waf = client.get(
+            f"{INDIGO_API_PREFIX}/tools/waf-challenge",
+            headers=_auth(PLATFORM_TOKEN),
+        )
+        assert waf.status_code == 502
+        assert waf.json()["detail"]["code"] == "indigo_waf_challenge"
 
         redirect = client.get(
             f"{INDIGO_API_PREFIX}/tools/redirect-trap",

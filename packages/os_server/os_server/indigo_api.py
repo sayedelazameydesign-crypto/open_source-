@@ -45,6 +45,10 @@ INDIGO_BASE_URL_ENV = "CELA_INDIGO_BASE_URL"
 DEFAULT_INDIGO_CREDENTIAL_VAR = "INDIGO_API_KEY"
 DEFAULT_INDIGO_BASE_URL = "https://aiindigo.com/api/v1"
 DEFAULT_INDIGO_HOST = "aiindigo.com"
+DEFAULT_INDIGO_USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
 
 
 def indigo_enabled_from_env(env: Mapping[str, str] | None = None) -> bool:
@@ -194,7 +198,11 @@ class IndigoClient:
                 timeout=self._timeout,
                 transport=self._transport,
                 follow_redirects=False,
-                headers={"User-Agent": "cela-indigo-client/0.1", "Accept": "application/json"},
+                headers={
+                    "User-Agent": DEFAULT_INDIGO_USER_AGENT,
+                    "Accept": "application/json, text/plain, */*",
+                    "Accept-Language": "en-US,en;q=0.9",
+                },
             )
         return self._http
 
@@ -272,6 +280,18 @@ class IndigoClient:
                 rate_limit=rate,
             )
         if response.status_code == 403:
+            content_type = response.headers.get("content-type", "").lower()
+            cf_mitigated = response.headers.get("cf-mitigated", "").strip()
+            if cf_mitigated or "text/html" in content_type:
+                raise IndigoError(
+                    status_code=502,
+                    code="indigo_waf_challenge",
+                    detail=(
+                        "Cloudflare WAF/Bot challenge intercepted request before reaching "
+                        f"AI Indigo API (cf-mitigated={cf_mitigated or 'html'})"
+                    ),
+                    rate_limit=rate,
+                )
             raise IndigoError(
                 status_code=403,
                 code="indigo_scope_denied",
@@ -599,6 +619,7 @@ __all__ = [
     "DEFAULT_INDIGO_BASE_URL",
     "DEFAULT_INDIGO_CREDENTIAL_VAR",
     "DEFAULT_INDIGO_HOST",
+    "DEFAULT_INDIGO_USER_AGENT",
     "INDIGO_API_PREFIX",
     "INDIGO_BASE_URL_ENV",
     "INDIGO_CREDENTIAL_VAR_ENV",
