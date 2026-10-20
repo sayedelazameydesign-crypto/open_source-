@@ -15,6 +15,9 @@ on:
       - ".github/workflows/web-ci.yml"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   web:
     runs-on: ubuntu-latest
