@@ -58,6 +58,7 @@ class MemoryManager:
         clock: Any = time.time,
         namespace: str = "default",
         agent_id: str | None = None,
+        embedder: Any = None,
     ) -> None:
         self.store = store
         self.ai = ai_engine
@@ -70,8 +71,11 @@ class MemoryManager:
         #: ``memory_*`` tools, so the model cannot choose whose memory it reads.
         self.namespace = str(namespace or "default")
         self.agent_id = agent_id
+        self.embedder = embedder
         self.retriever = (
-            MemoryRetriever(store, ai_engine, min_score=min_score) if ai_engine else None
+            MemoryRetriever(store, ai_engine, min_score=min_score, embedder=embedder)
+            if ai_engine
+            else None
         )
         self._clock = clock
         # Counters are reported by `cela memory stats`; an operation that
@@ -84,7 +88,44 @@ class MemoryManager:
             "recalled": 0,
             "forgotten": 0,
             "quarantined": 0,
+            "vector_errors": 0,
         }
+
+    def _attach_vector(self, record: MemoryRecord) -> None:
+        """Fail-open vector attachment (ADR-0022 decisions 4 & 5).
+
+        Unlike ``os_know`` — where a half-embedded corpus must raise loudly —
+        losing a user fact or distilled run episode because an embedding backend
+        timed out is strictly worse than storing the record sparse. Any failure
+        increments ``stats['vector_errors']`` and leaves the record clean.
+        """
+        if self.embedder is None:
+            return
+        from os_core.vectors import embedding_space
+        from os_tools.embedding import validate_vectors
+
+        try:
+            raw = self.embedder.embed([record.search_text()])
+            info = getattr(self.embedder, "info", None)
+            backend = str(
+                getattr(info, "backend", None)
+                or getattr(self.embedder, "name", None)
+                or type(self.embedder).__name__
+            )
+            clean = validate_vectors(
+                raw,
+                expected=1,
+                dim=int(getattr(self.embedder, "dim", 0) or 0),
+                backend=backend,
+            )
+            space = embedding_space(self.embedder)  # after embed(): late dims are now known
+            if not space:
+                raise RuntimeError("embedder declares no embedding space (model@dim)")
+            record.set_vector(clean[0], model=space)
+        except Exception:
+            self.stats["vector_errors"] += 1
+            record.vector_b64 = ""
+            record.embedding_model = ""
 
     def scoped(self, namespace: str, *, agent_id: str | None = None) -> MemoryManager:
         """The same store, gate, retriever and counters — bound to another space.
@@ -151,6 +192,12 @@ class MemoryManager:
             if source_run_id and source_run_id not in twin.evidence:
                 twin.evidence.append(source_run_id)
             twin.refresh_status(now=self._clock())
+            if self.embedder is not None:
+                from os_core.vectors import embedding_space
+
+                cur_space = embedding_space(self.embedder)
+                if not (cur_space and twin.has_usable_vector(expect_model=cur_space)):
+                    self._attach_vector(twin)
             self.store.save_record(twin)
             self.stats["deduplicated"] += 1
             return twin, decision.model_copy(update={"reason": decision.reason or "corroborated"})
@@ -180,6 +227,7 @@ class MemoryManager:
                 self.store.save_record(older)
                 self.stats["superseded"] += 1
 
+        self._attach_vector(record)
         self.store.save_record(record)
         self.stats["written"] += 1
         return record, decision
@@ -332,6 +380,23 @@ class MemoryManager:
                 by_provenance.get(record.provenance.value, 0) + 1
             )
             by_namespace[record.namespace] = by_namespace.get(record.namespace, 0) + 1
+        from os_core.vectors import embedding_space
+
+        by_space: dict[str, int] = {}
+        for record in records:
+            if record.vector_b64:
+                key = record.embedding_model or "unknown"
+                by_space[key] = by_space.get(key, 0) + 1
+        info = getattr(self.embedder, "info", None)
+        backend = (
+            "off"
+            if self.embedder is None
+            else str(
+                getattr(info, "backend", None)
+                or getattr(self.embedder, "name", None)
+                or type(self.embedder).__name__
+            )
+        )
         return {
             "total": len(records),
             "namespace": self.namespace,
@@ -344,6 +409,12 @@ class MemoryManager:
             if records
             else 0.0,
             "retriever": "hybrid(LocalAIEngine)" if self.retriever is not None else "none",
+            "embedding": {
+                "backend": backend,
+                "space": embedding_space(self.embedder),
+                "vectors": sum(by_space.values()),
+                "spaces": by_space,
+            },
             "stats": dict(self.stats),
         }
 

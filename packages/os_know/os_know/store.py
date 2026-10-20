@@ -101,6 +101,145 @@ def chunk_column_ddl(dialect: str) -> dict[str, str]:
 
 _CHUNK_MIGRATION = chunk_column_ddl("sqlite")
 
+#: Bounded batch size for :meth:`KnowStore.reindex` (ADR-0022 decision 11): small
+#: enough to keep peak RAM and HTTP request bodies well inside provider limits,
+#: large enough to amortize round-trip overhead.
+DEFAULT_REINDEX_BATCH_SIZE = 64
+
+
+def _normalize_corpus_scope(corpus_ids: Iterable[str] | None) -> list[str] | None:
+    if corpus_ids is None:
+        return None
+    if isinstance(corpus_ids, str):
+        return [corpus_ids]
+    return sorted({str(c) for c in corpus_ids})
+
+
+def _summarize_space(spaces: dict[str, int]) -> str | None:
+    if not spaces:
+        return None
+    if len(spaces) == 1:
+        return next(iter(spaces))
+    return f"mixed({', '.join(sorted(spaces))})"
+
+
+def _stage_reindex(
+    chunks: list[Chunk],
+    embedder: Any,
+    *,
+    batch_size: int,
+    dry_run: bool,
+) -> tuple[str, str | None, list[tuple[str, list[float], bytes]], int, int]:
+    """Validate configuration and prepare every replacement vector in memory.
+
+    All batches run and pass :func:`validate_vectors` before a caller touches a
+    single row, so a mid-batch failure leaves the store untouched instead of
+    half-migrated across two embedding spaces (ADR-0022 decision 11).
+    """
+    from os_core.vectors import embedding_space
+    from os_tools.embedding import validate_vectors
+
+    if embedder is None:
+        raise RuntimeError(
+            "cannot reindex: no embedding backend configured (set CELA_EMBED_BACKEND)"
+        )
+    if isinstance(batch_size, bool) or int(batch_size) < 1:
+        raise ValueError(f"batch_size must be >= 1, got {batch_size!r}")
+    step = int(batch_size)
+    info = getattr(embedder, "info", None)
+    backend = str(
+        getattr(info, "backend", None)
+        or getattr(embedder, "name", None)
+        or type(embedder).__name__
+    )
+    texts = [chunk.search_text() for chunk in chunks]
+    batches = (len(texts) + step - 1) // step if texts else 0
+
+    if dry_run:
+        max_chars = int(
+            getattr(info, "max_input_chars", 0)
+            or getattr(embedder, "max_input_chars", 0)
+            or 0
+        )
+        est_truncated = sum(1 for t in texts if len(t) > max_chars) if max_chars > 0 else 0
+        return backend, embedding_space(embedder), [], batches, est_truncated
+
+    if not texts:
+        return backend, embedding_space(embedder), [], 0, 0
+
+    staged: list[tuple[str, list[float], bytes]] = []
+    locked_space: str | None = None
+    total_truncated = 0
+    for start in range(0, len(texts), step):
+        batch_chunks = chunks[start : start + step]
+        batch_texts = texts[start : start + step]
+        raw = embedder.embed(batch_texts)
+        info = getattr(embedder, "info", None)
+        total_truncated += int(getattr(info, "last_truncated", 0) or 0)
+        vectors = validate_vectors(
+            raw,
+            expected=len(batch_texts),
+            dim=int(getattr(embedder, "dim", 0) or 0),
+            backend=backend,
+        )
+        space = embedding_space(embedder)  # after embed(): late dims are now known
+        if not space:
+            raise RuntimeError(
+                "embedder declares no embedding space (model@dim); refusing to store "
+                "vectors no reader can validate"
+            )
+        if locked_space is None:
+            locked_space = space
+        elif space != locked_space:
+            raise RuntimeError(
+                f"embedding space changed mid-reindex ({locked_space!r} -> {space!r}); "
+                "aborting before writing"
+            )
+        for chunk, vec in zip(batch_chunks, vectors, strict=True):
+            staged.append((chunk.chunk_id, vec, pack(vec)))
+
+    if info is not None and hasattr(info, "last_truncated"):
+        info.last_truncated = total_truncated
+    return backend, locked_space, staged, batches, total_truncated
+
+
+def _reindex_report(
+    *,
+    dry_run: bool,
+    backend: str,
+    scope: list[str] | None,
+    chunks: int,
+    staged_count: int,
+    batches: int,
+    batch_size: int,
+    spaces_before: dict[str, int],
+    space_after: str | None,
+    last_truncated: int,
+) -> dict[str, Any]:
+    vectors_before = sum(spaces_before.values())
+    if dry_run:
+        spaces_after = dict(spaces_before)
+        vectors_after = vectors_before
+    else:
+        spaces_after = {space_after: staged_count} if (staged_count and space_after) else {}
+        vectors_after = staged_count
+    return {
+        "dry_run": bool(dry_run),
+        "backend": backend,
+        "corpus_ids": scope,
+        "chunks": chunks,
+        "reindexed": 0 if dry_run else staged_count,
+        "batches": batches,
+        "batch_size": int(batch_size),
+        "space_before": _summarize_space(spaces_before),
+        "space_after": space_after,
+        "vectors_before": vectors_before,
+        "vectors_after": vectors_after,
+        "spaces_before": spaces_before,
+        "spaces_after": spaces_after,
+        "last_truncated": last_truncated,
+    }
+
 
 def _document_id(corpus_id: str, sha256: str) -> str:
     return f"doc_{corpus_id[:8]}_{sha256[:12]}"
@@ -224,6 +363,14 @@ class KnowStore(Protocol):
     def delete_document(self, doc_id: str) -> int: ...
     def list_documents(self, *, corpus_id: str | None = None) -> list[Document]: ...
     def list_chunks(self, *, corpus_ids: Iterable[str] | None = None) -> list[Chunk]: ...
+    def reindex(
+        self,
+        *,
+        corpus_ids: Iterable[str] | None = None,
+        batch_size: int = DEFAULT_REINDEX_BATCH_SIZE,
+        dry_run: bool = False,
+        embedder: Any = None,
+    ) -> dict[str, Any]: ...
     def close(self) -> None: ...
 
 
@@ -290,6 +437,63 @@ class InMemoryKnowStore:
                 key = chunk.embedding_model or "unknown"
                 spaces[key] = spaces.get(key, 0) + 1
         return {"chunks": len(chunks), "vectors": sum(spaces.values()), "spaces": spaces}
+
+    def reindex(
+        self,
+        *,
+        corpus_ids: Iterable[str] | None = None,
+        batch_size: int = DEFAULT_REINDEX_BATCH_SIZE,
+        dry_run: bool = False,
+        embedder: Any = None,
+    ) -> dict[str, Any]:
+        """Re-embed stored chunk text without touching original source files."""
+        active = self.embedder if embedder is None else embedder
+        scope = _normalize_corpus_scope(corpus_ids)
+        wanted = set(scope) if scope is not None else None
+        with self._lock:
+            selected = sorted(
+                (
+                    chunk.model_copy(deep=True)
+                    for _, group in self.documents.values()
+                    for chunk in group
+                    if wanted is None or chunk.corpus_id in wanted
+                ),
+                key=lambda c: (c.doc_id, c.ordinal),
+            )
+        spaces_before: dict[str, int] = {}
+        for chunk in selected:
+            if chunk.embedding:
+                key = chunk.embedding_model or "unknown"
+                spaces_before[key] = spaces_before.get(key, 0) + 1
+
+        backend, space_after, staged, batches, last_truncated = _stage_reindex(
+            selected, active, batch_size=batch_size, dry_run=dry_run
+        )
+        if not dry_run and staged:
+            assert space_after is not None
+            with self._lock:
+                by_id = {
+                    chunk.chunk_id: chunk
+                    for _, group in self.documents.values()
+                    for chunk in group
+                }
+                for chunk_id, vec, _blob in staged:
+                    target = by_id.get(chunk_id)
+                    if target is not None:
+                        target.bind_embedding(vec, model=space_after)
+
+        return _reindex_report(
+            dry_run=dry_run,
+            backend=backend,
+            scope=scope,
+            chunks=len(selected),
+            staged_count=len(staged),
+            batches=batches,
+            batch_size=batch_size,
+            spaces_before=spaces_before,
+            space_after=space_after,
+            last_truncated=last_truncated,
+        )
 
     def close(self) -> None:
         pass
@@ -479,6 +683,79 @@ class SQLiteKnowStore:
         spaces = {(str(row[0]) or "unknown"): int(row[1]) for row in rows}
         return {"chunks": int(total or 0), "vectors": int(vectors or 0), "spaces": spaces}
 
+    def reindex(
+        self,
+        *,
+        corpus_ids: Iterable[str] | None = None,
+        batch_size: int = DEFAULT_REINDEX_BATCH_SIZE,
+        dry_run: bool = False,
+        embedder: Any = None,
+    ) -> dict[str, Any]:
+        """Re-embed stored ``chunks`` rows atomically without reading ``source_uri``."""
+        active = self.embedder if embedder is None else embedder
+        scope = _normalize_corpus_scope(corpus_ids)
+        sql = f"SELECT {_CHUNK_SELECT} FROM chunks c JOIN documents d ON d.doc_id=c.doc_id"
+        params: tuple[object, ...] = ()
+        if scope is not None:
+            if scope:
+                marks = ",".join("?" for _ in scope)
+                sql += f" WHERE d.corpus_id IN ({marks})"
+                params = tuple(scope)
+            else:
+                sql += " WHERE 1=0"
+        sql += " ORDER BY c.doc_id, c.ordinal"
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+
+        from os_know.types import is_untrusted_source
+
+        spaces_before: dict[str, int] = {}
+        selected: list[Chunk] = []
+        for r in rows:
+            if r[11] is not None:
+                key = str(r[12] or "") or "unknown"
+                spaces_before[key] = spaces_before.get(key, 0) + 1
+            selected.append(
+                Chunk(
+                    chunk_id=r[0],
+                    doc_id=r[1],
+                    ordinal=r[2],
+                    heading=r[3] or "",
+                    text=r[4],
+                    start_line=r[5],
+                    end_line=r[6],
+                    corpus_id=r[7],
+                    source_uri=r[8],
+                    doc_sha256=r[9] or "",
+                    untrusted=is_untrusted_source(r[8]),
+                    token_count=int(r[10] or 0),
+                )
+            )
+
+        backend, space_after, staged, batches, last_truncated = _stage_reindex(
+            selected, active, batch_size=batch_size, dry_run=dry_run
+        )
+        if not dry_run and staged:
+            assert space_after is not None
+            with self._lock, self._conn:
+                self._conn.executemany(
+                    "UPDATE chunks SET embedding=?, embedding_model=? WHERE chunk_id=?",
+                    [(blob, space_after, chunk_id) for chunk_id, _vec, blob in staged],
+                )
+
+        return _reindex_report(
+            dry_run=dry_run,
+            backend=backend,
+            scope=scope,
+            chunks=len(selected),
+            staged_count=len(staged),
+            batches=batches,
+            batch_size=batch_size,
+            spaces_before=spaces_before,
+            space_after=space_after,
+            last_truncated=last_truncated,
+        )
+
     def close(self) -> None:
         with self._lock:
             self._conn.close()
@@ -505,6 +782,7 @@ def know_store_from_url(url: str | None, *, embedder: Any = None) -> KnowStore:
 
 
 __all__ = [
+    "DEFAULT_REINDEX_BATCH_SIZE",
     "InMemoryKnowStore",
     "KnowStore",
     "SQLiteKnowStore",

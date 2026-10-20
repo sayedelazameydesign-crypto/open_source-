@@ -52,7 +52,13 @@ def default_golden_path() -> Path:
     return Path("tests/fixtures/golden.jsonl")
 
 
+def default_corpus_dir() -> Path:
+    """Matching markdown documents for :func:`default_golden_path`."""
+    return default_golden_path().parent / "golden_corpus"
+
+
 DEFAULT_GOLDEN = default_golden_path()
+DEFAULT_CORPUS_DIR = default_corpus_dir()
 
 
 def floors(*, recall: float | None = None, mrr_floor: float | None = None) -> dict[str, float]:
@@ -162,21 +168,50 @@ def _scope(corpus_ids: Sequence[str] | str | None) -> list[str]:
     return [str(c) for c in corpus_ids if str(c).strip()]
 
 
-def _engine_facts(retriever: Any) -> dict[str, Any]:
+def _engine_facts(
+    retriever: Any, *, corpus_ids: Sequence[str] | None = None
+) -> dict[str, Any]:
+    configured = getattr(retriever, "embedder", None) or getattr(
+        getattr(retriever, "store", None), "embedder", None
+    )
+    info = getattr(configured, "info", None)
+    fallback_backend = (
+        "off"
+        if configured is None
+        else str(
+            getattr(info, "backend", None)
+            or getattr(configured, "name", None)
+            or type(configured).__name__
+        )
+    )
+    from os_core.vectors import embedding_space
+
+    fallback_space = embedding_space(configured)
     report = getattr(retriever, "retrieval_report", None)
     if not callable(report):
-        return {"available": False, "note": "retriever exposes no retrieval_report()"}
+        return {
+            "available": False,
+            "backend": fallback_backend,
+            "space": fallback_space,
+            "note": "retriever exposes no retrieval_report()",
+        }
     try:
-        payload = report()
+        params = inspect.signature(report).parameters
+        payload = report(corpus_ids=corpus_ids) if "corpus_ids" in params else report()
     except Exception as exc:  # a broken report must not sink the measurement
         return {
             "available": False,
+            "backend": fallback_backend,
+            "space": fallback_space,
             "note": f"retrieval_report() raised {type(exc).__name__}: {exc}",
         }
-    return {
+    merged = {
         "available": True,
         **(payload if isinstance(payload, Mapping) else {"raw": str(payload)}),
     }
+    merged.setdefault("backend", fallback_backend)
+    merged.setdefault("space", fallback_space)
+    return merged
 
 
 def accepts_arm(retriever: Any) -> bool:
@@ -294,7 +329,7 @@ def measure(
     """Score *rows* against *retriever* for each requested arm; JSON-safe report."""
     wanted = norm_arms(arms)
     limits = floors(recall=recall_floor, mrr_floor=mrr_floor)
-    engine = _engine_facts(retriever)
+    engine = _engine_facts(retriever, corpus_ids=corpus_ids)
     embedder_present = bool(engine.get("embedder_present"))
     reports = {
         arm: _measure_arm(retriever, rows, arm, k=k, corpus_ids=corpus_ids) for arm in wanted
@@ -363,6 +398,8 @@ def measure(
         exit_code = 1 if failures else 0
     return {
         "schema": "cela.retrieval.v1",
+        "backend": str(engine.get("backend", "off")),
+        "space": engine.get("space"),
         "n": n,
         "k": k,
         "corpora": sorted(set(_scope(corpus_ids))),
@@ -400,10 +437,12 @@ def write_report(path: str | Path, report: Mapping[str, Any]) -> Path:
 
 __all__ = [
     "ARM_CHOICES",
+    "DEFAULT_CORPUS_DIR",
     "DEFAULT_GOLDEN",
     "MRR_FLOOR",
     "RECALL_FLOOR",
     "THREE_WAY",
+    "default_corpus_dir",
     "default_golden_path",
     "floors",
     "load_golden",

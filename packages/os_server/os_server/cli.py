@@ -496,6 +496,7 @@ def _store_url(flag: str | None, env: str, label: str) -> str | None:
 
 
 def _memory_layer(store_url: str | None, namespace: str | None = None):
+    from os_tools.embedding import embedding_backend_from_env
     from os_tools.local_ai import LocalAIEngine
 
     from os_memory import MemoryManager, memory_store_from_url, normalize_namespace
@@ -506,10 +507,13 @@ def _memory_layer(store_url: str | None, namespace: str | None = None):
         return None
     try:
         space = normalize_namespace(namespace or os.environ.get(ENV_MEMORY_NAMESPACE))
-    except ValueError as exc:
+        embedder = embedding_backend_from_env()
+    except (RuntimeError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return None
-    return MemoryManager(memory_store_from_url(url), LocalAIEngine(), namespace=space)
+    return MemoryManager(
+        memory_store_from_url(url), LocalAIEngine(), namespace=space, embedder=embedder
+    )
 
 
 def _know_layer(store_url: str | None):
@@ -864,18 +868,89 @@ def _skills_export(store, skill_id: str, *, output: str | None) -> int:
     return 0
 
 
+def _know_stats(retriever, *, corpus: str | None = None, as_json: bool = False) -> int:
+    report = retriever.retrieval_report(corpus_ids=corpus)
+    if as_json:
+        print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+    vectors = report.get("vectors", {})
+    print(
+        f"backend={report['backend']} space={report.get('space') or 'none'} "
+        f"fusion={report['fusion']} arms={','.join(report['arms'])} "
+        f"chunks={vectors.get('chunks', 0)} vectors={vectors.get('vectors', 0)} "
+        f"spaces={json.dumps(vectors.get('spaces', {}), sort_keys=True)}"
+    )
+    if report.get("dense_note"):
+        print(f"note: {report['dense_note']}")
+    return 0
+
+
+def _know_reindex(
+    store,
+    *,
+    corpus: str | None = None,
+    batch_size: int = 64,
+    dry_run: bool = False,
+    assume_yes: bool = False,
+    as_json: bool = False,
+) -> int:
+    if getattr(store, "embedder", None) is None:
+        print(
+            "error: cannot reindex without an active embedding backend "
+            "(set CELA_EMBED_BACKEND=local|model|provider)",
+            file=sys.stderr,
+        )
+        return 2
+    if batch_size < 1:
+        print(f"error: --batch-size must be >= 1, got {batch_size}", file=sys.stderr)
+        return 2
+    if not dry_run and not assume_yes:
+        print(
+            "error: reindex rewrites stored vector columns; pass --dry-run to preview "
+            "or --yes to confirm",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        report = store.reindex(
+            corpus_ids=corpus,
+            batch_size=batch_size,
+            dry_run=dry_run,
+        )
+    except Exception as exc:
+        print(f"error: reindex failed: {exc}", file=sys.stderr)
+        return 1
+
+    if as_json:
+        print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+
+    mode = "dry-run" if report["dry_run"] else "reindexed"
+    before = report["space_before"] or "none"
+    after = report["space_after"] or "unknown"
+    print(
+        f"{mode}: backend={report['backend']} space={before} -> {after} "
+        f"chunks={report['chunks']} reindexed={report['reindexed']} "
+        f"vectors={report['vectors_before']} -> {report['vectors_after']} "
+        f"batches={report['batches']} (batch_size={report['batch_size']}) "
+        f"last_truncated={report['last_truncated']}"
+    )
+    return 0
+
+
 def _know_eval(
     store,
     retriever,
-    golden_path: str,
+    golden_path: str | None,
     *,
     k: int,
     corpus: list[str] | None = None,
     arm: str = "all",
 ) -> int:
-    from os_evals.retrieval import load_golden, measure
+    from os_evals.retrieval import DEFAULT_GOLDEN, load_golden, measure
 
-    rows = load_golden(golden_path, store=store)
+    resolved = pathlib.Path(golden_path) if golden_path else DEFAULT_GOLDEN
+    rows = load_golden(resolved, store=store)
     report = measure(
         retriever,
         rows,
@@ -1106,7 +1181,9 @@ def main(argv: list[str] | None = None) -> int:
         "--store-url", default=None, help="sqlite:///<path> or CELA_SKILL_STORE_URL"
     )
 
-    know = sub.add_parser("know", help="document corpus: index, search, eval (ADR-0016)")
+    know = sub.add_parser(
+        "know", help="document corpus: index, search, stats, reindex, eval (ADR-0016, ADR-0022)"
+    )
     know_sub = know.add_subparsers(dest="know_command", required=True)
     k = know_sub.add_parser("index", help="index one file or research paper into a corpus")
     k.add_argument("path")
@@ -1137,8 +1214,39 @@ def main(argv: list[str] | None = None) -> int:
     k.add_argument("--corpus", default=None)
     k.add_argument("--top-k", type=int, default=5)
     k.add_argument("--store-url", default=None, help="sqlite:///<path> or CELA_KNOW_STORE_URL")
+    k = know_sub.add_parser("stats", help="inspect stored chunk/vector coverage without querying")
+    k.add_argument("--corpus", default=None, help="restrict report to this corpus")
+    k.add_argument("--json", action="store_true", help="machine-readable retrieval report")
+    k.add_argument("--store-url", default=None, help="sqlite:///<path> or CELA_KNOW_STORE_URL")
+    k = know_sub.add_parser(
+        "reindex", help="re-embed stored chunk text under the active embedding backend"
+    )
+    k.add_argument("--corpus", default=None, help="re-embed only this corpus")
+    k.add_argument(
+        "--batch-size",
+        type=int,
+        default=64,
+        help="maximum chunks embedded per backend call (default: 64)",
+    )
+    k_mode = k.add_mutually_exclusive_group()
+    k_mode.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="report space transition and truncation count without embedding or writing",
+    )
+    k_mode.add_argument(
+        "--yes",
+        action="store_true",
+        help="confirm replacing stored vector columns in place",
+    )
+    k.add_argument("--json", action="store_true", help="machine-readable reindex report")
+    k.add_argument("--store-url", default=None, help="sqlite:///<path> or CELA_KNOW_STORE_URL")
     k = know_sub.add_parser("eval", help="recall@k / MRR against a golden JSONL set")
-    k.add_argument("--golden", required=True, help='JSONL: {"q": ..., "docs": [...]}')
+    k.add_argument(
+        "--golden",
+        default=None,
+        help='JSONL: {"q": ..., "docs": [...]} (default: tests/fixtures/golden.jsonl)',
+    )
     k.add_argument("--corpus", default=None, help="restrict scoring to these corpora")
     k.add_argument("--k", type=int, default=5)
     k.add_argument(
@@ -1249,6 +1357,17 @@ def main(argv: list[str] | None = None) -> int:
             )
         if args.know_command == "search":
             return _know_search(retriever, args.query, corpus=args.corpus, top_k=args.top_k)
+        if args.know_command == "stats":
+            return _know_stats(retriever, corpus=args.corpus, as_json=args.json)
+        if args.know_command == "reindex":
+            return _know_reindex(
+                store,
+                corpus=args.corpus,
+                batch_size=args.batch_size,
+                dry_run=args.dry_run,
+                assume_yes=args.yes,
+                as_json=args.json,
+            )
         return _know_eval(
             store, retriever, args.golden, k=args.k, corpus=args.corpus, arm=args.arm
         )
@@ -1257,9 +1376,17 @@ def main(argv: list[str] | None = None) -> int:
         return _telemetry_export(args)
 
     if args.command == "serve":
+        from os_tools.embedding import embedding_backend_from_env
+
         from os_server.app import serve
         from os_server.demo import build_demo_platform_for
         from os_server.runtime import resolve_private_token, resolve_token
+
+        try:
+            embedding_backend_from_env()
+        except (RuntimeError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
 
         api_token = resolve_token()
         if not api_token:
@@ -1318,12 +1445,19 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     from os_core.models import describe_execution
+    from os_tools.embedding import embedding_backend_from_env
 
     from os_server.demo import (
         build_demo_platform,
         free_tier_model_from_env,
         is_live_provider_enabled,
     )
+
+    try:
+        embedding_backend_from_env()
+    except (RuntimeError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
 
     mode = "flow" if args.command == "flow" else "react"
     demo_forced = bool(getattr(args, "demo", False))

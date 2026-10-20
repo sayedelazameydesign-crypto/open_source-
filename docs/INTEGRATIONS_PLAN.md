@@ -413,29 +413,24 @@ cela telemetry export [--run-id …] [--out trace.json] [--send]  # ‏--send ي
 
 ---
 
-## ١٠-ب) ذراع المتجهات — منقول عن PR #31 (2026-10-16)، غير مُعاد 2026-10-20
+## ١٠-ب) ذراع المتجهات — السجل المنقول عن PR #31 وإعادة القياس على الرأس الحالي (Gate 5–6)
 
-**ليست أرقام `main` اليوم.** لا `os_evals.retrieval` ولا `golden.jsonl` في الشجرة عند
-`9d2c1ea`. النقل والجرد والأوامر:
-[`docs/verification/gate-zero-pr31-2026-10-20.md`](verification/gate-zero-pr31-2026-10-20.md).
-القرار المقترح (غير مُنفَّذ): [ADR-0022](../adr/0022-stored-vectors-and-hybrid-retrieval.md).
+السجل التاريخي المنقول عن PR #31 (2026-10-16) محفوظ كما هو بلا تعديل في
+[`docs/verification/gate-zero-pr31-2026-10-20.md`](verification/gate-zero-pr31-2026-10-20.md)
+بوصفه **نقلًا تاريخيًا (`منقول`)** عن فرع `hash-v1@512`:
 
-على 21 سؤالًا / 6 مستندات، SQLite، فضاء اختبار `hash-v1@512` (أسلاك لا دلالة):
+| المصدر | الفضاء | الذراع | recall@5 | MRR | empty | سياق/استعلام | dense_only_hits |
+|---|---|---|---|---|---|---|---|
+| منقول عن PR #31 (2026-10-16) | `hash-v1@512` *(اختبار)* | `sparse` / `hybrid` | 1.0 | 0.9762 | 0.0 | 1040.0 | 0 |
+| مُقاس على هذا الرأس (`python -m os_evals retrieval --arm all`) | `backend="off"`, `space=null` | `sparse` / `hybrid` | 1.0 | 0.9762 | 0.0 | 1040.0 | 0 |
+| مُقاس على هذا الرأس (`cela know eval --arm all`) | `backend="off"`, `space=null` | `sparse` / `hybrid` | 1.0 | 0.9762 | 0.0 | 1171.9 | 0 |
+| مُقاس على هذا الرأس (`python -m os_evals retrieval --arm all`) | `backend="local"`, `space="feature-hash-v1@512"` | `dense` *(منفردًا)* | **0.4286** | **0.4286** | **0.5714** | 94.3 | 9 |
+| مُقاس على هذا الرأس (`python -m os_evals retrieval --arm all`) | `backend="local"`, `space="feature-hash-v1@512"` | `hybrid` مقابل `sparse` | 1.0 | 0.9762 | 0.0 | 1040.0 | 0 |
 
-| الذراع | recall@5 | MRR | empty | سياق/استعلام | dense_only_hits |
-|---|---|---|---|---|---|
-| `sparse` | 1.0 | 0.9762 | 0.0 | 1040.0 | 0 |
-| `hybrid` | 1.0 | 0.9762 | 0.0 | 1040.0 | 0 |
-
-`delta = 0` في الترتيب والسياق. شارك dense في 9/21 بلا تغيير رتبة. **لا يُعلَن تحسّن.**
-
-**Gate 4 (2026-10-20):** خلفيات التضمين صارت موجودة خلف الأعلام في
-`os_tools/embedding.py` — [`ADR-0023`](../adr/0023-embedding-backends-behind-flags.md).
-الافتراضي ما زال `off`؛ `provider` يفشل مغلقًا (علم + قائمة مضيفين + فحص
-`EgressPolicy(tool="embeddings")`)، و`model` لا ينزّل أوزانًا بلا إذن، والوسم يُكتب
-بعد `embed()`. **لم يُعَد قياس أي رقم في هذا البند**؛ الأرقام أعلاه تبقى منقولة.
-سقف توكنز 512 على متْن عربي طويل (منقول أيضًا) لم يحرّك recall/MRR وخفّض السياق ≈5.7×
-ومنع تجاوز 615>512؛ الإنجليزية لم تتغير. يُعاد الأمر في Gate 2 قبل استبدال أي خلية هنا.
+* **`Δ = 0` صراحةً** بين `hybrid` و`sparse` على `off` وعلى `local` (`delta = {"recall_at_k": 0.0, "mrr": 0.0, "avg_context_chars": 0.0, "dense_only_hits": 0}`). **لا يُعلَن أي تحسّن جودة.**
+* على الذراع `dense` منفردًا تسقط `local` تحت السقف (`0.4286 < 0.8`, `exit 1`)، ما يؤكد تجريبيًا أنها خلفية فحص أسلاك لا تمثيلًا دلاليًا، وأن `off` يبقى الافتراضي الصحيح ([ADR-0022](../adr/0022-stored-vectors-and-hybrid-retrieval.md) · [ADR-0023](../adr/0023-embedding-backends-behind-flags.md)). الأوامر الكاملة في [`docs/verification/gate-six-retrieval-remeasurement-2026-10-20.md`](verification/gate-six-retrieval-remeasurement-2026-10-20.md).
+* أرقام المتْن العربي الطويل ذي الـ`262,915` حرفًا (`168 → 332` قطعة، `23,158 → 4,071` حرف/استعلام) تبقى **منقولة عن PR #31**؛ أمّا سقف `MAX_TOKENS = 512` في `os_know.chunking` فمُنفَّذ ومُتحقَّق منه آليًا على الرأس الحالي في `tests/test_retrieval_eval.py`.
+* **Gate 7 (`os_memory`):** وُصل `MemoryManager` و`MemoryRetriever` بالمُضمِّن الاختياري نفسه مع بقاء `off` افتراضيًا؛ الكتابة fail-open لا تُسقط السجل عند عطل التضمين وتُحصي الأعطال في `stats["vector_errors"]`، والقراءة ترفض أي متجه من فضاء `model@dim` مغاير وتدمج وزنيًّا (`0.6` سطحي / `0.4` كثيف مع `MIN_DENSE_SCORE = 0.35`) بما يصون دلالة `min_score` القائمة (`tests/test_memory_vectors.py`).
 
 ---
 

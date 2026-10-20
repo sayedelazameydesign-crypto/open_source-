@@ -12,7 +12,7 @@ memory is the one component whose bad input keeps working against you.
 from os_memory.distiller import distill_run, tool_trace
 from os_memory.gate import GateDecision, MemoryGate
 from os_memory.manager import MemoryManager
-from os_memory.retriever import MemoryRetriever
+from os_memory.retriever import DENSE_WEIGHT, MIN_DENSE_SCORE, SURFACE_WEIGHT, MemoryRetriever
 from os_memory.store import (
     InMemoryMemoryStore,
     MemoryStore,
@@ -35,7 +35,10 @@ from os_memory.types import (
 
 __all__ = [
     "DEFAULT_NAMESPACE",
+    "DENSE_WEIGHT",
     "MEMORY_BOUNDARY",
+    "MIN_DENSE_SCORE",
+    "SURFACE_WEIGHT",
     "GateDecision",
     "InMemoryMemoryStore",
     "MemoryGate",

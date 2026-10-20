@@ -14,7 +14,15 @@ the chunkers are the node stage, :class:`SQLiteKnowStore` the index, and
 :class:`KnowRetriever` the retriever.
 """
 
-from os_know.chunking import chunk_code, chunk_for, chunk_markdown, chunk_python, chunk_text
+from os_know.chunking import (
+    MAX_CHARS,
+    MAX_TOKENS,
+    chunk_code,
+    chunk_for,
+    chunk_markdown,
+    chunk_python,
+    chunk_text,
+)
 from os_know.metrics import evaluate, mrr, recall_at_k
 from os_know.papers import (
     DEFAULT_PAPER_CORPUS,
@@ -26,6 +34,7 @@ from os_know.papers import (
 from os_know.reader import index_path, mime_for, read_document
 from os_know.retrieve import MIN_DENSE_SCORE, KnowRetriever
 from os_know.store import (
+    DEFAULT_REINDEX_BATCH_SIZE,
     InMemoryKnowStore,
     KnowStore,
     SQLiteKnowStore,
@@ -36,6 +45,9 @@ from os_know.types import Chunk, Corpus, Document, DocumentInput, KnowHit
 
 __all__ = [
     "DEFAULT_PAPER_CORPUS",
+    "DEFAULT_REINDEX_BATCH_SIZE",
+    "MAX_CHARS",
+    "MAX_TOKENS",
     "MIN_DENSE_SCORE",
     "Chunk",
     "Corpus",

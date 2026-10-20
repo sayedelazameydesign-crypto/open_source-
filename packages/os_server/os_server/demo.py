@@ -364,15 +364,21 @@ def demo_memory_manager(ai_engine: Any = None) -> Any:
     if not url:
         return None
     if _MEMORY_MANAGER is None:
+        from os_tools.embedding import embedding_backend_from_env
         from os_tools.local_ai import LocalAIEngine
 
         from os_memory import MemoryManager, memory_store_from_url, normalize_namespace
 
         engine = ai_engine if ai_engine is not None else LocalAIEngine()
+        # Same fail-closed startup switch as ``demo_know_layer`` (ADR-0023): unset
+        # ``CELA_EMBED_BACKEND`` resolves to ``None`` (sparse), while an unknown or
+        # unauthorized backend raises at startup instead of silently disabling
+        # memory. Runtime ``embed()`` errors inside ``MemoryManager`` fail open.
         _MEMORY_MANAGER = MemoryManager(
             memory_store_from_url(url),
             engine,
             namespace=normalize_namespace(os.environ.get(ENV_MEMORY_NAMESPACE)),
+            embedder=embedding_backend_from_env(),
         )
     return _MEMORY_MANAGER
 

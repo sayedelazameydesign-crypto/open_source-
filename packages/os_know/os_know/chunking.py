@@ -11,25 +11,44 @@ from __future__ import annotations
 
 import ast
 
+from os_core.tokens import token_budget_chars
+
 from os_know.types import ChunkDraft
 
 #: A chunk bigger than this is split again; smaller than ``min_chars`` it is
 #: merged forward, so a one-line heading never becomes its own retrieval unit.
 MAX_CHARS = 1600
+#: Named token ceiling (ADR-0022 decision 8), converted per dominant script via
+#: :func:`os_core.tokens.token_budget_chars` (1331 chars for Arabic vs 2048 for
+#: Latin, bounded additionally by :data:`MAX_CHARS`). Pass ``max_tokens=None``
+#: only when reproducing pre-Gate-6 character-only measurements.
+MAX_TOKENS = 512
 MIN_CHARS = 80
 
 
-def _split_long(text: str, limit: int) -> list[str]:
-    if len(text) <= limit:
+def _effective_limit(text: str, max_chars: int, max_tokens: int | None) -> int:
+    if max_tokens is None:
+        return max_chars
+    return min(max_chars, token_budget_chars(text, max_tokens))
+
+
+def _split_long(
+    text: str, limit: int, *, max_tokens: int | None = MAX_TOKENS
+) -> list[str]:
+    eff = _effective_limit(text, limit, max_tokens)
+    if len(text) <= eff:
         return [text]
     pieces: list[str] = []
     rest = text
-    while len(rest) > limit:
-        cut = rest.rfind("\n\n", 0, limit)
-        if cut < limit // 2:
-            cut = rest.rfind("\n", 0, limit)
-        if cut < limit // 2:
-            cut = limit
+    while True:
+        step = _effective_limit(rest, limit, max_tokens)
+        if len(rest) <= step:
+            break
+        cut = rest.rfind("\n\n", 0, step)
+        if cut < step // 2:
+            cut = rest.rfind("\n", 0, step)
+        if cut < step // 2:
+            cut = step
         pieces.append(rest[:cut].rstrip())
         rest = rest[cut:].lstrip("\n")
     if rest:
@@ -41,7 +60,12 @@ def _line_of(text: str, offset: int) -> int:
     return text.count("\n", 0, offset) + 1
 
 
-def chunk_markdown(text: str, *, max_chars: int = MAX_CHARS) -> list[ChunkDraft]:
+def chunk_markdown(
+    text: str,
+    *,
+    max_chars: int = MAX_CHARS,
+    max_tokens: int | None = MAX_TOKENS,
+) -> list[ChunkDraft]:
     """Split on ATX headings, keeping the heading trail as the chunk's title."""
     lines = str(text).splitlines()
     drafts: list[tuple[list[str], int, int, list[str]]] = []  # (heading trail, start, end, body)
@@ -73,7 +97,7 @@ def chunk_markdown(text: str, *, max_chars: int = MAX_CHARS) -> list[ChunkDraft]
         block = "\n".join(body_lines).strip()
         if not block:
             continue
-        for piece in _split_long(block, max_chars):
+        for piece in _split_long(block, max_chars, max_tokens=max_tokens):
             out.append(
                 ChunkDraft(
                     text=piece,
@@ -87,7 +111,12 @@ def chunk_markdown(text: str, *, max_chars: int = MAX_CHARS) -> list[ChunkDraft]
     return out
 
 
-def chunk_python(text: str, *, max_chars: int = MAX_CHARS) -> list[ChunkDraft]:
+def chunk_python(
+    text: str,
+    *,
+    max_chars: int = MAX_CHARS,
+    max_tokens: int | None = MAX_TOKENS,
+) -> list[ChunkDraft]:
     """Split on top-level and nested defs/classes using the AST, not a regex.
 
     A syntax error is not a failure mode here: unparseable Python is still
@@ -98,7 +127,7 @@ def chunk_python(text: str, *, max_chars: int = MAX_CHARS) -> list[ChunkDraft]:
     try:
         tree = ast.parse(source)
     except SyntaxError:
-        return chunk_text(source)
+        return chunk_text(source, max_tokens=max_tokens)
 
     out: list[ChunkDraft] = []
     lines = source.splitlines()
@@ -110,7 +139,7 @@ def chunk_python(text: str, *, max_chars: int = MAX_CHARS) -> list[ChunkDraft]:
         name = getattr(node, "name", "")
         heading = f"{prefix}{name}" if name else prefix
         if block.strip():
-            for piece in _split_long(block, max_chars):
+            for piece in _split_long(block, max_chars, max_tokens=max_tokens):
                 out.append(
                     ChunkDraft(
                         text=piece,
@@ -143,11 +172,17 @@ def chunk_python(text: str, *, max_chars: int = MAX_CHARS) -> list[ChunkDraft]:
                 )
             )
     if not out:  # a file of only imports/comments
-        return chunk_text(source)
+        return chunk_text(source, max_tokens=max_tokens)
     return out
 
 
-def chunk_text(text: str, *, size: int = 1200, overlap: int = 200) -> list[ChunkDraft]:
+def chunk_text(
+    text: str,
+    *,
+    size: int = 1200,
+    overlap: int = 200,
+    max_tokens: int | None = MAX_TOKENS,
+) -> list[ChunkDraft]:
     """Sliding window on paragraph boundaries, with overlap so a fact spanning a
     boundary is still reachable from either side."""
     source = "\n".join(line.rstrip() for line in str(text).splitlines()).strip()
@@ -160,34 +195,44 @@ def chunk_text(text: str, *, size: int = 1200, overlap: int = 200) -> list[Chunk
     chunk_start = 1
     for para in paragraphs:
         candidate = f"{buffer}\n\n{para}" if buffer else para
-        if len(candidate) > size and buffer:
+        limit = _effective_limit(candidate, size, max_tokens)
+        if len(candidate) > limit and buffer:
             drafts.append(_draft(buffer, chunk_start, line_no - 1, len(drafts)))
             tail = buffer[-overlap:] if overlap > 0 else ""
             buffer, chunk_start = tail, max(line_no - 1, 1)
             candidate = f"{buffer}\n\n{para}" if buffer else para
-        if len(candidate) > size:
-            # A single oversized paragraph: emit it whole rather than lose it.
+            limit = _effective_limit(candidate, size, max_tokens)
+        if len(candidate) > limit:
             if buffer:
                 drafts.append(_draft(buffer, chunk_start, line_no - 1, len(drafts)))
                 buffer, chunk_start = "", line_no
-            drafts.append(_draft(para, line_no, line_no + para.count("\n"), len(drafts)))
+            if max_tokens is not None:
+                for piece in _split_long(para, size, max_tokens=max_tokens):
+                    drafts.append(
+                        _draft(piece, line_no, line_no + piece.count("\n"), len(drafts))
+                    )
+            else:
+                drafts.append(_draft(para, line_no, line_no + para.count("\n"), len(drafts)))
             line_no += para.count("\n") + 2
             continue
         buffer, line_no = candidate, line_no + para.count("\n") + 2
     if buffer:
         drafts.append(_draft(buffer, chunk_start, max(line_no - 2, chunk_start), len(drafts)))
-    # Merge drafts that came out too short to be worth their own retrieval slot.
+    # Merge drafts that came out too short to be worth their own retrieval slot,
+    # unless merging would blow past ``max_tokens``.
     merged: list[ChunkDraft] = []
     for draft in drafts:
         if merged and len(draft.text) < MIN_CHARS:
             previous = merged[-1]
-            merged[-1] = previous.model_copy(
-                update={
-                    "text": f"{previous.text}\n\n{draft.text}",
-                    "end_line": draft.end_line,
-                }
-            )
-            continue
+            combined = f"{previous.text}\n\n{draft.text}"
+            if len(combined) <= _effective_limit(combined, MAX_CHARS, max_tokens):
+                merged[-1] = previous.model_copy(
+                    update={
+                        "text": combined,
+                        "end_line": draft.end_line,
+                    }
+                )
+                continue
         merged.append(draft.model_copy(update={"ordinal": len(merged)}))
     return merged
 
@@ -202,32 +247,41 @@ def _draft(text: str, start_line: int, end_line: int, ordinal: int) -> ChunkDraf
     )
 
 
-def chunk_code(text: str, *, language: str = "") -> list[ChunkDraft]:
+def chunk_code(
+    text: str, *, language: str = "", max_tokens: int | None = MAX_TOKENS
+) -> list[ChunkDraft]:
     """Dispatch for source files; only Python is structure-aware today."""
     if language.lower() in {"python", "py"} or (not language):
         try:
             ast.parse(text)
         except SyntaxError:
-            return chunk_text(text)
-        return chunk_python(text)
-    return chunk_text(text)
+            return chunk_text(text, max_tokens=max_tokens)
+        return chunk_python(text, max_tokens=max_tokens)
+    return chunk_text(text, max_tokens=max_tokens)
 
 
 _CODE_MIMES = {"text/x-python", "application/x-python", "text/x-c", "text/plain"}
 
 
-def chunk_for(text: str, *, mime: str = "text/markdown", language: str = "") -> list[ChunkDraft]:
+def chunk_for(
+    text: str,
+    *,
+    mime: str = "text/markdown",
+    language: str = "",
+    max_tokens: int | None = MAX_TOKENS,
+) -> list[ChunkDraft]:
     """The one entry point the store uses."""
     lowered = (mime or "").lower()
     if lowered.startswith("text/markdown") or language.lower() in {"md", "markdown"}:
-        return chunk_markdown(text)
+        return chunk_markdown(text, max_tokens=max_tokens)
     if language.lower() in {"python", "py"} or lowered in _CODE_MIMES:
-        return chunk_code(text, language=language)
-    return chunk_text(text)
+        return chunk_code(text, language=language, max_tokens=max_tokens)
+    return chunk_text(text, max_tokens=max_tokens)
 
 
 __all__ = [
     "MAX_CHARS",
+    "MAX_TOKENS",
     "MIN_CHARS",
     "chunk_code",
     "chunk_for",

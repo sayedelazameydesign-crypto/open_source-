@@ -91,8 +91,14 @@ def _retrieval(args) -> int:
     from os_tools.embedding import embedding_backend_from_env
     from os_tools.local_ai import LocalAIEngine
 
-    from os_evals.retrieval import load_golden, measure, write_report
-    from os_know import KnowRetriever, know_store_from_url
+    from os_evals.retrieval import (
+        DEFAULT_CORPUS_DIR,
+        DEFAULT_GOLDEN,
+        load_golden,
+        measure,
+        write_report,
+    )
+    from os_know import KnowRetriever, index_path, know_store_from_url
 
     try:
         # ``off`` when the environment says nothing, so the default run is the
@@ -102,14 +108,26 @@ def _retrieval(args) -> int:
     except (RuntimeError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    store = know_store_from_url(args.store_url, embedder=embedder)
+    store_url = args.store_url or os.environ.get("CELA_KNOW_STORE_URL", "").strip()
+    golden_path = Path(args.golden) if args.golden else DEFAULT_GOLDEN
+    corpus_scope = args.corpus
+    store = know_store_from_url(store_url, embedder=embedder)
     try:
-        rows = load_golden(args.golden, store=store, corpus_ids=args.corpus)
+        if (
+            not store_url
+            and golden_path.resolve() == DEFAULT_GOLDEN.resolve()
+            and DEFAULT_CORPUS_DIR.is_dir()
+        ):
+            for md in sorted(DEFAULT_CORPUS_DIR.glob("*.md")):
+                index_path(store, md, corpus_id="docs")
+            if corpus_scope is None:
+                corpus_scope = ["docs"]
+        rows = load_golden(golden_path, store=store, corpus_ids=corpus_scope)
         report = measure(
             KnowRetriever(store, LocalAIEngine()),
             rows,
             k=args.k,
-            corpus_ids=args.corpus,
+            corpus_ids=corpus_scope,
             arms=args.arm,
             recall_floor=args.fail_under_recall,
             mrr_floor=args.fail_under_mrr,
@@ -168,8 +186,16 @@ def main(argv: list[str] | None = None) -> int:
         "retrieval",
         help="score a golden set against a know-store, per arm (offline CI gate)",
     )
-    gate.add_argument("--golden", required=True, help='JSONL: {"q": ..., "doc"|"docs": ...}')
-    gate.add_argument("--store-url", required=True, help="sqlite:///<path> or memory://")
+    gate.add_argument(
+        "--golden",
+        default=None,
+        help='JSONL: {"q": ..., "doc"|"docs": ...} (default: tests/fixtures/golden.jsonl)',
+    )
+    gate.add_argument(
+        "--store-url",
+        default=None,
+        help="sqlite:///<path> or CELA_KNOW_STORE_URL (default: seed golden_corpus in memory)",
+    )
     gate.add_argument(
         "--corpus", action="append", default=None, help="restrict scoring to these corpora"
     )
