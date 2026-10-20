@@ -524,6 +524,19 @@ def _know_layer(store_url: str | None):
     return store, KnowRetriever(store, LocalAIEngine(), min_score=0.01)
 
 
+def _skill_store(store_url: str | None):
+    from os_skills import skill_store_from_url
+
+    url = _store_url(store_url, "CELA_SKILL_STORE_URL", "skills")
+    if url is None:
+        return None
+    try:
+        return skill_store_from_url(url)
+    except (RuntimeError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return None
+
+
 def _memory_stats(manager, *, as_json: bool) -> int:
     report = manager.report()
     if as_json:
@@ -631,33 +644,209 @@ def _memory_forget(manager, memory_id: str, *, assume_yes: bool) -> int:
     return 0
 
 
-def _know_index_file(store, path: str, *, corpus_id: str) -> int:
-    from os_know import read_document
+def _know_index_file(
+    store,
+    path: str,
+    *,
+    corpus_id: str | None,
+    paper: bool = False,
+    title: str = "",
+    authors: list[str] | None = None,
+    year: int | None = None,
+    doi: str = "",
+    source_uri: str = "",
+    license: str = "unknown",
+    content_kind: str = "full-text",
+) -> int:
+    target = pathlib.Path(path)
+    if not target.is_file():
+        print(f"error: not a file: {path}", file=sys.stderr)
+        return 1
+    # Paper metadata only means something on the paper path; a flag that would be
+    # silently dropped is refused instead (``--content-kind`` included).
+    if not paper and any(
+        (title, authors, year, doi, source_uri, license != "unknown", content_kind != "full-text")
+    ):
+        print("error: paper metadata flags require --paper", file=sys.stderr)
+        return 2
+    chosen_corpus = corpus_id or ("research-papers" if paper else "docs")
+    try:
+        if paper:
+            from os_know import index_research_paper_file
+
+            document = index_research_paper_file(
+                store,
+                target,
+                title=title,
+                authors=authors,
+                year=year,
+                doi=doi or None,
+                source_uri=source_uri or None,
+                license=license,
+                corpus_id=chosen_corpus,
+                content_kind=content_kind,
+            )
+        else:
+            from os_know import read_document
+
+            # The reader stage (ADR-0020): PDF/HTML/PNG get their text extracted
+            # locally (builtin OCR path), everything else is read verbatim — so one
+            # command indexes the formats a project's documentation actually ships in.
+            document = store.index_document(read_document(target, corpus_id=chosen_corpus))
+    except (OSError, UnicodeDecodeError, RuntimeError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if paper:
+        print(
+            f"indexed paper {document.title!r} ({document.doc_id}) "
+            f"in corpus={document.corpus_id} chunks={document.chunk_count}"
+        )
+    else:
+        print(
+            f"indexed {document.doc_id} in corpus={document.corpus_id} "
+            f"chunks={document.chunk_count}"
+        )
+    return 0
+
+
+def _hit_documents(store, hits) -> dict:
+    """Documents behind *hits* only — the citation lookup never scans the whole store.
+
+    The store has no point lookup, so the read is scoped to the corpora the hits
+    came from (one corpus for ``--corpus``) and filtered to the hit documents.
+    """
+    wanted = {hit.chunk.doc_id for hit in hits}
+    documents = {}
+    for corpus_id in sorted({hit.chunk.corpus_id for hit in hits}):
+        for document in store.list_documents(corpus_id=corpus_id):
+            if document.doc_id in wanted:
+                documents[document.doc_id] = document
+    return documents
+
+
+def _paper_citation_line(document) -> str:
+    metadata = document.metadata if document is not None else {}
+    if document is None or metadata.get("kind") != "research_paper":
+        return ""
+    details = []
+    if metadata.get("authors"):
+        details.append("authors=" + ", ".join(metadata["authors"]))
+    if metadata.get("year"):
+        details.append(f"year={metadata['year']}")
+    if metadata.get("doi"):
+        details.append(f"doi={metadata['doi']}")
+    if metadata.get("license"):
+        details.append(f"license={metadata['license']}")
+    citation_details = f" ({'; '.join(details)})" if details else ""
+    return f"paper: {document.title}{citation_details}\n"
+
+
+def _know_search(retriever, query: str, *, corpus: str | None, top_k: int) -> int:
+    hits = retriever.query(query, corpus_ids=[corpus] if corpus else None, top_k=top_k)
+    if not hits:
+        print("no hits (an unscoped query only reads corpora open to agents)")
+        return 1
+    documents = _hit_documents(retriever.store, hits)
+    for hit in hits:
+        flag = " [untrusted source]" if hit.chunk.untrusted else ""
+        paper_line = _paper_citation_line(documents.get(hit.chunk.doc_id))
+        print(
+            f"{paper_line}[{hit.score:.2f}] {hit.chunk.citation()}{flag}\n{hit.chunk.text[:400]}\n"
+        )
+    return 0
+
+
+def _skills_import(store, path: str, *, allow_unlicensed: bool = False) -> int:
+    from os_skills.skill_md import MAX_SKILL_FILE_BYTES, parse_skill_md
 
     target = pathlib.Path(path)
     if not target.is_file():
         print(f"error: not a file: {path}", file=sys.stderr)
         return 1
     try:
-        # The reader stage (ADR-0020): PDF/HTML/PNG get their text extracted
-        # locally (builtin OCR path), everything else is read verbatim — so one
-        # command indexes the formats a project's documentation actually ships in.
-        document = store.index_document(read_document(target, corpus_id=corpus_id))
-    except ValueError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        if target.stat().st_size > MAX_SKILL_FILE_BYTES:
+            print(
+                f"error: SKILL.md exceeds the {MAX_SKILL_FILE_BYTES}-byte limit",
+                file=sys.stderr,
+            )
+            return 1
+        text = target.read_text(encoding="utf-8", errors="strict")
+    except (OSError, UnicodeDecodeError) as exc:
+        print(f"error: SKILL.md must be readable UTF-8 ({type(exc).__name__})", file=sys.stderr)
         return 1
-    print(f"indexed {document.doc_id} in corpus={document.corpus_id} chunks={document.chunk_count}")
+    report = parse_skill_md(
+        text,
+        path=str(target.resolve()),
+        allow_unlicensed=allow_unlicensed,
+    )
+    if not report.ok or report.skill is None:
+        print(f"refused: {'; '.join(report.errors)}", file=sys.stderr)
+        return 1
+    existing = store.get_skill(report.skill.skill_id)
+    if existing is not None and existing.content_sha256 == report.skill.content_sha256:
+        print(f"already imported {existing.skill_id} status={existing.status}")
+        return 0
+    store.save_skill(report.skill)
+    warning = f" warnings={','.join(report.warnings)}" if report.warnings else ""
+    print(
+        f"imported {report.skill.skill_id} name={report.skill.name!r} "
+        f"status=candidate license={report.skill.license}{warning}"
+    )
+    print("note: imported guidance is not executable and remains a candidate until evaluated")
     return 0
 
 
-def _know_search(retriever, query: str, *, corpus: str | None, top_k: int) -> int:
-    hits = retriever.query(query, corpus_ids=[corpus] if corpus else None, top_k=top_k)
-    for hit in hits:
-        flag = " [untrusted web]" if hit.chunk.untrusted else ""
-        print(f"[{hit.score:.2f}] {hit.chunk.citation()}{flag}\n{hit.chunk.text[:400]}\n")
-    if not hits:
-        print("no hits (an unscoped query only reads corpora open to agents)")
+def _skills_list(store, *, as_json: bool) -> int:
+    skills = store.list_skills()
+    if as_json:
+        print(
+            json.dumps(
+                [
+                    {
+                        "skill_id": skill.skill_id,
+                        "name": skill.name,
+                        "description": skill.description,
+                        "status": skill.status,
+                        "origin": skill.origin,
+                        "license": skill.license,
+                        "source_uri": skill.source_uri,
+                        "content_sha256": skill.content_sha256,
+                    }
+                    for skill in skills
+                ],
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+    if not skills:
+        print("skills: empty")
+        return 0
+    for skill in skills:
+        print(
+            f"{skill.skill_id}  {skill.status:<12} {skill.origin:<8} "
+            f"license={skill.license or 'unknown'}  {skill.name}"
+        )
+    return 0
+
+
+def _skills_export(store, skill_id: str, *, output: str | None) -> int:
+    from os_skills.skill_md import format_skill_md
+
+    skill = store.get_skill(skill_id)
+    if skill is None:
+        print(f"error: no skill {skill_id!r}", file=sys.stderr)
         return 1
+    text = format_skill_md(skill)
+    if output:
+        try:
+            pathlib.Path(output).write_text(text, encoding="utf-8")
+        except OSError as exc:
+            print(f"error: could not write skill ({type(exc).__name__})", file=sys.stderr)
+            return 1
+        print(f"exported {skill.skill_id} to {output}")
+    else:
+        print(text, end="")
     return 0
 
 
@@ -878,11 +1067,53 @@ def main(argv: list[str] | None = None) -> int:
     m.add_argument("--namespace", default=None, help=namespace_help)
     del memory_store_flag
 
+    skills = sub.add_parser("skills", help="reviewable skill library: import, list, export")
+    skills_sub = skills.add_subparsers(dest="skills_command", required=True)
+    skill_import = skills_sub.add_parser("import", help="import one licensed SKILL.md as candidate")
+    skill_import.add_argument("path")
+    skill_import.add_argument(
+        "--allow-unlicensed", action="store_true", help="store as unlicensed; never executable"
+    )
+    skill_import.add_argument(
+        "--store-url", default=None, help="sqlite:///<path> or CELA_SKILL_STORE_URL"
+    )
+    skill_list = skills_sub.add_parser("list", help="list the stored skills")
+    skill_list.add_argument("--json", action="store_true")
+    skill_list.add_argument(
+        "--store-url", default=None, help="sqlite:///<path> or CELA_SKILL_STORE_URL"
+    )
+    skill_export = skills_sub.add_parser("export", help="export one skill as SKILL.md")
+    skill_export.add_argument("skill_id")
+    skill_export.add_argument("--out", default=None, help="write to a file instead of stdout")
+    skill_export.add_argument(
+        "--store-url", default=None, help="sqlite:///<path> or CELA_SKILL_STORE_URL"
+    )
+
     know = sub.add_parser("know", help="document corpus: index, search, eval (ADR-0016)")
     know_sub = know.add_subparsers(dest="know_command", required=True)
-    k = know_sub.add_parser("index", help="index one file into a corpus")
+    k = know_sub.add_parser("index", help="index one file or research paper into a corpus")
     k.add_argument("path")
-    k.add_argument("--corpus", default="docs")
+    k.add_argument("--corpus", default=None)
+    k.add_argument(
+        "--paper",
+        action="store_true",
+        help="treat this as a paper; accepts PDF, Markdown or text",
+    )
+    k.add_argument("--title", default="", help="paper title (defaults to filename)")
+    k.add_argument(
+        "--author",
+        action="append",
+        dest="authors",
+        default=[],
+        help="author name; repeat for multiple authors",
+    )
+    k.add_argument("--year", type=int, default=None)
+    k.add_argument("--doi", default="")
+    k.add_argument("--source-uri", default="", help="public source URL; recorded but never fetched")
+    k.add_argument("--license", default="unknown", help="paper content licence, if known")
+    k.add_argument(
+        "--content-kind", default="full-text", choices=["abstract", "full-text", "notes"]
+    )
     k.add_argument("--store-url", default=None, help="sqlite:///<path> or CELA_KNOW_STORE_URL")
     k = know_sub.add_parser("search", help="query the corpus (citations included)")
     k.add_argument("query")
@@ -964,13 +1195,35 @@ def main(argv: list[str] | None = None) -> int:
             return _memory_recall(manager, args.query, top_k=args.top_k, as_json=args.json)
         return _memory_forget(manager, args.memory_id, assume_yes=args.yes)
 
+    if args.command == "skills":
+        store = _skill_store(args.store_url)
+        if store is None:
+            return 2
+        if args.skills_command == "import":
+            return _skills_import(store, args.path, allow_unlicensed=args.allow_unlicensed)
+        if args.skills_command == "list":
+            return _skills_list(store, as_json=args.json)
+        return _skills_export(store, args.skill_id, output=args.out)
+
     if args.command == "know":
         layer = _know_layer(args.store_url)
         if layer is None:
             return 2
         store, retriever = layer
         if args.know_command == "index":
-            return _know_index_file(store, args.path, corpus_id=args.corpus)
+            return _know_index_file(
+                store,
+                args.path,
+                corpus_id=args.corpus,
+                paper=args.paper,
+                title=args.title,
+                authors=args.authors,
+                year=args.year,
+                doi=args.doi,
+                source_uri=args.source_uri,
+                license=args.license,
+                content_kind=args.content_kind,
+            )
         if args.know_command == "search":
             return _know_search(retriever, args.query, corpus=args.corpus, top_k=args.top_k)
         return _know_eval(store, retriever, args.golden, k=args.k, corpus=args.corpus)

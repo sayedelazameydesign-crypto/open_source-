@@ -125,6 +125,7 @@ redistributed by us**. Licences verified against PyPI on 2026-10-15.
 | | `uvicorn` | BSD-3-Clause |
 | | `websockets` | BSD-3-Clause |
 | `browser` | `playwright` | Apache-2.0 |
+| `papers` | `pypdf` (`>=6.19.0`) | BSD-3-Clause ¹ |
 | `sandbox` | `e2b-code-interpreter` | MIT |
 | `distributed` | **`psycopg[binary]`** | **LGPL-3.0-only** ⚠️ |
 | | `redis` | MIT |
@@ -135,6 +136,10 @@ redistributed by us**. Licences verified against PyPI on 2026-10-15.
 | | `opencv-python-headless` | Apache-2.0 |
 | | `paddleocr` | Apache-2.0 |
 | | `faster-whisper` | MIT |
+
+¹ Added with the research-paper importer; licence read from PyPI
+(`license_expression`) on 2026-10-20. Optional: only PDF paper import needs it,
+and the CELA.PRO launcher/notebook install it on demand.
 
 > ### ⚠️ The one copyleft dependency: `psycopg`
 >

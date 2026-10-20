@@ -243,3 +243,35 @@ def test_reports_carry_a_content_hash_for_the_audit_trail() -> None:
     report = parse_skill_md(GOOD, path="skills/x/SKILL.md")
     assert report.sha256
     assert report.skill is not None and report.skill.source_uri.endswith("SKILL.md")
+
+
+def test_frontmatter_fences_tolerate_crlf_and_trailing_blanks() -> None:
+    """The ReDoS fix narrowed ``\\s*`` to ``[ \\t]*``; Windows files must still import."""
+    crlf = GOOD.replace("---\n", "---  \t\n").replace("\n", "\r\n")
+    report = parse_skill_md(crlf)
+    assert report.ok, report.errors
+    assert report.skill is not None
+    assert report.skill.name == "pdf-form-filler"
+    assert report.skill.license == "Apache-2.0"
+    assert report.skill.allowed_tools == ["python_execute", "read_file"]
+
+
+def test_an_unclosed_frontmatter_header_is_refused_in_linear_time() -> None:
+    """CodeQL py/polynomial-redos: ``---`` then blank lines and no closing fence.
+
+    The old ``\\A---\\s*\\n(.*?)\\n---`` let the opening fence end at every blank line
+    and rescanned the rest each time — quadratic; at the 32 KiB cap that was
+    seconds of CPU per uploaded file. The ceiling is generous on purpose (a slow
+    runner must not fail it); the fixed pattern needs well under a millisecond.
+    """
+    import time
+
+    from os_skills.skill_md import MAX_SKILL_FILE_CHARS
+
+    hostile = "---\n" + "\n " * ((MAX_SKILL_FILE_CHARS - 4) // 2)
+    assert len(hostile) <= MAX_SKILL_FILE_CHARS  # reaches the parser, not the size gate
+    started = time.perf_counter()
+    report = parse_skill_md(hostile)
+    elapsed = time.perf_counter() - started
+    assert not report.ok and "missing-frontmatter" in report.errors
+    assert elapsed < 1.0, f"frontmatter parsing took {elapsed:.2f}s on a hostile header"
