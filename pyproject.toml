@@ -90,6 +90,9 @@ Homepage = "https://github.com/sayedelazameydesign-crypto/open_source-"
 Repository = "https://github.com/sayedelazameydesign-crypto/open_source-"
 Issues = "https://github.com/sayedelazameydesign-crypto/open_source-/issues"
 
+[project.scripts]
+cela = "os_server.cli:main"
+
 # The optional `reach` extra pins Agent-Reach from GitHub by full commit SHA
 # (it is not published on PyPI on purpose). Hatchling refuses direct references
 # unless this is set, and without it `pip install -e ".[dev,server]"` fails at

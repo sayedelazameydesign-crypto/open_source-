@@ -26,6 +26,7 @@ from os_know.papers import (
 from os_know.reader import index_path, mime_for, read_document
 from os_know.retrieve import MIN_DENSE_SCORE, KnowRetriever
 from os_know.store import (
+    DEFAULT_REINDEX_BATCH_SIZE,
     InMemoryKnowStore,
     KnowStore,
     SQLiteKnowStore,
@@ -36,6 +37,7 @@ from os_know.types import Chunk, Corpus, Document, DocumentInput, KnowHit
 
 __all__ = [
     "DEFAULT_PAPER_CORPUS",
+    "DEFAULT_REINDEX_BATCH_SIZE",
     "MIN_DENSE_SCORE",
     "Chunk",
     "Corpus",
