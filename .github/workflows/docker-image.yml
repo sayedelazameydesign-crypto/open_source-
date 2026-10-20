@@ -1,0 +1,131 @@
+name: Docker image (build, smoke-test, GHCR)
+
+# CI for the deployable container image (root Dockerfile):
+#   1. docker build          — the exact image Back4App / ClawCloud Run build
+#   2. container smoke test  — boots uvicorn, asserts /health and the auth gate
+#   3. publish to GHCR       — main only, so ClawCloud can deploy the image
+#                             directly instead of building from Git each time
+#
+# Cost: $0 — this repository is public, and GitHub-hosted standard runners are
+# free with unlimited minutes for public repositories
+# (docs.github.com/en/actions/concepts/billing-and-usage).
+#
+# NOTE (ToS): this workflow is CI/CD for THIS repository's artifact — build,
+# test, publish. It must NOT be turned into an always-on host or a keep-alive
+# pinger: using Actions for general compute or persistent hosting violates the
+# GitHub Additional Product Terms and gets accounts suspended.
+
+on:
+  push:
+    branches: [main, "arena/**"]
+    paths:
+      - "Dockerfile"
+      - "deploy/g1a/**"
+      - "packages/**"
+      - "pyproject.toml"
+      - ".dockerignore"
+      - ".github/workflows/docker-image.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "Dockerfile"
+      - "deploy/g1a/**"
+      - "packages/**"
+      - "pyproject.toml"
+      - ".dockerignore"
+      - ".github/workflows/docker-image.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: docker-image-${{ github.ref }}
+  cancel-in-progress: true
+
+# NOTE: image names are computed at runtime (not here) because Docker
+# references must start/end with an alphanumeric — and this repository's name
+# ("open_source-") ends with a hyphen, which is an invalid reference format.
+# The compute step strips invalid trailing characters.
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-smoke-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ghcr.io/<owner>/<repo>, lowercased, with invalid trailing separators
+      # stripped: "open_source-" -> "open_source" (valid Docker reference).
+      - name: Compute docker-safe image name
+        run: |
+          set -euo pipefail
+          name="${GITHUB_REPOSITORY,,}"
+          while [[ "$name" =~ [-._]$ ]]; do name="${name%?}"; done
+          echo "IMAGE=ghcr.io/${name}"        >> "$GITHUB_ENV"
+          echo "IMAGE_SHA=ghcr.io/${name}:sha-${GITHUB_SHA}" >> "$GITHUB_ENV"
+          echo "image: ghcr.io/${name}"
+
+      - name: Build image (same Dockerfile the container platforms build)
+        run: |
+          set -uo pipefail
+          if ! docker build -t "$IMAGE_SHA" . > docker-build.log 2>&1; then
+            echo "::error::docker build failed: $(tail -c 600 docker-build.log | tr '\n' ' ')"
+            exit 1
+          fi
+
+      - name: Smoke test — container boots, /health ok, auth gate rejects
+        run: |
+          set -euo pipefail
+          docker run -d --name smoke \
+            -e CELA_API_TOKEN=ci-smoke-token \
+            -e CELA_PRIVATE_API_TOKEN=ci-smoke-private \
+            -p 8080:8080 "$IMAGE_SHA"
+
+          for i in $(seq 1 45); do
+            if curl -fsS http://127.0.0.1:8080/health 2>/dev/null | grep -q '"status":"ok"'; then
+              echo "/health OK after ~$((i*2))s"
+              break
+            fi
+            if [ "$i" = "45" ]; then
+              echo "container never became healthy"; docker logs smoke; exit 1
+            fi
+            sleep 2
+          done
+
+          curl -fsS http://127.0.0.1:8080/health | grep -q '"status":"ok"'
+          code=$(curl -s -o /dev/null -w '%{http_code}' \
+            "http://127.0.0.1:8080/cela/v1/runs?limit=1" \
+            -H "Authorization: Bearer definitely-wrong-token")
+          if [ "$code" != "401" ]; then
+            echo "auth gate returned $code (expected 401)"
+            docker logs smoke
+            exit 1
+          fi
+          echo "smoke test passed"
+
+      # Publish from main (:latest + :sha-…) and from session branches arena/**
+      # (:edge + :sha-…). :edge hands ClawCloud Run a ready image before
+      # anything merges to main.
+      - name: Log in to GHCR
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/arena/'))
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish to GHCR
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/arena/'))
+        run: |
+          set -euo pipefail
+          docker push "$IMAGE_SHA"
+          if [ "$GITHUB_REF" = "refs/heads/main" ]; then
+            docker tag "$IMAGE_SHA" "$IMAGE:latest"
+            docker push "$IMAGE:latest"
+          else
+            docker tag "$IMAGE_SHA" "$IMAGE:edge"
+            docker push "$IMAGE:edge"
+          fi

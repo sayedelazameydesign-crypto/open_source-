@@ -30,8 +30,10 @@ RUN pip install --no-cache-dir --upgrade pip \
 
 EXPOSE 8080
 
-# Liveness probe target is /health (see os_server.app).
+# Liveness probe target is /health (see os_server.app); PORT-aware to match CMD
+# (platforms like Back4app inject/auto-detect the listening port).
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-    CMD python -c "import os,urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/health')" || exit 1
+    CMD python -c "import os,urllib.request;urllib.request.urlopen('http://127.0.0.1:%s/health' % os.environ.get('PORT','8080'))" || exit 1
 
-CMD ["uvicorn", "--app-dir", "deploy/g1a", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+# PORT-aware start: honor an injected $PORT, fall back to 8080.
+CMD ["sh", "-c", "uvicorn --app-dir deploy/g1a main:app --host 0.0.0.0 --port ${PORT:-8080}"]
