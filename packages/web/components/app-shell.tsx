@@ -113,9 +113,11 @@ export function AppShell({ children }: { children: ReactNode }) {
       ? "المستندات النصية"
       : pathname === "/status"
         ? "حالة المنصة الحية"
-        : pathname === "/"
-          ? "مساحة العمل · Mission OS"
-          : "أدوات المشروع";
+        : pathname === "/ai-tools"
+          ? "AI Tools for Developers"
+          : pathname === "/"
+            ? "مساحة العمل · Mission OS"
+            : "أدوات المشروع";
   return (
     <div className="app-frame">
       <AccessGate />
