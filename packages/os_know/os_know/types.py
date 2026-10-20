@@ -165,6 +165,15 @@ class KnowHit(BaseModel):
     chunk: Chunk
     score: float
     terms: list[str] = Field(default_factory=list)
+    #: 1-based position in each arm that recalled this chunk. Kept rather than
+    #: blended: a lexical hit and a dense-only rescue are different risks.
+    arms: dict[str, int] = Field(default_factory=dict)
+    #: Cosine that cleared ``min_dense_score``, or ``None`` when the dense arm
+    #: did not admit this chunk. Not comparable to ``score`` (sparse TF-IDF).
+    dense_score: float | None = None
+    #: ``sparse`` (by design), ``hybrid`` (dense ranking ran), or
+    #: ``sparse-degraded`` (embedder failed this query; sparse still served).
+    mode: str = "sparse"
 
     @property
     def untrusted(self) -> bool:

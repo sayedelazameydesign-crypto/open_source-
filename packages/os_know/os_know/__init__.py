@@ -24,7 +24,7 @@ from os_know.papers import (
     read_research_paper,
 )
 from os_know.reader import index_path, mime_for, read_document
-from os_know.retrieve import KnowRetriever
+from os_know.retrieve import MIN_DENSE_SCORE, KnowRetriever
 from os_know.store import (
     InMemoryKnowStore,
     KnowStore,
@@ -36,6 +36,7 @@ from os_know.types import Chunk, Corpus, Document, DocumentInput, KnowHit
 
 __all__ = [
     "DEFAULT_PAPER_CORPUS",
+    "MIN_DENSE_SCORE",
     "Chunk",
     "Corpus",
     "Document",

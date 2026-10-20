@@ -13,7 +13,7 @@ Two rules shape this module (ADR-0022, Gate 1):
    TEXT column and every later cosine becomes noise.
 
 Fusion (RRF) lives here so the three retrieval layers cannot disagree about
-``k`` later; Gate 1 does not call it.
+``k``. Gate 2's ``KnowRetriever`` is the first caller.
 """
 
 from __future__ import annotations
