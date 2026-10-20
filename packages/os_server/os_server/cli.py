@@ -496,6 +496,7 @@ def _store_url(flag: str | None, env: str, label: str) -> str | None:
 
 
 def _memory_layer(store_url: str | None, namespace: str | None = None):
+    from os_tools.embedding import embedding_backend_from_env
     from os_tools.local_ai import LocalAIEngine
 
     from os_memory import MemoryManager, memory_store_from_url, normalize_namespace
@@ -506,10 +507,13 @@ def _memory_layer(store_url: str | None, namespace: str | None = None):
         return None
     try:
         space = normalize_namespace(namespace or os.environ.get(ENV_MEMORY_NAMESPACE))
-    except ValueError as exc:
+        embedder = embedding_backend_from_env()
+    except (RuntimeError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return None
-    return MemoryManager(memory_store_from_url(url), LocalAIEngine(), namespace=space)
+    return MemoryManager(
+        memory_store_from_url(url), LocalAIEngine(), namespace=space, embedder=embedder
+    )
 
 
 def _know_layer(store_url: str | None):

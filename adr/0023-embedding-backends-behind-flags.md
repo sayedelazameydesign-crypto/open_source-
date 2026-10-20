@@ -110,10 +110,12 @@ Gate 1–3 هبطت في [#80](https://github.com/sayedelazameydesign-crypto/ope
 
 ## العواقب
 
-* المرحلة 6-ب في [`docs/ROADMAP.md`](../docs/ROADMAP.md) اكتملت فيها Gate 1–6 مع بقاء
+* المرحلة 6-ب في [`docs/ROADMAP.md`](../docs/ROADMAP.md) اكتملت فيها Gate 1–7 مع بقاء
   الافتراضي `off` في كل الطبقات: نُفِّذ `cela know reindex` (Gate 5)، وأعيد القياس
   على الرأس الحالي مع إخراج `backend` و`space` صراحةً في التقرير (Gate 6:
-  [`docs/verification/gate-six-retrieval-remeasurement-2026-10-20.md`](../docs/verification/gate-six-retrieval-remeasurement-2026-10-20.md)).
+  [`docs/verification/gate-six-retrieval-remeasurement-2026-10-20.md`](../docs/verification/gate-six-retrieval-remeasurement-2026-10-20.md))،
+  ووُصل `os_memory` بالمُضمِّن الاختياري بكتابة fail-open (`stats["vector_errors"]`)
+  ورفض للفضاء الغريب ودمج وزني `0.6 / 0.4` يحترم `min_score` (Gate 7).
 * `.env.example` صار يحمل كتلة `CELA_EMBED_*` كاملة؛ لا متغيّر يُقرأ بلا اسم.
 * كل تقرير قياس هجين يُخرج الآن `backend` و`space` صراحةً في JSON؛ على `off`
   (`space=null`) و`local` (`space=feature-hash-v1@512`) ثبت `Δ = 0` بين `hybrid`

@@ -364,6 +364,7 @@ def demo_memory_manager(ai_engine: Any = None) -> Any:
     if not url:
         return None
     if _MEMORY_MANAGER is None:
+        from os_tools.embedding import embedding_backend_from_env
         from os_tools.local_ai import LocalAIEngine
 
         from os_memory import MemoryManager, memory_store_from_url, normalize_namespace
@@ -373,6 +374,7 @@ def demo_memory_manager(ai_engine: Any = None) -> Any:
             memory_store_from_url(url),
             engine,
             namespace=normalize_namespace(os.environ.get(ENV_MEMORY_NAMESPACE)),
+            embedder=embedding_backend_from_env(),
         )
     return _MEMORY_MANAGER
 

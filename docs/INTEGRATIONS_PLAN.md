@@ -430,6 +430,7 @@ cela telemetry export [--run-id …] [--out trace.json] [--send]  # ‏--send ي
 * **`Δ = 0` صراحةً** بين `hybrid` و`sparse` على `off` وعلى `local` (`delta = {"recall_at_k": 0.0, "mrr": 0.0, "avg_context_chars": 0.0, "dense_only_hits": 0}`). **لا يُعلَن أي تحسّن جودة.**
 * على الذراع `dense` منفردًا تسقط `local` تحت السقف (`0.4286 < 0.8`, `exit 1`)، ما يؤكد تجريبيًا أنها خلفية فحص أسلاك لا تمثيلًا دلاليًا، وأن `off` يبقى الافتراضي الصحيح ([ADR-0022](../adr/0022-stored-vectors-and-hybrid-retrieval.md) · [ADR-0023](../adr/0023-embedding-backends-behind-flags.md)). الأوامر الكاملة في [`docs/verification/gate-six-retrieval-remeasurement-2026-10-20.md`](verification/gate-six-retrieval-remeasurement-2026-10-20.md).
 * أرقام المتْن العربي الطويل ذي الـ`262,915` حرفًا (`168 → 332` قطعة، `23,158 → 4,071` حرف/استعلام) تبقى **منقولة عن PR #31**؛ أمّا سقف `MAX_TOKENS = 512` في `os_know.chunking` فمُنفَّذ ومُتحقَّق منه آليًا على الرأس الحالي في `tests/test_retrieval_eval.py`.
+* **Gate 7 (`os_memory`):** وُصل `MemoryManager` و`MemoryRetriever` بالمُضمِّن الاختياري نفسه مع بقاء `off` افتراضيًا؛ الكتابة fail-open لا تُسقط السجل عند عطل التضمين وتُحصي الأعطال في `stats["vector_errors"]`، والقراءة ترفض أي متجه من فضاء `model@dim` مغاير وتدمج وزنيًّا (`0.6` سطحي / `0.4` كثيف مع `MIN_DENSE_SCORE = 0.35`) بما يصون دلالة `min_score` القائمة (`tests/test_memory_vectors.py`).
 
 ---
 
