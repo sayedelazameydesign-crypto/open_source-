@@ -14,7 +14,7 @@
 # vendored packages/craft-launcher and packages/web trees) if image size
 # matters; correctness does not depend on it.
 
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
