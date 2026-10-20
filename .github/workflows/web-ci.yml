@@ -35,6 +35,7 @@ jobs:
       - run: npm run typecheck
       - run: npm run test:components
       - run: npm run test:hooks
+      - run: npm run test:platform-console
       - run: npm run test:deploy
       - run: npm run test:next-proxy
       - run: npm run test:gate-parity

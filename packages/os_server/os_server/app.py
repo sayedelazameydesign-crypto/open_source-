@@ -12,6 +12,7 @@ the last sequence number it received (see ADR-0002).
 ``POST /runs/{id}/approve``     human-in-the-loop answer
 ``GET  /artifacts/{id}/{name}`` fetch an artifact for the right-hand pane
 ``GET  /ledger``                persisted outcome of every run + summary
+``GET  /platform/info``         read-only deployment/sandbox/store/image facts
 ``GET  /health``                minimal public liveness check
 
 Reach namespace (ADR-0013, behind the token of its parent API, opt-in via
@@ -116,6 +117,7 @@ from os_server.launcher_api import (
     create_launcher_router,
     launcher_enabled_from_env,
 )
+from os_server.platform_info import collect_platform_info
 from os_server.reach_api import (
     REACH_API_PREFIX,
     REACH_PRIVATE_PREFIX,
@@ -356,6 +358,27 @@ def create_app(
                 },
             },
         }
+
+    @app.get("/platform/info", dependencies=[Depends(require_api_auth)])
+    async def platform_info() -> dict[str, Any]:
+        """Read-only facts for the console: no secrets, no writes, no probes.
+
+        The four web sections (App Launchpad, Devbox, Database, Image
+        Registry) are views over this payload plus ``/ledger``. Nothing here
+        can deploy, create or pull anything — those actions live in the
+        platform console and the GitHub workflow, not in this API.
+        """
+        payload = collect_platform_info(
+            store=rt.store,
+            ledger=rt.ledger,
+            execution=describe_execution(getattr(rt.platform, "model", None)),
+            live_provider=free_tier_model_from_env() is not None,
+            version=PRODUCT_VERSION,
+        )
+        registry = getattr(rt.platform, "registry", None)
+        tools = sorted(getattr(registry, "tools", {}) or {})
+        payload["tools"] = {"count": len(tools), "registered": tools}
+        return payload
 
     @app.post("/webhooks/activepieces")
     async def receive_activepieces_webhook(request: Request) -> dict[str, Any]:

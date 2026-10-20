@@ -1,7 +1,10 @@
 name: Docker image (build, smoke-test, GHCR)
 
 # CI for the deployable container image (root Dockerfile):
-#   1. docker build          — the exact image Back4App / ClawCloud Run build
+#   1. docker build          — the exact image Back4App / ClawCloud Run build,
+#                             with its identity baked in as build args
+#                             (CELA_IMAGE_REF / CELA_BUILD_SHA / CELA_BUILD_TIME
+#                             → GET /platform/info → the Image Registry page)
 #   2. container smoke test  — boots uvicorn, asserts /health and the auth gate
 #   3. publish to GHCR       — main only, so ClawCloud can deploy the image
 #                             directly instead of building from Git each time
@@ -71,7 +74,11 @@ jobs:
       - name: Build image (same Dockerfile the container platforms build)
         run: |
           set -uo pipefail
-          if ! docker build -t "$IMAGE_SHA" . > docker-build.log 2>&1; then
+          if ! docker build \
+            --build-arg CELA_IMAGE_REF="$IMAGE_SHA" \
+            --build-arg CELA_BUILD_SHA="$GITHUB_SHA" \
+            --build-arg "CELA_BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -t "$IMAGE_SHA" . > docker-build.log 2>&1; then
             echo "::error::docker build failed: $(tail -c 600 docker-build.log | tr '\n' ' ')"
             exit 1
           fi
