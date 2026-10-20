@@ -1,5 +1,9 @@
 """CLI: ``python -m os_evals run --suite builtin`` or with a real model.
 
+``retrieval`` is the knowledge-layer gate (ADR-0022 Gate 3): same golden JSONL,
+three arms (sparse / dense / hybrid RRF), floors ``recall@5 ≥ 0.8`` and
+``MRR ≥ 0.6``. No model, no network.
+
 Real-model example (vLLM on :8000):
 ``CELA_EVAL_MODEL_ID=deepseek-ai/DeepSeek-R1 python -m os_evals run
 --dataset gaia.jsonl --model-url http://localhost:8000/v1 --out report.json``
@@ -82,6 +86,42 @@ def _real_factory(
     return factory
 
 
+def _retrieval(args) -> int:
+    """``python -m os_evals retrieval`` — the three-way gate. Exit code is the verdict."""
+    from os_tools.local_ai import LocalAIEngine
+
+    from os_evals.retrieval import load_golden, measure, write_report
+    from os_know import KnowRetriever, know_store_from_url
+
+    store = know_store_from_url(args.store_url)
+    try:
+        rows = load_golden(args.golden, store=store, corpus_ids=args.corpus)
+        report = measure(
+            KnowRetriever(store, LocalAIEngine()),
+            rows,
+            k=args.k,
+            corpus_ids=args.corpus,
+            arms=args.arm,
+            recall_floor=args.fail_under_recall,
+            mrr_floor=args.fail_under_mrr,
+        )
+    finally:
+        close = getattr(store, "close", None)
+        if callable(close):
+            close()
+    payload = json.dumps(report, indent=2, ensure_ascii=False, sort_keys=True)
+    print(payload)
+    if args.out:
+        write_report(args.out, report)
+    if report["exit_code"] == 2:
+        print("error: nothing was measured — check --golden and --store-url", file=sys.stderr)
+    for failure in report["gates"]["failures"]:
+        print(f"gate: {failure}", file=sys.stderr)
+    for cost in report.get("costs", ()):
+        print(f"cost: {cost}", file=sys.stderr)
+    return int(report["exit_code"])
+
+
 def _operations(out: str | None) -> int:
     """Run the offline operations suite and write/report it like ``run`` does.
 
@@ -115,6 +155,25 @@ def _operations(out: str | None) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="os-evals", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
+    gate = sub.add_parser(
+        "retrieval",
+        help="score a golden set against a know-store, per arm (offline CI gate)",
+    )
+    gate.add_argument("--golden", required=True, help='JSONL: {"q": ..., "doc"|"docs": ...}')
+    gate.add_argument("--store-url", required=True, help="sqlite:///<path> or memory://")
+    gate.add_argument(
+        "--corpus", action="append", default=None, help="restrict scoring to these corpora"
+    )
+    gate.add_argument("--k", type=int, default=5)
+    gate.add_argument(
+        "--arm",
+        default="all",
+        choices=["sparse", "dense", "hybrid", "both", "all"],
+        help="which arm(s) to score; 'all' is sparse vs dense vs hybrid RRF",
+    )
+    gate.add_argument("--fail-under-recall", type=float, default=None)
+    gate.add_argument("--fail-under-mrr", type=float, default=None)
+    gate.add_argument("--out", default=None, help="write the full JSON report here")
     run = sub.add_parser("run", help="run an evaluation suite")
     run.add_argument("--suite", default="builtin", choices=["builtin", "custom", "reach"])
     run.add_argument("--dataset", default=None, help="GAIA/SWE-bench-style JSONL")
@@ -153,6 +212,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "operations":
         return _operations(args.out)
+
+    if args.command == "retrieval":
+        return _retrieval(args)
 
     if args.dataset:
         cases = load_jsonl(args.dataset)

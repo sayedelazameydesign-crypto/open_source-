@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import pytest
 from os_core.vectors import fuse_rankings, reciprocal_rank_fusion
+from os_know.retrieve import QUERY_ARMS
 from os_tools.local_ai import LocalAIEngine
 
 from os_know import MIN_DENSE_SCORE, DocumentInput, InMemoryKnowStore, KnowRetriever
-from os_know.retrieve import QUERY_ARMS
 
 
 class _FixedEmbedder:
@@ -218,7 +218,7 @@ def test_unknown_arm_is_refused() -> None:
     retriever = KnowRetriever(store, LocalAIEngine())
     with pytest.raises(ValueError, match="unknown arm"):
         retriever.query("alpha", corpus_ids=["docs"], arm="hybridde")
-    assert "auto" in QUERY_ARMS and "sparse" in QUERY_ARMS and "hybrid" in QUERY_ARMS
+    assert frozenset({"auto", "sparse", "hybrid", "dense"}) == QUERY_ARMS
 
 
 def test_mismatched_dimension_is_skipped_not_a_cosine_of_noise() -> None:

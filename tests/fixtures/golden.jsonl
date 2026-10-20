@@ -1,0 +1,21 @@
+{"doc": "runbook", "q": "which OS does the build farm run on?"}
+{"doc": "runbook", "q": "what is the staging host address?"}
+{"doc": "runbook", "q": "how do I roll back a release?"}
+{"doc": "runbook", "q": "where is the recorded outcome of every run kept?"}
+{"doc": "runbook", "q": "what region is the build farm in?"}
+{"doc": "memory", "q": "does memory store behaviour or facts?"}
+{"doc": "memory", "q": "which library stores behaviour instead of facts?"}
+{"doc": "memory", "q": "why does every statement carry provenance?"}
+{"doc": "memory", "q": "may recall give the agent instructions?"}
+{"doc": "security", "q": "what happens on each redirect hop?"}
+{"doc": "security", "q": "which addresses does the SSRF floor refuse?"}
+{"doc": "security", "q": "is loopback ever allowed at all?"}
+{"doc": "security", "q": "who configures the telemetry destination?"}
+{"doc": "sandbox", "q": "what limits apply inside python_execute?"}
+{"doc": "sandbox", "q": "what happens when unshare is refused?"}
+{"doc": "sandbox", "q": "is a timeout enforced for untrusted code?"}
+{"doc": "audio", "q": "which audio format can be transcribed locally?"}
+{"doc": "audio", "q": "does transcription download a model?"}
+{"doc": "audio", "q": "what is reported for an unsupported format?"}
+{"doc": "evals", "q": "what does os_evals run against?"}
+{"doc": "evals", "q": "is the builtin suite a quality metric?"}

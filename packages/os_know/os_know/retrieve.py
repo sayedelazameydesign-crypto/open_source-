@@ -45,7 +45,7 @@ MAX_SNIPPET_CHARS = 900
 MIN_DENSE_SCORE = 0.35
 
 #: What :meth:`KnowRetriever.query` accepts as ``arm``.
-QUERY_ARMS = frozenset({"auto", "sparse", "hybrid"})
+QUERY_ARMS = frozenset({"auto", "sparse", "hybrid", "dense"})
 
 #: RRF arms. Equal weight on purpose — see :func:`os_core.vectors.reciprocal_rank_fusion`.
 ARMS = ("sparse", "dense")
@@ -253,7 +253,12 @@ class KnowRetriever:
             return []
         by_id = {chunk.chunk_id: chunk for chunk in chunks}
 
-        sparse_ids, sparse_scores, terms_by_id = self._sparse_ranking(text, chunks, top_k=top_k)
+        if arm == "dense":
+            sparse_ids, sparse_scores, terms_by_id = [], {}, {}
+        else:
+            sparse_ids, sparse_scores, terms_by_id = self._sparse_ranking(
+                text, chunks, top_k=top_k
+            )
 
         if arm == "sparse":
             dense = _DenseArm(note="dense arm not requested (arm=sparse)")
@@ -261,10 +266,12 @@ class KnowRetriever:
             dense = self.dense_ranking(text, chunks)
         dense_ids, dense_scores = dense.ranked, dense.scores
 
-        fused, positions = fuse_rankings(
-            {"sparse": sparse_ids, "dense": dense_ids},
-            weights=self.weights,
-        )
+        rankings = {"sparse": sparse_ids, "dense": dense_ids}
+        if arm == "dense":
+            rankings = {"dense": dense_ids}
+        elif arm == "sparse":
+            rankings = {"sparse": sparse_ids}
+        fused, positions = fuse_rankings(rankings, weights=self.weights)
         hits: list[KnowHit] = []
         for key, _fused_score in fused:
             chunk = by_id.get(key)
@@ -272,7 +279,14 @@ class KnowRetriever:
                 continue
             ranks = {name: pos[key] for name, pos in positions.items() if key in pos}
             in_sparse = "sparse" in ranks
-            if dense_ids:
+            if arm == "dense":
+                if dense_ids:
+                    mode = "dense"
+                elif dense.degraded:
+                    mode = "sparse-degraded"
+                else:
+                    mode = "dense-empty"
+            elif dense_ids:
                 mode = "hybrid"
             elif dense.degraded:
                 mode = "sparse-degraded"

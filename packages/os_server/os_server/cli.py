@@ -851,23 +851,26 @@ def _skills_export(store, skill_id: str, *, output: str | None) -> int:
 
 
 def _know_eval(
-    store, retriever, golden_path: str, *, k: int, corpus: list[str] | None = None
+    store,
+    retriever,
+    golden_path: str,
+    *,
+    k: int,
+    corpus: list[str] | None = None,
+    arm: str = "all",
 ) -> int:
-    from os_know import evaluate
+    from os_evals.retrieval import load_golden, measure
 
-    rows: list[dict[str, object]] = []
-    for line in pathlib.Path(golden_path).read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line:
-            rows.append(json.loads(line))
-    report = evaluate(retriever, rows, k=k, corpus_ids=corpus)
-    per_question = report.pop("per_question")
-    print(
-        json.dumps(
-            {**report, "worst": [q for q in per_question if q["recall"] < 1.0][:5]}, indent=2
-        )
+    rows = load_golden(golden_path, store=store)
+    report = measure(
+        retriever,
+        rows,
+        k=k,
+        corpus_ids=[corpus] if isinstance(corpus, str) else corpus,
+        arms=arm,
     )
-    return 0 if report["recall_at_k"] >= 0.8 else 1
+    print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+    return int(report["exit_code"])
 
 
 def _telemetry_export(args) -> int:
@@ -1124,6 +1127,12 @@ def main(argv: list[str] | None = None) -> int:
     k.add_argument("--golden", required=True, help='JSONL: {"q": ..., "docs": [...]}')
     k.add_argument("--corpus", default=None, help="restrict scoring to these corpora")
     k.add_argument("--k", type=int, default=5)
+    k.add_argument(
+        "--arm",
+        default="all",
+        choices=["sparse", "dense", "hybrid", "both", "all"],
+        help="sparse vs dense vs hybrid RRF (default: all three)",
+    )
     k.add_argument("--store-url", default=None, help="sqlite:///<path> or CELA_KNOW_STORE_URL")
 
     telemetry = sub.add_parser(
@@ -1226,7 +1235,9 @@ def main(argv: list[str] | None = None) -> int:
             )
         if args.know_command == "search":
             return _know_search(retriever, args.query, corpus=args.corpus, top_k=args.top_k)
-        return _know_eval(store, retriever, args.golden, k=args.k, corpus=args.corpus)
+        return _know_eval(
+            store, retriever, args.golden, k=args.k, corpus=args.corpus, arm=args.arm
+        )
 
     if args.command == "telemetry":
         return _telemetry_export(args)
