@@ -53,6 +53,13 @@ from os_core.types import (
     ToolStatus,
     Usage,
 )
+from os_core.vectors import (
+    VectorError,
+    embedding_column_type,
+    embedding_space,
+    pack,
+    unpack,
+)
 
 __version__ = "0.1.0"
 
@@ -100,18 +107,23 @@ __all__ = [
     "ToolResult",
     "ToolStatus",
     "Usage",
+    "VectorError",
     "__version__",
     "assess_resources",
     "check_local_resources",
     "count_tokens",
     "default_registry",
+    "embedding_column_type",
+    "embedding_space",
     "estimate",
     "estimate_model_tokens",
     "format_snapshot",
     "outcome_for",
+    "pack",
     "replay_and_stream",
     "resolve_ledger",
     "snapshot_resources",
     "token_ids",
     "truncate_to_tokens",
+    "unpack",
 ]

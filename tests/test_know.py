@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from os_evals.retrieval import DEFAULT_GOLDEN, load_golden
 from os_tools.local_ai import LocalAIEngine
 
 from os_know import (
@@ -89,30 +90,8 @@ CORPUS_TEXTS = {
     "evals": EVALS_DOC,
 }
 
-#: ``q`` is the question, ``doc`` the document that must appear in the top k.
-GOLDEN = [
-    {"q": "which OS does the build farm run on?", "doc": "runbook"},
-    {"q": "what is the staging host address?", "doc": "runbook"},
-    {"q": "how do I roll back a release?", "doc": "runbook"},
-    {"q": "where is the recorded outcome of every run kept?", "doc": "runbook"},
-    {"q": "what region is the build farm in?", "doc": "runbook"},
-    {"q": "does memory store behaviour or facts?", "doc": "memory"},
-    {"q": "which library stores behaviour instead of facts?", "doc": "memory"},
-    {"q": "why does every statement carry provenance?", "doc": "memory"},
-    {"q": "may recall give the agent instructions?", "doc": "memory"},
-    {"q": "what happens on each redirect hop?", "doc": "security"},
-    {"q": "which addresses does the SSRF floor refuse?", "doc": "security"},
-    {"q": "is loopback ever allowed at all?", "doc": "security"},
-    {"q": "who configures the telemetry destination?", "doc": "security"},
-    {"q": "what limits apply inside python_execute?", "doc": "sandbox"},
-    {"q": "what happens when unshare is refused?", "doc": "sandbox"},
-    {"q": "is a timeout enforced for untrusted code?", "doc": "sandbox"},
-    {"q": "which audio format can be transcribed locally?", "doc": "audio"},
-    {"q": "does transcription download a model?", "doc": "audio"},
-    {"q": "what is reported for an unsupported format?", "doc": "audio"},
-    {"q": "what does os_evals run against?", "doc": "evals"},
-    {"q": "is the builtin suite a quality metric?", "doc": "evals"},
-]
+#: Single source: ``tests/fixtures/golden.jsonl`` (Gate 3). Tests and CLI share it.
+GOLDEN = load_golden(DEFAULT_GOLDEN)
 
 
 @pytest.fixture

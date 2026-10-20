@@ -1,10 +1,25 @@
 """Corpus storage: in-memory (default) and SQLite (durable).
 
+Gate 1 (ADR-0022) adds three columns to ``chunks`` and nothing else: a token
+count of the *search* text, a packed ``CEV1`` blob, and the space tag
+``model@dim``. The dense arm is not wired here — embeddings stay empty until
+an embedder is passed in a later gate. What this file must get right:
+
+* **Idempotent migration.** ``CREATE TABLE IF NOT EXISTS`` leaves an old file
+  alone, so :func:`_ensure_columns` ``ADD COLUMN``s what is missing and is a
+  no-op the second time.
+* **Named SQL.** Inserts and reads list column names. Positional ``VALUES`` is
+  how a future fifth column silently attaches the blob to ``end_line``.
+* **Dialect types.** SQLite stores the blob as ``BLOB``; Postgres would store
+  the same bytes as ``BYTEA`` (:func:`os_core.vectors.embedding_column_type`).
+  ``postgres://`` still raises (P1-11) — the type is pinned so that gap cannot
+  invent a third spelling.
+* **Legacy rows stay searchable.** A null blob / empty model is sparse-only,
+  never an exception. Corrupt bytes decode to ``[]``.
+
 Deletion is the part that has to be *complete*: a document stays reachable only
 as long as its chunks do. So :meth:`SQLiteKnowStore.delete_document` removes the
-row and its chunks in one transaction, and returns the chunk count it dropped —
-an operator who cannot tell whether anything was removed has no way to confirm a
-retraction actually happened.
+row and its chunks in one transaction, and returns the chunk count it dropped.
 """
 
 from __future__ import annotations
@@ -15,6 +30,9 @@ import time
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Protocol, runtime_checkable
+
+from os_core.tokens import count_tokens
+from os_core.vectors import VectorError, embedding_column_type, pack, unpack
 
 from os_know.chunking import chunk_for
 from os_know.types import Chunk, Corpus, Document, DocumentInput, short_hash
@@ -28,14 +46,134 @@ _DDL = (
     "mime TEXT, char_count INTEGER, chunk_count INTEGER, indexed_at REAL, meta_json TEXT)",
     "CREATE TABLE IF NOT EXISTS chunks("
     "chunk_id TEXT PRIMARY KEY, doc_id TEXT, ordinal INTEGER, heading TEXT, text TEXT, "
-    "start_line INTEGER, end_line INTEGER)",
+    "start_line INTEGER, end_line INTEGER, token_count INTEGER NOT NULL DEFAULT 0, "
+    f"embedding {embedding_column_type('sqlite')}, embedding_model TEXT NOT NULL DEFAULT '')",
     "CREATE INDEX IF NOT EXISTS chunks_doc ON chunks(doc_id)",
     "CREATE INDEX IF NOT EXISTS documents_corpus ON documents(corpus_id)",
 )
 
+#: Explicit names for the chunk row — the same list is used to INSERT and SELECT
+#: so a typo fails at SQL compile time, not as a swapped blob.
+_CHUNK_INSERT_COLUMNS = (
+    "chunk_id",
+    "doc_id",
+    "ordinal",
+    "heading",
+    "text",
+    "start_line",
+    "end_line",
+    "token_count",
+    "embedding",
+    "embedding_model",
+)
+_CHUNK_SELECT = (
+    "c.chunk_id, c.doc_id, c.ordinal, c.heading, c.text, c.start_line, "
+    "c.end_line, d.corpus_id, d.source_uri, d.sha256, c.token_count, c.embedding, "
+    "c.embedding_model"
+)
+_DOCUMENT_INSERT_COLUMNS = (
+    "doc_id",
+    "corpus_id",
+    "sha256",
+    "source_uri",
+    "title",
+    "mime",
+    "char_count",
+    "chunk_count",
+    "indexed_at",
+    "meta_json",
+)
+
+
+def chunk_column_ddl(dialect: str) -> dict[str, str]:
+    """Additive ``chunks`` columns for a pre-Gate-1 database, typed per dialect."""
+    return {
+        "token_count": "INTEGER NOT NULL DEFAULT 0",
+        "embedding": embedding_column_type(dialect),
+        "embedding_model": "TEXT NOT NULL DEFAULT ''",
+    }
+
+
+_CHUNK_MIGRATION = chunk_column_ddl("sqlite")
+
 
 def _document_id(corpus_id: str, sha256: str) -> str:
     return f"doc_{corpus_id[:8]}_{sha256[:12]}"
+
+
+def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    missing = {name: ddl for name, ddl in columns.items() if name not in existing}
+    if not missing:
+        return
+    with conn:
+        for name, ddl in missing.items():
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+
+
+def _decode_vector(blob: object) -> list[float]:
+    """Decode a stored ``CEV1`` blob, or ``[]`` when it must not join a ranking.
+
+    Missing, corrupt, or unreadable bytes degrade *that chunk* to sparse-only.
+    Raising would let one legacy row take down the whole corpus search.
+    """
+    if not blob:
+        return []
+    try:
+        return unpack(bytes(blob))
+    except (VectorError, TypeError, ValueError):
+        return []
+
+
+def _packed_blob(chunk: Chunk) -> bytes | None:
+    if chunk.embedding:
+        return pack(chunk.embedding)
+    return None
+
+
+def _build_record(document: DocumentInput) -> tuple[Document, list[Chunk]]:
+    """One builder for both stores so in-memory and SQLite cannot drift."""
+    text = document.text or ""
+    sha = short_hash(text)
+    doc_id = _document_id(document.corpus_id, sha)
+    drafts = chunk_for(text, mime=document.mime, language=document.language)
+    untrusted = Document(
+        doc_id=doc_id,
+        corpus_id=document.corpus_id,
+        source_uri=document.source_uri,
+    ).untrusted
+    chunks = [
+        Chunk(
+            chunk_id=f"{doc_id}#{draft.ordinal}",
+            doc_id=doc_id,
+            corpus_id=document.corpus_id,
+            ordinal=draft.ordinal,
+            text=draft.text,
+            heading=draft.heading,
+            start_line=draft.start_line,
+            end_line=draft.end_line,
+            source_uri=document.source_uri,
+            doc_sha256=sha,
+            untrusted=untrusted,
+            token_count=count_tokens(
+                f"{draft.heading}\n{draft.text}" if draft.heading else draft.text
+            ),
+        )
+        for draft in drafts
+    ]
+    record = Document(
+        doc_id=doc_id,
+        corpus_id=document.corpus_id,
+        sha256=sha,
+        source_uri=document.source_uri,
+        title=document.title or doc_id,
+        mime=document.mime,
+        char_count=len(text),
+        chunk_count=len(drafts),
+        token_count=sum(chunk.token_count for chunk in chunks),
+        metadata=dict(document.metadata),
+    )
+    return record, chunks
 
 
 @runtime_checkable
@@ -50,6 +188,12 @@ class KnowStore(Protocol):
 
 
 class InMemoryKnowStore:
+    """Process-lifetime corpus. Vectors are kept as float lists, not blobs.
+
+    The model tag still gates their use, so this store and SQLite cannot
+    disagree about what an empty embedding means: sparse-only, never an error.
+    """
+
     def __init__(self) -> None:
         self.corpora: dict[str, Corpus] = {}
         self.documents: dict[str, tuple[Document, list[Chunk]]] = {}
@@ -65,41 +209,10 @@ class InMemoryKnowStore:
             return [c.model_copy(deep=True) for c in self.corpora.values()]
 
     def index_document(self, document: DocumentInput) -> Document:
-        text = document.text or ""
-        sha = short_hash(text)
-        doc_id = _document_id(document.corpus_id, sha)
-        drafts = chunk_for(text, mime=document.mime, language=document.language)
-        record = Document(
-            doc_id=doc_id,
-            corpus_id=document.corpus_id,
-            sha256=sha,
-            source_uri=document.source_uri,
-            title=document.title or doc_id,
-            mime=document.mime,
-            char_count=len(text),
-            chunk_count=len(drafts),
-            metadata=dict(document.metadata),
-        )
-        untrusted = record.untrusted
-        chunks = [
-            Chunk(
-                chunk_id=f"{doc_id}#{draft.ordinal}",
-                doc_id=doc_id,
-                corpus_id=document.corpus_id,
-                ordinal=draft.ordinal,
-                text=draft.text,
-                heading=draft.heading,
-                start_line=draft.start_line,
-                end_line=draft.end_line,
-                source_uri=document.source_uri,
-                doc_sha256=sha,
-                untrusted=untrusted,
-            )
-            for draft in drafts
-        ]
+        record, chunks = _build_record(document)
         with self._lock:
             self.corpora.setdefault(document.corpus_id, Corpus(corpus_id=document.corpus_id))
-            self.documents[doc_id] = (record, chunks)
+            self.documents[record.doc_id] = (record, chunks)
         return record.model_copy(deep=True)
 
     def delete_document(self, doc_id: str) -> int:
@@ -146,11 +259,14 @@ class SQLiteKnowStore:
         with self._lock, self._conn:
             for statement in _DDL:
                 self._conn.execute(statement)
+            _ensure_columns(self._conn, "chunks", _CHUNK_MIGRATION)
 
     def add_corpus(self, corpus: Corpus) -> Corpus:
         with self._lock, self._conn:
             self._conn.execute(
-                "INSERT INTO corpora VALUES(?,?,?,?,?,?) ON CONFLICT(corpus_id) DO UPDATE SET "
+                "INSERT INTO corpora(corpus_id, name, description, open_to_agents, "
+                "created_at, meta_json) VALUES(?,?,?,?,?,?) "
+                "ON CONFLICT(corpus_id) DO UPDATE SET "
                 "name=excluded.name, description=excluded.description, "
                 "open_to_agents=excluded.open_to_agents, meta_json=excluded.meta_json",
                 (
@@ -172,20 +288,17 @@ class SQLiteKnowStore:
         return [Corpus.model_validate_json(r[0]) for r in rows]
 
     def index_document(self, document: DocumentInput) -> Document:
-        text = document.text or ""
-        sha = short_hash(text)
-        doc_id = _document_id(document.corpus_id, sha)
-        drafts = chunk_for(text, mime=document.mime, language=document.language)
-        record = Document(
-            doc_id=doc_id,
-            corpus_id=document.corpus_id,
-            sha256=sha,
-            source_uri=document.source_uri,
-            title=document.title or doc_id,
-            mime=document.mime,
-            char_count=len(text),
-            chunk_count=len(drafts),
-            metadata=dict(document.metadata),
+        record, chunks = _build_record(document)
+        placeholders = ",".join("?" for _ in _CHUNK_INSERT_COLUMNS)
+        insert_sql = (
+            f"INSERT INTO chunks({', '.join(_CHUNK_INSERT_COLUMNS)}) VALUES({placeholders})"
+        )
+        doc_placeholders = ",".join("?" for _ in _DOCUMENT_INSERT_COLUMNS)
+        doc_sql = (
+            f"INSERT INTO documents({', '.join(_DOCUMENT_INSERT_COLUMNS)}) "
+            f"VALUES({doc_placeholders}) ON CONFLICT(doc_id) DO UPDATE SET "
+            "chunk_count=excluded.chunk_count, indexed_at=excluded.indexed_at, "
+            "meta_json=excluded.meta_json"
         )
         with self._lock, self._conn:
             self._conn.execute(
@@ -201,12 +314,9 @@ class SQLiteKnowStore:
                 ),
             )
             # Same bytes → same doc_id → replace the chunk set once, not twice.
-            self._conn.execute("DELETE FROM chunks WHERE doc_id=?", (doc_id,))
+            self._conn.execute("DELETE FROM chunks WHERE doc_id=?", (record.doc_id,))
             self._conn.execute(
-                "INSERT INTO documents VALUES(?,?,?,?,?,?,?,?,?,?) "
-                "ON CONFLICT(doc_id) DO UPDATE SET "
-                "chunk_count=excluded.chunk_count, indexed_at=excluded.indexed_at, "
-                "meta_json=excluded.meta_json",
+                doc_sql,
                 (
                     record.doc_id,
                     record.corpus_id,
@@ -220,17 +330,20 @@ class SQLiteKnowStore:
                     record.model_dump_json(),
                 ),
             )
-            for draft in drafts:
+            for chunk in chunks:
                 self._conn.execute(
-                    "INSERT INTO chunks VALUES(?,?,?,?,?,?,?)",
+                    insert_sql,
                     (
-                        f"{doc_id}#{draft.ordinal}",
-                        doc_id,
-                        draft.ordinal,
-                        draft.heading,
-                        draft.text,
-                        draft.start_line,
-                        draft.end_line,
+                        chunk.chunk_id,
+                        chunk.doc_id,
+                        chunk.ordinal,
+                        chunk.heading,
+                        chunk.text,
+                        chunk.start_line,
+                        chunk.end_line,
+                        chunk.token_count,
+                        _packed_blob(chunk),
+                        chunk.embedding_model,
                     ),
                 )
             # `untrusted` is not a stored column: it is derived from source_uri at
@@ -240,9 +353,7 @@ class SQLiteKnowStore:
     def list_chunks(self, *, corpus_ids: Iterable[str] | None = None) -> list[Chunk]:
         wanted = {str(c) for c in corpus_ids} if corpus_ids is not None else None
         sql = (
-            "SELECT c.chunk_id, c.doc_id, c.ordinal, c.heading, c.text, c.start_line, "
-            "c.end_line, d.corpus_id, d.source_uri, d.sha256 "
-            "FROM chunks c JOIN documents d ON d.doc_id=c.doc_id"
+            f"SELECT {_CHUNK_SELECT} FROM chunks c JOIN documents d ON d.doc_id=c.doc_id"
         )
         params: tuple[object, ...] = ()
         if wanted:
@@ -254,8 +365,11 @@ class SQLiteKnowStore:
             rows = self._conn.execute(sql, params).fetchall()
         from os_know.types import is_untrusted_source
 
-        return [
-            Chunk(
+        chunks: list[Chunk] = []
+        for r in rows:
+            model = r[12] or ""
+            values = _decode_vector(r[11])
+            chunk = Chunk(
                 chunk_id=r[0],
                 doc_id=r[1],
                 ordinal=r[2],
@@ -267,9 +381,14 @@ class SQLiteKnowStore:
                 source_uri=r[8],
                 doc_sha256=r[9] or "",
                 untrusted=is_untrusted_source(r[8]),
+                token_count=int(r[10] or 0),
+                embedding=values,
+                embedding_model=model,
             )
-            for r in rows
-        ]
+            if values:
+                chunk.bind_embedding(values, model=model)
+            chunks.append(chunk)
+        return chunks
 
     def list_documents(self, *, corpus_id: str | None = None) -> list[Document]:
         sql = "SELECT meta_json FROM documents"
@@ -300,6 +419,10 @@ def know_store_from_url(url: str | None) -> KnowStore:
     The rule is copied from ``skill_store_from_url`` for one reason: a silently
     downgraded corpus is a corpus that forgets on restart, and every retrieval
     number measured against it was measured against nothing.
+
+    ``postgres://`` still raises (P1-11). The column type for that store, when
+    it lands, is already :func:`chunk_column_ddl` with dialect ``postgres``
+    (``BYTEA``), not a guess.
     """
     if not url or url == "memory://":
         return InMemoryKnowStore()
@@ -310,4 +433,10 @@ def know_store_from_url(url: str | None) -> KnowStore:
     return SQLiteKnowStore(url)
 
 
-__all__ = ["InMemoryKnowStore", "KnowStore", "SQLiteKnowStore", "know_store_from_url"]
+__all__ = [
+    "InMemoryKnowStore",
+    "KnowStore",
+    "SQLiteKnowStore",
+    "chunk_column_ddl",
+    "know_store_from_url",
+]
