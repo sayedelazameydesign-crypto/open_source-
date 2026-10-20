@@ -13,7 +13,7 @@
 # (Back4app probes the EXPOSEd port, then auto-switches and saves what it found
 # to the app settings). We honor $PORT and fall back to 8080.
 
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
