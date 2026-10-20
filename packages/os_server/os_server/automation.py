@@ -570,6 +570,27 @@ def check_deployment_readiness(
             else:
                 warnings.append(entry)
 
+    # AI Indigo external API (ADR-0021) is strictly optional and completely
+    # independent of core Render (C5) / Postgres (C6) readiness. Only inspect
+    # its key when the operator explicitly turns CELA_INDIGO_ENABLE=1 on.
+    if active_env.get("CELA_INDIGO_ENABLE", "").strip() == "1":
+        from os_server.indigo_api import resolve_indigo_credential_var
+
+        indigo_var = resolve_indigo_credential_var(active_env)
+        if not active_env.get(indigo_var, "").strip():
+            entry = {
+                "id": "indigo_api_key_unset",
+                "variable": indigo_var,
+                "message_ar": (
+                    f"تم تفعيل CELA_INDIGO_ENABLE=1 دون ضبط {indigo_var}؛ مسارات "
+                    "AI Indigo المحمية ستعيد 503 حتى يُضبط المفتاح في بيئة الخادم."
+                ),
+            }
+            if strict_production:
+                errors.append(entry)
+            else:
+                warnings.append(entry)
+
     return {
         "ready": len(errors) == 0,
         "strict_production": strict_production or is_render,

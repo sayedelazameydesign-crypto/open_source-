@@ -25,7 +25,7 @@ _SECRET_INLINE_RE = re.compile(
 )
 #: Provider key shapes we recognise without wanting to know the provider.
 _KEY_SHAPE_RE = re.compile(
-    r"\b(?:sk|pk|ghp|gho|github_pat|xox[baprs]|AIza|ya29|sk-ant|sk-proj)[_-][A-Za-z0-9_\-]{12,}\b"
+    r"\b(?:sk|pk|ghp|gho|github_pat|xox[baprs]|AIza|ya29|sk-ant|sk-proj|aik?_live)[_-][A-Za-z0-9_\-]{12,}\b"
 )
 #: Text that reads as an instruction to a model rather than a statement of fact.
 _DIRECTIVE_RE = re.compile(
