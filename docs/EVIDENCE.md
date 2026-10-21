@@ -115,7 +115,7 @@ Chromium الحيّ صراحةً، لكن اختباري Reach الشبكيين 
 | سياسة GHCR في رأس PR | `main` يحدّث `:latest`, `:edge`, و`:sha-*`; وسوم `v*` تدفع وسم الإصدار و`:sha-*`; `arena/**` تبني وتختبر فقط. `packages: write` محصورة في job النشر المشروط؛ اختبار `tests/test_docker_workflow_security.py` يحرس الشرط والفصل |
 | ظهور الحزمة/الوسوم الحالية | توثيق سابق في `docs/NO_CARD_DEPLOY_VERIFIED.md` يسجل `:edge` كحزمة عامة. استعلام package metadata/versions أعاد 403 (`Resource not accessible by integration`)، لذلك لم أستطع إعادة تأكيد visibility أو جرد الوسوم الحالية؛ لم يُحذف أي tag |
 | `ruff format --check .` | يفشل على 34 ملفًا في رأس PR؛ فشل المقارنة على `main` عند `4e5ac17` يشمل 45 ملفًا، وجميع ملفات فشل PR ضمن تلك المجموعة. CI يشغّل `ruff check .` فقط ولا يفرض `ruff format --check` |
-| بوابة النشر وRender | لا توجد بوابة نشر مركزية قابلة للاستدعاء؛ `deploy_doctor --strict` preflight يدوي. لم يحدث Render deploy أو `make verify-deploy`، ولم تُكتب adapters |
+| بوابة النشر | توجد بوابة CI يدوية بلا مزوّد (`.github/workflows/deploy-verify.yml` + `authorize_deploy_target.py`) تفحص أي عنوان HTTPS، لكنها ليست orchestrator ولا تُستدعى تلقائيًا قبل النشر. لم تُشغَّل بعد على عنوان عام، ولم تُكتب deploy adapters |
 
 ## ٢-و) بوابة نشر بلا مزوّد — 2026-10-21
 
