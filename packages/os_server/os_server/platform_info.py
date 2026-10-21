@@ -177,9 +177,7 @@ def _sandbox_info(env: Mapping[str, str]) -> dict[str, Any]:
         "firecracker": ("firecracker-microvm", True, "sandbox-policy"),
         "production": ("remote-microvm", True, "sandbox-policy"),
     }
-    isolation, executes, network = profiles.get(
-        mode, ("unknown", False, "unknown")
-    )
+    isolation, executes, network = profiles.get(mode, ("unknown", False, "unknown"))
     if error is not None:
         isolation, executes, network = "unknown", False, "unknown"
     return {

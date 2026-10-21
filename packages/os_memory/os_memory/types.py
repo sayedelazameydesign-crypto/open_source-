@@ -25,6 +25,7 @@ def count_search_tokens(text: str) -> int:
 
     return count_tokens(text)
 
+
 #: The tag every recalled block is wrapped in. ``os_core.redact.sanitize_boundaries``
 #: uses it to make sure no stored text can close the block early.
 MEMORY_BOUNDARY = "untrusted-memory"

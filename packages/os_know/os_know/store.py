@@ -148,18 +148,14 @@ def _stage_reindex(
     step = int(batch_size)
     info = getattr(embedder, "info", None)
     backend = str(
-        getattr(info, "backend", None)
-        or getattr(embedder, "name", None)
-        or type(embedder).__name__
+        getattr(info, "backend", None) or getattr(embedder, "name", None) or type(embedder).__name__
     )
     texts = [chunk.search_text() for chunk in chunks]
     batches = (len(texts) + step - 1) // step if texts else 0
 
     if dry_run:
         max_chars = int(
-            getattr(info, "max_input_chars", 0)
-            or getattr(embedder, "max_input_chars", 0)
-            or 0
+            getattr(info, "max_input_chars", 0) or getattr(embedder, "max_input_chars", 0) or 0
         )
         est_truncated = sum(1 for t in texts if len(t) > max_chars) if max_chars > 0 else 0
         return backend, embedding_space(embedder), [], batches, est_truncated
@@ -306,9 +302,7 @@ def _attach_embeddings(chunks: list[Chunk], embedder: Any) -> None:
         chunk.bind_embedding(vector, model=space)
 
 
-def _build_record(
-    document: DocumentInput, embedder: Any = None
-) -> tuple[Document, list[Chunk]]:
+def _build_record(document: DocumentInput, embedder: Any = None) -> tuple[Document, list[Chunk]]:
     """One builder for both stores so in-memory and SQLite cannot drift."""
     text = document.text or ""
     sha = short_hash(text)
@@ -473,9 +467,7 @@ class InMemoryKnowStore:
             assert space_after is not None
             with self._lock:
                 by_id = {
-                    chunk.chunk_id: chunk
-                    for _, group in self.documents.values()
-                    for chunk in group
+                    chunk.chunk_id: chunk for _, group in self.documents.values() for chunk in group
                 }
                 for chunk_id, vec, _blob in staged:
                     target = by_id.get(chunk_id)
@@ -613,9 +605,7 @@ class SQLiteKnowStore:
 
     def list_chunks(self, *, corpus_ids: Iterable[str] | None = None) -> list[Chunk]:
         wanted = {str(c) for c in corpus_ids} if corpus_ids is not None else None
-        sql = (
-            f"SELECT {_CHUNK_SELECT} FROM chunks c JOIN documents d ON d.doc_id=c.doc_id"
-        )
+        sql = f"SELECT {_CHUNK_SELECT} FROM chunks c JOIN documents d ON d.doc_id=c.doc_id"
         params: tuple[object, ...] = ()
         if wanted:
             marks = ",".join("?" for _ in wanted)

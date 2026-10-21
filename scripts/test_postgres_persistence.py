@@ -50,6 +50,7 @@ is provided by ``scripts/test_durable_store.py``. The DSN is scrubbed before
 any message is printed, and failures return a non-zero exit code without
 re-raising an unscrubbed exception.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -176,9 +177,7 @@ def _production_reference(args: argparse.Namespace) -> str:
     does not export the production variable can still supply the reference.
     """
     return (
-        getattr(args, "production_dsn", None)
-        or os.environ.get("CELA_RUN_STORE_URL", "")
-        or ""
+        getattr(args, "production_dsn", None) or os.environ.get("CELA_RUN_STORE_URL", "") or ""
     ).strip()
 
 
@@ -328,9 +327,7 @@ async def _verify(dsn: str, before: dict[str, Any]) -> None:
         if EventType.RUN_FINISHED not in {e.type for e in events}:
             raise RuntimeError("RUN_FINISHED event missing after restart")
         if store.last_seq(run_id) != seqs[-1]:
-            raise RuntimeError(
-                f"last_seq mismatch: {store.last_seq(run_id)} vs {seqs[-1]}"
-            )
+            raise RuntimeError(f"last_seq mismatch: {store.last_seq(run_id)} vs {seqs[-1]}")
 
         artifacts = store.list_artifacts(run_id)
         if not artifacts:

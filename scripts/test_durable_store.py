@@ -15,6 +15,7 @@ That variant WRITES to the target database; for the guarded, cleaned-up C6
 acceptance test that also covers tickets across connections, use
 ``scripts/test_postgres_persistence.py`` instead.
 """
+
 from __future__ import annotations
 
 import argparse

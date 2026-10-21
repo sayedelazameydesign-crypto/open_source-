@@ -1,10 +1,23 @@
 # Trim the Docker build context (image correctness does not depend on it).
+#
+# Secrets first: `COPY . /app` would otherwise bake a developer's local `.env`
+# into the image layer, where it survives in the image history even if the
+# variable is never read at runtime. Only the committed template is allowed in.
 .git
 .git-credentials
+.env
+.env.*
+!.env.example
+.agents
+.mcp.json
+*.pem
+*.key
+*.p12
+
+# Local state and tool caches.
 .venv
 .cela
 .arena
-node_modules
 **/__pycache__
 **/*.pyc
 .pytest_cache
@@ -12,7 +25,18 @@ node_modules
 .mypy_cache
 .coverage
 coverage
+coverage.xml
+htmlcov
+
+# Build output. `**/` matters: the bare pattern only matches the repository
+# root, so a `packages/web/node_modules` installed for local dev used to be
+# shipped into the context on every build.
+**/node_modules
 dist
 build
 .next
 out
+
+# The vendored ArtCraft Launcher snapshot is not part of the Python image and
+# may not be redistributed (ADR-0015 / docs/THIRD_PARTY_POLICY.md T-4).
+packages/craft-launcher

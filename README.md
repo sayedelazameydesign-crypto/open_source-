@@ -58,6 +58,7 @@ python -m os_server.cli serve --demo --host 0.0.0.0 --port 8080
 | **الذاكرة والمعرفة** | `os_memory` (بوابة كتابة تفحص الحقن والأسرار **قبل** التخزين + خصم موثوقية) و`os_know` (تقطيع حتمي + اقتباس مُتحقَّق منه بـ`sha256`) — محليّتان بالكامل، بلا تبعية جديدة، ومُفعَّلتان بالعنوان فقط |
 
 البنية الكاملة: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · الـ API الخاص: [`docs/CELA_API.md`](docs/CELA_API.md) ·
+**كل متغيّرات البيئة** (وافتراضياتها وأي متغيّر يوسّع الصلاحيات ويُطفأ افتراضيًا): [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) ·
 النشر المجاني (Render + Supabase + Cloudflare/Vercel) + بوابة الوصول: [`docs/DEPLOY_FREE_TIER_RUNBOOK.md`](docs/DEPLOY_FREE_TIER_RUNBOOK.md) §3 و§3.5 و[`packages/web/README.md`](packages/web/README.md) §بوابة وصول المشغّل ·
 القرارات: [`adr/`](adr) · ما تبقّى: [`docs/ROADMAP.md`](docs/ROADMAP.md) ·
 لوحة المنصة (App Launchpad · Devbox · Database · Image Registry): [`docs/PLATFORM_CONSOLE.md`](docs/PLATFORM_CONSOLE.md) — أربع شاشات قراءة فقط تقرأ `GET /platform/info` و`GET /ledger`، ولا تنشر أو تسحب أو تنفّذ كودًا.

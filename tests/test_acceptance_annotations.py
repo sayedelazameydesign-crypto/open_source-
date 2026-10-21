@@ -83,11 +83,7 @@ def test_a_log_without_criteria_never_reads_as_a_pass() -> None:
 
 def test_log_text_cannot_inject_workflow_commands_or_newlines() -> None:
     script = _load_script()
-    log = (
-        "  commit sha     : abc123\n"
-        "[PASS] criterion\n"
-        "detail ::error title=forged::boom\n"
-    )
+    log = "  commit sha     : abc123\n[PASS] criterion\ndetail ::error title=forged::boom\n"
     sha, verdicts = script.parse(log)
 
     line = script.annotations(sha, verdicts)[1]
@@ -110,12 +106,7 @@ def test_ansi_colour_codes_do_not_hide_a_failure() -> None:
 def test_a_criterion_printed_twice_is_counted_once() -> None:
     """The script prints each criterion when it runs and again in SUMMARY."""
     script = _load_script()
-    log = (
-        "  commit sha     : abc\n"
-        "[PASS] 1. one\n"
-        "    detail\n"
-        "[PASS] 1. one\n"
-    )
+    log = "  commit sha     : abc\n[PASS] 1. one\n    detail\n[PASS] 1. one\n"
 
     sha, verdicts = script.parse(log)
 

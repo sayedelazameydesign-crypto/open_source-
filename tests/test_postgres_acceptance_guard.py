@@ -141,7 +141,10 @@ def test_same_database_is_detected(script, left, right) -> None:
         # Mixed shapes across different projects.
         (PRODUCTION, SECOND_PROJECT_DIRECT),
         # A different database name on the same server is a different target.
-        ("postgresql://u:p@db.internal:5432/cela_test", "postgresql://u:p@db.internal:5432/postgres"),
+        (
+            "postgresql://u:p@db.internal:5432/cela_test",
+            "postgresql://u:p@db.internal:5432/postgres",
+        ),
         # Unrelated hosts.
         (PRODUCTION, RENDER_TEST_DB),
     ],
@@ -233,9 +236,7 @@ def test_missing_production_reference_fails_closed(script) -> None:
 def test_missing_reference_is_never_treated_as_separation(script) -> None:
     """The opt-out must be explicit; the default must not assume isolation."""
     refused, error = script._resolve_dsn(_args(dsn=RENDER_TEST_DB))
-    allowed, no_error = script._resolve_dsn(
-        _args(dsn=RENDER_TEST_DB, no_production_reference=True)
-    )
+    allowed, no_error = script._resolve_dsn(_args(dsn=RENDER_TEST_DB, no_production_reference=True))
     assert refused == "" and "refusing to write" in error
     assert allowed == RENDER_TEST_DB and no_error == ""
 

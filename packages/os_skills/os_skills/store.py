@@ -210,11 +210,9 @@ class PostgresSkillStore:
             # SkillManager.rollback then reports "nothing to restore" instead of
             # restoring anything, and the permission-grant preservation it
             # performs never runs.
-            row = (
-                conn.execute(
-                    "SELECT skill_json FROM skills WHERE skill_id=%s", (skill.skill_id,)
-                ).fetchone()
-            )
+            row = conn.execute(
+                "SELECT skill_json FROM skills WHERE skill_id=%s", (skill.skill_id,)
+            ).fetchone()
             if row is not None and row[0] != skill.model_dump_json():
                 old = Skill.model_validate_json(row[0])
                 conn.execute(

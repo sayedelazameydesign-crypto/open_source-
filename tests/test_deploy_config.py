@@ -617,9 +617,7 @@ def test_provider_neutral_doctor_requires_a_persistent_store_without_render() ->
             env["CELA_RUN_STORE_URL"] = store_url
         report = check_deployment_readiness(env, root=ROOT)
         errors = [
-            error
-            for error in report["errors"]
-            if error["id"] == "persistent_run_store_required"
+            error for error in report["errors"] if error["id"] == "persistent_run_store_required"
         ]
         assert errors, f"{store_url!r} must be refused for a durable deployment"
         assert "Render" not in errors[0]["message_ar"], (
@@ -630,9 +628,7 @@ def test_provider_neutral_doctor_requires_a_persistent_store_without_render() ->
         {**base, "CELA_RUN_STORE_URL": "postgresql://u:p@db.example.test:5432/app"},
         root=ROOT,
     )
-    assert "persistent_run_store_required" not in {
-        error["id"] for error in postgres["errors"]
-    }
+    assert "persistent_run_store_required" not in {error["id"] for error in postgres["errors"]}
 
     # Without the flag, a local SQLite store stays acceptable: the requirement
     # belongs to the deployment, not to every invocation of the Doctor.
@@ -644,6 +640,68 @@ def test_provider_neutral_doctor_requires_a_persistent_store_without_render() ->
         },
         root=ROOT,
     )
-    assert "persistent_run_store_required" not in {
-        error["id"] for error in local["errors"]
-    }
+    assert "persistent_run_store_required" not in {error["id"] for error in local["errors"]}
+
+
+# --- Container hardening (review 2026-10-21: S2/S3/S4) ---------------------
+
+DOCKERIGNORE = ROOT / ".dockerignore"
+DOCKERFILES = (ROOT / "Dockerfile", ROOT / "deploy" / "g1a" / "Dockerfile")
+
+
+def _dockerignore_patterns() -> list[str]:
+    return [
+        line.strip()
+        for line in DOCKERIGNORE.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+
+
+def test_build_context_excludes_local_secrets_and_nested_node_modules() -> None:
+    """`COPY . /app` must not bake a developer's `.env` into the image layer.
+
+    A secret copied into a layer stays readable in the image even if the
+    process never reads it, and the bare `node_modules` pattern only matched
+    the repository root — so a local `packages/web/node_modules` was shipped
+    on every build. Both are build-context rules, asserted here because no
+    unit test can see the context.
+    """
+    patterns = _dockerignore_patterns()
+    for required in (".env", ".env.*", "**/node_modules", "**/__pycache__"):
+        assert required in patterns, f".dockerignore must exclude {required}"
+    # The committed template is the one exception, and it must come after the
+    # exclusion it re-includes.
+    assert "!.env.example" in patterns
+    assert patterns.index(".env.*") < patterns.index("!.env.example")
+
+
+@pytest.mark.parametrize("dockerfile", DOCKERFILES, ids=lambda p: p.parent.name or "root")
+def test_runtime_image_does_not_run_as_root(dockerfile: Path) -> None:
+    """The service needs neither root nor a privileged port (8080)."""
+    lines = [line.strip() for line in dockerfile.read_text(encoding="utf-8").splitlines()]
+    users = [line for line in lines if line.startswith("USER ")]
+    assert users, f"{dockerfile} must switch to an unprivileged USER"
+    final_user = users[-1].split(None, 1)[1].strip()
+    assert final_user not in {"root", "0", "0:0"}, f"{dockerfile} still runs as root"
+    # The account must exist in the image and own the writable working tree.
+    assert any(line.startswith("RUN useradd") for line in lines), dockerfile
+    assert any("chown -R" in line for line in lines), dockerfile
+    # Order matters: USER must come after the install, or pip would fail.
+    assert lines.index(users[-1]) > next(
+        index for index, line in enumerate(lines) if "pip install --no-cache-dir -e" in line
+    )
+
+
+def test_every_web_test_script_runs_in_web_ci() -> None:
+    """A suite that is not in Web CI cannot fail, so it silently rots.
+
+    `test:ai-tools` existed in `package.json` but was never invoked: eight
+    passing assertions that nothing enforced. Every `test:*` script must be
+    wired into the workflow (the review of 2026-10-21 closed this gap).
+    """
+    scripts = json.loads(WEB_PACKAGE.read_text(encoding="utf-8"))["scripts"]
+    test_scripts = sorted(name for name in scripts if name.startswith("test:"))
+    assert test_scripts, "packages/web must declare test:* scripts"
+    ci = WEB_CI.read_text(encoding="utf-8")
+    not_run = [name for name in test_scripts if f"npm run {name}" not in ci]
+    assert not not_run, f"web-ci.yml never runs: {not_run}"

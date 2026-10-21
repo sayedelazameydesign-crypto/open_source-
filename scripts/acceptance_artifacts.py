@@ -7,6 +7,7 @@ known file through the real ``python_execute`` sandbox and then reports the
 file's SHA-256. The sandbox collects the file from its working directory and
 the platform records it as a run artifact.
 """
+
 from __future__ import annotations
 
 import hashlib

@@ -160,9 +160,7 @@ async def test_subagent_preserves_assistant_tool_calls_in_followup(tmp_path) -> 
         name="file_reader",
         args={"path": "notes.md"},
     )
-    model = ScriptedModel(
-        script=[ModelResponse(tool_calls=[call]), ModelResponse(content="done")]
-    )
+    model = ScriptedModel(script=[ModelResponse(tool_calls=[call]), ModelResponse(content="done")])
     sub = SubAgent(
         config=SubAgentConfig(name="explorer", allowed_tools=["file_reader"], required_ram_gb=0.0),
         model=model,

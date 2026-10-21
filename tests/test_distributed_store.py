@@ -63,6 +63,7 @@ def test_postgres_missing_driver_fails_loudly_not_silently() -> None:
     """
     try:
         import psycopg  # noqa: F401
+
         driver_present = True
     except ImportError:
         driver_present = False

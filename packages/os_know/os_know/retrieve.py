@@ -256,9 +256,7 @@ class KnowRetriever:
         if arm == "dense":
             sparse_ids, sparse_scores, terms_by_id = [], {}, {}
         else:
-            sparse_ids, sparse_scores, terms_by_id = self._sparse_ranking(
-                text, chunks, top_k=top_k
-            )
+            sparse_ids, sparse_scores, terms_by_id = self._sparse_ranking(text, chunks, top_k=top_k)
 
         if arm == "sparse":
             dense = _DenseArm(note="dense arm not requested (arm=sparse)")
@@ -321,9 +319,7 @@ class KnowRetriever:
         )
         space = embedding_space(configured)
         chunks = self.chunks_for(corpus_ids)
-        embedder, note = (
-            self._dense_capability(chunks) if chunks else (None, "no chunks in scope")
-        )
+        embedder, note = self._dense_capability(chunks) if chunks else (None, "no chunks in scope")
         stats = getattr(self.store, "embedding_stats", None)
         return {
             "backend": backend,

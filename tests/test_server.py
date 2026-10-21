@@ -12,7 +12,7 @@ from conftest import await_until, wait_until
 fastapi_testclient = pytest.importorskip("fastapi.testclient")
 TestClient = fastapi_testclient.TestClient
 
-from os_server.app import create_app  # noqa: E402
+from os_server.app import create_app, public_docs_enabled  # noqa: E402
 from os_server.demo import build_demo_platform_for  # noqa: E402
 
 
@@ -581,3 +581,44 @@ async def test_real_socket_e2e_bearer_and_ws_ticket(platform_factory) -> None:
         server.should_exit = True
         await serve_task
         sock.close()
+
+
+def test_public_docs_are_served_by_default(client: TestClient) -> None:
+    """The deploy runbook's `/docs` ⇒ 200 smoke signal must stay true by default."""
+    assert client.get("/docs").status_code == 200
+    assert client.get("/openapi.json").status_code == 200
+
+
+def test_public_docs_can_be_switched_off_per_deployment(
+    platform_factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`CELA_PUBLIC_DOCS=0` removes the anonymous route map (review 2026-10-21, S1).
+
+    The API itself is unaffected: `/health` still answers and the schema is
+    still generated in-process (`app.openapi()`), so internal callers and the
+    existing contract tests keep working.
+    """
+    monkeypatch.setenv("CELA_PUBLIC_DOCS", "0")
+    app = create_app(platform_factory, api_token="test-token")
+    with TestClient(app, headers={"Authorization": "Bearer test-token"}) as test_client:
+        for path in ("/docs", "/redoc", "/openapi.json"):
+            assert test_client.get(path).status_code == 404, path
+        assert test_client.get("/health").status_code == 200
+        assert test_client.get("/runs").status_code == 200
+    assert "/runs" in app.openapi()["paths"]
+
+
+@pytest.mark.parametrize("raw", ["1", "true", "TRUE", "yes", "on", ""])
+def test_public_docs_flag_defaults_to_on_for_unknown_values(
+    platform_factory, monkeypatch: pytest.MonkeyPatch, raw: str
+) -> None:
+    monkeypatch.setenv("CELA_PUBLIC_DOCS", raw)
+    assert public_docs_enabled() is True
+
+
+@pytest.mark.parametrize("raw", ["0", "false", "off", "no", " FALSE "])
+def test_public_docs_flag_parses_explicit_off(
+    platform_factory, monkeypatch: pytest.MonkeyPatch, raw: str
+) -> None:
+    monkeypatch.setenv("CELA_PUBLIC_DOCS", raw)
+    assert public_docs_enabled() is False

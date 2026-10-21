@@ -37,6 +37,7 @@ This is a LIVE test: it performs real network calls and may spend provider
 quota. It is intentionally not part of CI. Exit codes: 0 = all criteria pass,
 1 = at least one criterion failed, 2 = missing key / invalid configuration.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -443,18 +444,12 @@ async def _multi_call_probe(
     both_succeeded = len(python_results) == 2 and all(
         r.get("status") == "success" for r in python_results
     )
-    expected_outputs = any("55" in out for out in outputs) and any(
-        "1024" in out for out in outputs
-    )
+    expected_outputs = any("55" in out for out in outputs) and any("1024" in out for out in outputs)
 
     payload = transport.followup_payload or {}
     messages = payload.get("messages") or []
-    assistant_calls = [
-        m for m in messages if m.get("role") == "assistant" and m.get("tool_calls")
-    ]
-    ids_sent = (
-        [c["id"] for c in assistant_calls[0]["tool_calls"]] if assistant_calls else []
-    )
+    assistant_calls = [m for m in messages if m.get("role") == "assistant" and m.get("tool_calls")]
+    ids_sent = [c["id"] for c in assistant_calls[0]["tool_calls"]] if assistant_calls else []
     tool_messages = [m for m in messages if m.get("role") == "tool"]
     ids_returned = [m.get("tool_call_id") for m in tool_messages]
     envelope_ok = (
@@ -648,9 +643,7 @@ async def main() -> int:
     # evidence about the transcript.
     if exec_before.kind == "provider_adapter":
         print("\n--- Two tool calls in one assistant turn, then a real follow-up ---")
-        multi_ok, multi_detail = await _multi_call_probe(
-            base_url, model_id, key_var, api_key
-        )
+        multi_ok, multi_detail = await _multi_call_probe(base_url, model_id, key_var, api_key)
         record(
             "6. two tool calls in one turn survive a real provider follow-up",
             multi_ok,

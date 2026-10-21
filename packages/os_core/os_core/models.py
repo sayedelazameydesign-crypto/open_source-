@@ -215,9 +215,7 @@ class OpenAICompatModel(BaseModel):
                     message += f"; response_body={detail}"
                 # Avoid echoing the request URL (which may itself contain credentials)
                 # or retaining an unsanitized chained HTTPStatusError in diagnostics.
-                raise httpx.HTTPStatusError(
-                    message, request=resp.request, response=resp
-                ) from None
+                raise httpx.HTTPStatusError(message, request=resp.request, response=resp) from None
             data = resp.json()
 
         choice = data["choices"][0]
@@ -282,9 +280,7 @@ def _serialize_message(message: Message) -> dict[str, Any]:
     return encoded
 
 
-def _credential_from_headers(
-    headers: dict[str, str], auth_header: str, auth_prefix: str
-) -> str:
+def _credential_from_headers(headers: dict[str, str], auth_header: str, auth_prefix: str) -> str:
     """Return the credential portion of the configured auth header for redaction."""
     value = next(
         (value for name, value in headers.items() if name.casefold() == auth_header.casefold()),

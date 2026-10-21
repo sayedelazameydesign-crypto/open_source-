@@ -18,10 +18,7 @@ import pytest
 import yaml
 
 WORKFLOW = (
-    pathlib.Path(__file__).resolve().parents[1]
-    / ".github"
-    / "workflows"
-    / "eval-real-model.yml"
+    pathlib.Path(__file__).resolve().parents[1] / ".github" / "workflows" / "eval-real-model.yml"
 )
 
 
@@ -49,8 +46,7 @@ def test_destination_is_pinned_to_a_secret_not_an_input(spec: dict) -> None:
 def test_kill_switch_gates_the_live_call(spec: dict) -> None:
     preflight = _step(spec, "Preflight")
     assert (
-        preflight["env"]["ALLOW_LIVE_EXTERNAL_CALLS"]
-        == "${{ secrets.ALLOW_LIVE_EXTERNAL_CALLS }}"
+        preflight["env"]["ALLOW_LIVE_EXTERNAL_CALLS"] == "${{ secrets.ALLOW_LIVE_EXTERNAL_CALLS }}"
     )
     assert '!= "true"' in preflight["run"], "anything but literal 'true' must fail"
 

@@ -188,8 +188,8 @@ python cela_pro_app.py
 ```python
 import cela_pro_app
 
-print(cela_pro_app.smoke_test_provider("Groq"))        # تقرير منسّق (المفتاح محجوب)
-cela_pro_app.run_smoke_test("Groq")["state"]           # PASS / INCONCLUSIVE / FAIL / BLOCKED
+print(cela_pro_app.smoke_test_provider("Groq"))  # تقرير منسّق (المفتاح محجوب)
+cela_pro_app.run_smoke_test("Groq")["state"]  # PASS / INCONCLUSIVE / FAIL / BLOCKED
 ```
 
 ## خطوات التشغيل على Google Colab

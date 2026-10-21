@@ -91,7 +91,7 @@ def test_the_run_confirms_and_never_skips_the_separation_guard(spec: dict) -> No
 def test_rows_are_deleted_by_default(spec: dict) -> None:
     inputs = _triggers(spec)["workflow_dispatch"]["inputs"]
     assert inputs["keep_rows"]["default"] == "no"
-    assert '--yes --keep' in _step(spec, "Run the C6")["run"]
+    assert "--yes --keep" in _step(spec, "Run the C6")["run"]
 
 
 def test_summary_is_written_even_on_failure_and_carries_no_secret(spec: dict) -> None:

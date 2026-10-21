@@ -80,9 +80,7 @@ def match_host(host: str, patterns: tuple[str, ...]) -> str:
     for pattern in patterns:
         if fnmatch.fnmatchcase(host, pattern):
             return pattern
-    raise TargetError(
-        f"host {host!r} is not covered by the allowlist ({', '.join(patterns)})"
-    )
+    raise TargetError(f"host {host!r} is not covered by the allowlist ({', '.join(patterns)})")
 
 
 def authorize_target(url: str, allowlist_raw: str) -> dict[str, object]:
