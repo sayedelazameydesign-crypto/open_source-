@@ -1,4 +1,8 @@
-# g1a — self-contained container image for the Celia.sh FastAPI service.
+# g1a — local parity build input for the Celia.sh GHCR image.
+#
+# Production container providers should deploy the published GHCR image built
+# from the root Dockerfile; this mirror is retained for local Docker testing.
+# Keep its runtime/dependency settings aligned with the root build.
 #
 # Code execution is DISABLED by default in this image (CELA_CODE_EXEC_MODE=
 # disabled): untrusted code never runs on the cloud host — every code-exec
@@ -14,7 +18,8 @@
 # vendored packages/craft-launcher and packages/web trees) if image size
 # matters; correctness does not depend on it.
 
-FROM python:3.14-slim
+# Keep the local parity image aligned with Render's Python 3.11 line.
+FROM python:3.11-slim AS runtime
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

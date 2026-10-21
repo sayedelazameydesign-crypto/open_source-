@@ -5,7 +5,8 @@ name: AI Indigo live check (INDIGO_API_KEY)
 #   1. Destination is pinned to https://aiindigo.com/api/v1 — no dispatch input can
 #      redirect INDIGO_API_KEY to another host.
 #   2. INDIGO_API_KEY travels only from repository secret -> step env -> client.
-#   3. Verdict criteria are published as Check Annotations and uploaded as artifact.
+#   3. Network checks require explicit workflow_dispatch and ALLOW_LIVE_EXTERNAL_CALLS=true.
+#   4. Verdict criteria are published as Check Annotations and uploaded as artifact.
 on:
   workflow_dispatch:
     inputs:
@@ -14,11 +15,6 @@ on:
         required: false
         default: false
         type: boolean
-  push:
-    paths:
-      - ".github/workflows/indigo-live-check.yml"
-      - "packages/os_server/os_server/indigo_api.py"
-      - "scripts/verify_indigo_api.py"
 
 permissions:
   contents: read
@@ -31,8 +27,8 @@ jobs:
   indigo-check:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # Push to main is the merge commit itself; manual dispatch remains available on main.
-    if: github.event_name == 'workflow_dispatch' || github.ref_name != 'main'
+    # Secrets and outbound requests are available only on explicit dispatch.
+    if: github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v7
 
@@ -56,8 +52,8 @@ jobs:
           set -euo pipefail
           echo "commit sha: ${GITHUB_SHA}"
           echo "ref: ${GITHUB_REF}"
-          if [ "${ALLOW_LIVE_EXTERNAL_CALLS:-true}" = "false" ]; then
-            echo "::notice title=Indigo live call skipped::ALLOW_LIVE_EXTERNAL_CALLS is explicitly 'false'; running offline checks only."
+          if [ "${ALLOW_LIVE_EXTERNAL_CALLS:-}" != "true" ]; then
+            echo "::notice title=Indigo live call skipped::ALLOW_LIVE_EXTERNAL_CALLS is not literal 'true'; running offline checks only."
             echo "OFFLINE_ONLY=1" >> "$GITHUB_ENV"
           fi
           if [ -z "${INDIGO_API_KEY:-}" ]; then
@@ -65,9 +61,9 @@ jobs:
               echo "::error title=Preflight::Repository secret INDIGO_API_KEY is empty or unset in Settings > Secrets and variables > Actions."
               exit 1
             fi
-            echo "::warning title=INDIGO_API_KEY unset::Repository secret INDIGO_API_KEY is empty or unset; public endpoint + unauthenticated 401 baseline will still run, while authenticated endpoints are skipped until INDIGO_API_KEY is saved in Actions Secrets."
+            echo "::warning title=INDIGO_API_KEY unset::Repository secret INDIGO_API_KEY is empty or unset; authenticated probes will be skipped, and --offline-only prevents every outbound request unless the live-call gate is explicitly enabled."
           else
-            echo "::notice title=INDIGO_API_KEY present::Repository secret INDIGO_API_KEY is set (value never printed); executing full live authenticated verification."
+            echo "::notice title=INDIGO_API_KEY present::Repository secret INDIGO_API_KEY is set (value never printed); outbound verification still requires ALLOW_LIVE_EXTERNAL_CALLS=true."
           fi
 
       - name: Run AI Indigo verification

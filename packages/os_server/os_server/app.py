@@ -89,7 +89,7 @@ from os_core.models import describe_execution
 from os_mcp.layer import MCPLayer, mcp_enabled, process_layer, register_mcp_tools
 from os_orchestration.platform import Platform
 from os_tools.egress import EgressPolicy
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from os_server.automation import ActivepiecesDispatcher, InboundWebhookVerifier
 from os_server.cela import (
@@ -128,7 +128,7 @@ from os_server.reach_api import (
 from os_server.runtime import (
     DEFAULT_WS_TICKET_TTL,
     PRODUCT_VERSION,
-     ApiRuntime,
+    ApiRuntime,
     ArtifactIntegrityError,
     PlatformFactory,
     RunHandle,
@@ -145,7 +145,12 @@ _valid_bearer_token = valid_bearer_token
 class StartRunRequest(BaseModel):
     task: str
     mode: str = "auto"  # auto | react | flow
-    max_steps: int = 25
+    max_steps: int = Field(
+        default=25,
+        ge=1,
+        le=100,
+        description="Maximum tool steps; the public API requires at least 1.",
+    )
 
 
 class ApproveRequest(BaseModel):

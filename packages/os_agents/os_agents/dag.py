@@ -16,6 +16,7 @@ from os_core.types import PlanStep, StepStatus
 from pydantic import BaseModel
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
+DEFAULT_MAX_PLAN_STEPS = 25
 
 
 class PlanError(ValueError):
@@ -63,8 +64,15 @@ class PlanGraph(BaseModel):
         )
 
 
-def parse_plan(raw: str, *, fallback_title: str = "step") -> PlanGraph:
-    """Accept a JSON array/object from the planner, tolerating code fences."""
+def parse_plan(
+    raw: str,
+    *,
+    fallback_title: str = "step",
+    max_steps: int = DEFAULT_MAX_PLAN_STEPS,
+) -> PlanGraph:
+    """Accept a bounded JSON plan from the planner, tolerating code fences."""
+    if max_steps < 0:
+        raise PlanError("max_steps cannot be negative")
     payload = _extract_json(raw)
     if payload is None:
         raise PlanError(f"plan is not valid JSON: {raw[:200]!r}")
@@ -77,6 +85,9 @@ def parse_plan(raw: str, *, fallback_title: str = "step") -> PlanGraph:
         items = payload
     else:
         raise PlanError(f"unsupported plan shape: {type(payload).__name__}")
+
+    if len(items) > max_steps:
+        raise PlanError(f"plan contains {len(items)} steps; max_steps={max_steps} is the limit")
 
     steps: list[PlanStep] = []
     for index, item in enumerate(items):

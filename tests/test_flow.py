@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from os_agents.budget import BudgetConfig
 from os_agents.dag import PlanError, parse_plan
 from os_agents.flow import PlanningFlow
 from os_core.hitl import DenyApprover
@@ -55,6 +56,18 @@ def test_parse_plan_accepts_plain_strings() -> None:
 def test_parse_plan_accepts_wrapped_object() -> None:
     graph = parse_plan('{"steps": [{"id": "s1", "title": "a"}]}')
     assert len(graph.steps) == 1
+
+
+def test_parse_plan_rejects_more_than_the_configured_step_limit() -> None:
+    raw = json.dumps([{"title": f"step {index}"} for index in range(3)])
+    with pytest.raises(PlanError, match="plan contains 3 steps; max_steps=2"):
+        parse_plan(raw, max_steps=2)
+
+
+def test_parse_plan_has_a_hard_default_limit() -> None:
+    raw = json.dumps([{"title": f"step {index}"} for index in range(26)])
+    with pytest.raises(PlanError, match="max_steps=25"):
+        parse_plan(raw)
 
 
 @pytest.mark.parametrize(
@@ -170,6 +183,112 @@ async def test_invalid_plan_from_planner_fails_the_run(registry, bus) -> None:
     result = await flow
     assert result.run.status is RunStatus.FAILED
     assert "no executable plan" in (result.run.error or "")
+
+
+async def test_planner_prompt_and_parser_share_the_remaining_step_limit(registry, bus) -> None:
+    oversized = json.dumps(
+        [
+            {"id": f"s{i}", "title": f"step {i}", "tool": "echo", "args": {"text": str(i)}}
+            for i in range(3)
+        ]
+    )
+    planner = plan_model(oversized)
+    flow = make_flow(
+        planner,
+        registry,
+        bus,
+        budget_cfg=BudgetConfig(max_steps=2),
+    )
+
+    result = await flow.run("over-limit plan")
+
+    assert planner.call_count == 1
+    assert "at most 2 steps" in planner.calls[0][0].content
+    assert result.run.status is RunStatus.FAILED
+    assert result.run.steps_used == 0
+    assert "max_steps=2" in (result.run.error or "")
+    assert result.run.results == []
+
+
+async def test_replanning_prompt_uses_only_the_remaining_step_budget(registry, bus) -> None:
+    first_plan = json.dumps(
+        [
+            {"id": "s1", "title": "keep", "tool": "echo", "args": {"text": "done"}},
+            {"id": "s2", "title": "fail", "tool": "ghost", "args": {}},
+        ]
+    )
+    oversized_replan = json.dumps(
+        [
+            {"id": "r1", "title": "too many one", "tool": "echo", "args": {"text": "1"}},
+            {"id": "r2", "title": "too many two", "tool": "echo", "args": {"text": "2"}},
+        ]
+    )
+    planner = plan_model(first_plan, oversized_replan)
+    flow = make_flow(
+        planner,
+        registry,
+        bus,
+        budget_cfg=BudgetConfig(max_steps=3),
+        max_replans=1,
+        parallelism=1,
+    )
+
+    result = await flow.run("replan within the remaining budget")
+
+    assert planner.call_count == 3  # initial plan, bounded replan, final synthesis
+    assert "at most 1 steps" in planner.calls[1][0].content
+    assert result.run.steps_used == 2
+    assert result.run.status is RunStatus.COMPLETED
+    assert {step.id for step in result.run.steps} == {"s1", "s2"}
+
+
+async def test_flow_never_exceeds_max_steps_and_marks_remaining_steps_skipped(
+    registry, bus, events
+) -> None:
+    plan = json.dumps(
+        [
+            {"id": "s1", "title": "retry invalid call", "tool": "echo", "args": {}},
+            {
+                "id": "s2",
+                "title": "must remain pending",
+                "tool": "echo",
+                "args": {"text": "never executed"},
+            },
+        ]
+    )
+    flow = make_flow(
+        plan_model(plan),
+        registry,
+        bus,
+        budget_cfg=BudgetConfig(max_steps=2),
+        max_replans=0,
+        parallelism=1,
+    )
+
+    result = await flow.run("retry until the budget is exhausted")
+
+    assert result.run.status is RunStatus.MAX_STEPS
+    assert result.run.steps_used == 2
+    assert len(result.run.results) == 2
+    assert {step.status for step in result.run.steps} == {StepStatus.SKIPPED}
+    assert "max_steps=2 reached" in (result.run.error or "")
+    skipped_events = [
+        event
+        for event in events
+        if event.type.value == "step_finished" and event.data.get("status") == "skipped"
+    ]
+    assert {event.step_id for event in skipped_events} == {"s1", "s2"}
+
+
+async def test_zero_step_budget_skips_planning(registry, bus) -> None:
+    planner = plan_model('[{"id":"s1","title":"never planned","tool":"echo"}]')
+    flow = make_flow(planner, registry, bus, budget_cfg=BudgetConfig(max_steps=0))
+
+    result = await flow.run("no available steps")
+
+    assert planner.call_count == 0
+    assert result.run.status is RunStatus.MAX_STEPS
+    assert result.run.steps_used == 0
 
 
 async def test_guardrails_block_a_hostile_task(registry, bus) -> None:

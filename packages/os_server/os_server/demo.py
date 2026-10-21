@@ -89,7 +89,11 @@ def build_registry(
     browser = demo_browser()
     engine = ai_engine if ai_engine is not None else LocalAIEngine()
     registry.add(python_execute_tool(code_exec_backend_from_env(), timeout=20.0))
-    registry.extend(browser_tools(browser, ssrf_check=policy.for_tool("browser")))
+    # The demo backend is in-memory and never opens a socket; live browser
+    # backends use the default DNS-resolving callback and receive the pinned IP.
+    registry.extend(
+        browser_tools(browser, ssrf_check=policy.for_tool("browser", resolve_dns=False))
+    )
     registry.extend(local_ai_tools(engine))
     registry.extend(mission_tools(root=os.environ.get("CELA_MISSION_ROOT", ".")))
     if os.environ.get("CELA_REACH_ENABLE") == "1":
@@ -452,9 +456,7 @@ def build_demo_platform(
             fallback: ScriptedModel = (
                 demo_planner_model("") if mode == "flow" else demo_react_model("")
             )
-            model = ResilientModel(
-                fallback=fallback, primary=primary_model, label="explicit"
-            )
+            model = ResilientModel(fallback=fallback, primary=primary_model, label="explicit")
     else:
         model, _ = resolve_platform_model(
             mode=mode,
@@ -573,13 +575,9 @@ def _provider_from_env_explicit(
     #      deployments that still set it)
     cfg = os.environ if env is None else env
     base_url = (
-        cfg.get("CELA_PROVIDER_BASE_URL", "").strip()
-        or cfg.get("CELA_MODEL_BASE_URL", "").strip()
+        cfg.get("CELA_PROVIDER_BASE_URL", "").strip() or cfg.get("CELA_MODEL_BASE_URL", "").strip()
     )
-    model_id = (
-        cfg.get("CELA_PROVIDER_MODEL", "").strip()
-        or cfg.get("CELA_MODEL_ID", "").strip()
-    )
+    model_id = cfg.get("CELA_PROVIDER_MODEL", "").strip() or cfg.get("CELA_MODEL_ID", "").strip()
     # Backwards-compat: accept the original CELA_PROVIDER_API_KEY_ENV if set,
     # preferring CELA_PROVIDER_CREDENTIAL_VAR when both are present.
     api_key_env = (
@@ -604,9 +602,7 @@ def _provider_from_env_explicit(
     )
 
 
-def free_tier_model_from_env(
-    *, transport: Any = None, env: Any = None
-) -> OpenAICompatModel | None:
+def free_tier_model_from_env(*, transport: Any = None, env: Any = None) -> OpenAICompatModel | None:
     """Configure a free-tier OpenAI-compatible provider from env if present.
 
     Resolution order:
@@ -679,9 +675,7 @@ def resolve_platform_model(
     valid provider is configured, raises RuntimeError instead of silently
     falling back to scripted mode.
     """
-    fallback: ScriptedModel = (
-        demo_planner_model("") if mode == "flow" else demo_react_model("")
-    )
+    fallback: ScriptedModel = demo_planner_model("") if mode == "flow" else demo_react_model("")
     if live_enabled is None:
         live_enabled = is_live_provider_enabled()
     primary = free_tier_model_from_env(transport=transport) if live_enabled else None
@@ -695,9 +689,7 @@ def resolve_platform_model(
         )
 
     if primary is not None:
-        model: ChatModel = ResilientModel(
-            fallback=fallback, primary=primary, label="live_provider"
-        )
+        model: ChatModel = ResilientModel(fallback=fallback, primary=primary, label="live_provider")
         info = {
             "mode": "live",
             "kind": "provider_adapter",
@@ -737,9 +729,7 @@ class ResilientModel:
         self.primary = primary
         self.label = label
         self.fallback_triggered: bool = primary is None
-        self.fallback_reason: str | None = (
-            "no_provider_configured" if primary is None else None
-        )
+        self.fallback_reason: str | None = "no_provider_configured" if primary is None else None
 
     @property
     def active_model(self) -> ChatModel:

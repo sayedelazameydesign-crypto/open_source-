@@ -365,13 +365,9 @@ def test_tampered_artifact_in_store_is_rejected_with_409(tmp_path: Path) -> None
         store_url=db_url,
     )
     with TestClient(app1) as client:
-        start_resp = client.post(
-            "/runs", json={"task": "inspect", "mode": "flow"}, headers=headers
-        )
+        start_resp = client.post("/runs", json={"task": "inspect", "mode": "flow"}, headers=headers)
         run_id = start_resp.json()["run_id"]
-        client.post(
-            f"/cela/v1/runs/{run_id}/wait", json={"timeout": 10.0}, headers=private_headers
-        )
+        client.post(f"/cela/v1/runs/{run_id}/wait", json={"timeout": 10.0}, headers=private_headers)
 
     # Corrupt the stored content inside SQLite run_states while leaving sha256 intact
     conn = sqlite3.connect(db_path)
@@ -631,13 +627,9 @@ def test_mission_status_and_inbound_activepieces_webhook_routes(
         assert status_res.status_code == 200
         status_json = status_res.json()
         assert status_json["product"] == "Celia.sh — Mission OS"
+        assert status_json["core_capabilities"]["deterministic_inspector_core"]["active"] is True
         assert (
-            status_json["core_capabilities"]["deterministic_inspector_core"]["active"]
-            is True
-        )
-        assert (
-            status_json["core_capabilities"]["verified_report_downloads"]["sha256_verified"]
-            is True
+            status_json["core_capabilities"]["verified_report_downloads"]["sha256_verified"] is True
         )
 
         # 2. Inbound webhook rejects bad HMAC signature and deduplicates valid replays
@@ -724,10 +716,9 @@ def test_deploy_doctor_flags_browser_exposed_secrets_and_ephemeral_sqlite(
     )
     assert bad_report["ready"] is False
     error_ids = {e["id"] for e in bad_report["errors"]}
-    warning_ids = {w["id"] for w in bad_report["warnings"]}
     assert "browser_exposed_secret_var" in error_ids
     assert "identical_public_and_private_tokens" in error_ids
-    assert "ephemeral_sqlite_on_render" in warning_ids
+    assert "persistent_run_store_required" in error_ids
     assert "leaked-to-browser" not in json.dumps(bad_report)
 
     good_report = check_deployment_readiness(
@@ -735,10 +726,10 @@ def test_deploy_doctor_flags_browser_exposed_secrets_and_ephemeral_sqlite(
             "RENDER": "true",
             "CELA_API_TOKEN": "pub-token-123",
             "CELA_PRIVATE_API_TOKEN": "priv-token-456",
+            "CELA_CODE_EXEC_MODE": "disabled",
             "CELA_RUN_STORE_URL": "postgresql://u:secretpass@db.supabase.co:5432/postgres",
         }
     )
     assert good_report["ready"] is True
     assert good_report["store_backend_scheme"] == "postgresql"
     assert "secretpass" not in json.dumps(good_report)
-

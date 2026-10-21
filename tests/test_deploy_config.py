@@ -60,15 +60,44 @@ def env_vars(api_service: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {item["key"]: item for item in api_service["envVars"]}
 
 
+def test_repository_has_one_canonical_render_blueprint() -> None:
+    excluded = {".git", ".venv", "build", "dist", "node_modules", "target"}
+    blueprints = sorted(
+        path.relative_to(ROOT).as_posix()
+        for path in ROOT.rglob("render.yaml")
+        if not excluded.intersection(path.relative_to(ROOT).parts)
+    )
+    assert blueprints == ["render.yaml"]
+    readme = (ROOT / "deploy" / "g1a" / "README.md").read_text(encoding="utf-8")
+    assert "canonical Blueprint at the repository root" in readme
+
+
 def test_render_service_is_free_and_health_checked(api_service: dict[str, Any]) -> None:
     assert api_service["plan"] == "free"
     assert api_service["healthCheckPath"] == "/health"
     assert "--host 0.0.0.0" in api_service["startCommand"]
     assert "$PORT" in api_service["startCommand"]
+    assert "os_server.app:create_app --factory" in api_service["startCommand"]
     # `distributed` is load-bearing: the blueprint pairs with a Supabase
     # Postgres URL, and psycopg is imported lazily (the server would start,
     # answer /health, then 500 on the first run).
-    assert '.[server,distributed]' in api_service["buildCommand"]
+    assert ".[server,distributed]" in api_service["buildCommand"]
+    assert "CELA_CODE_EXEC_MODE" in {item["key"] for item in api_service["envVars"]}
+
+
+def test_render_and_container_deployments_stay_on_python_311(
+    env_vars: dict[str, dict[str, Any]],
+) -> None:
+    assert env_vars["PYTHON_VERSION"].get("value") == "3.11.9"
+    for dockerfile in (ROOT / "Dockerfile", ROOT / "deploy" / "g1a" / "Dockerfile"):
+        text = dockerfile.read_text(encoding="utf-8")
+        assert "FROM python:3.11-slim" in text
+        assert "FROM python:3.14" not in text
+        assert "CELA_CODE_EXEC_MODE=disabled" in text
+        assert "uvicorn --app-dir deploy/g1a main:app" in text
+    wrapper = (ROOT / "deploy" / "g1a" / "main.py").read_text(encoding="utf-8")
+    assert "from os_server.app import create_app" in wrapper
+    assert "app = create_app()" in wrapper
 
 
 def test_render_never_carries_a_secret_literal(
@@ -88,6 +117,14 @@ def test_render_never_carries_a_secret_literal(
     declared = json.dumps(api_service, ensure_ascii=False)
     assert "postgresql://" not in declared
     assert "postgres://" not in declared
+
+
+def test_blueprint_disables_arbitrary_code_execution(
+    env_vars: dict[str, dict[str, Any]],
+) -> None:
+    """Render's Python runtime must not inherit code execution's local default."""
+    assert env_vars["CELA_CODE_EXEC_MODE"].get("value") == "disabled"
+    assert "sync" not in env_vars["CELA_CODE_EXEC_MODE"]
 
 
 def test_blueprint_ships_preview_mode_so_it_deploys_without_a_key(
@@ -144,6 +181,115 @@ def test_doctor_accepts_live_mode_once_the_key_is_present() -> None:
     assert "test-key-not-a-real-one" not in json.dumps(report)
 
 
+def test_production_doctor_requires_code_execution_to_be_explicitly_disabled() -> None:
+    from os_server.automation import check_deployment_readiness
+
+    common = {
+        "RENDER": "true",
+        "CELA_API_TOKEN": "public-token",
+        "CELA_PRIVATE_API_TOKEN": "different-private-token",
+    }
+    missing = check_deployment_readiness(common, root=ROOT)
+    assert missing["ready"] is False
+    assert any(error["id"] == "code_exec_not_disabled" for error in missing["errors"])
+
+    unsafe = check_deployment_readiness({**common, "CELA_CODE_EXEC_MODE": "local"}, root=ROOT)
+    assert unsafe["ready"] is False
+    code_exec_errors = [
+        error for error in unsafe["errors"] if error["id"] == "code_exec_not_disabled"
+    ]
+    assert len(code_exec_errors) == 1
+    assert "الافتراضي المحلي" in code_exec_errors[0]["message_ar"]
+    assert "public-token" not in json.dumps(unsafe)
+
+    safe = check_deployment_readiness({**common, "CELA_CODE_EXEC_MODE": "disabled"}, root=ROOT)
+    assert not any(error["id"] == "code_exec_not_disabled" for error in safe["errors"])
+
+
+def test_render_doctor_requires_a_persistent_run_store() -> None:
+    from os_server.automation import check_deployment_readiness
+
+    base = {
+        "RENDER": "true",
+        "CELA_API_TOKEN": "public-token",
+        "CELA_PRIVATE_API_TOKEN": "different-private-token",
+        "CELA_CODE_EXEC_MODE": "disabled",
+    }
+    for store_url in (None, "sqlite:///./runs.db", "memory://"):
+        env = {**base}
+        if store_url is not None:
+            env["CELA_RUN_STORE_URL"] = store_url
+        report = check_deployment_readiness(env, root=ROOT)
+        assert "persistent_run_store_required" in {error["id"] for error in report["errors"]}
+
+    direct_postgres = check_deployment_readiness(
+        {**base, "CELA_RUN_STORE_URL": "postgresql://u:p@db.example.test:5432/app"},
+        root=ROOT,
+    )
+    assert "persistent_run_store_required" not in {
+        error["id"] for error in direct_postgres["errors"]
+    }
+
+    distributed = check_deployment_readiness(
+        {
+            **base,
+            "CELA_RUN_STORE_URL": "distributed://",
+            "CELA_POSTGRES_URL": "postgresql://u:p@db.example.test:5432/app",
+            "CELA_REDIS_URL": "rediss://u:p@cache.example.test:6379/0",
+        },
+        root=ROOT,
+    )
+    assert "persistent_run_store_required" not in {error["id"] for error in distributed["errors"]}
+
+    incomplete_distributed = check_deployment_readiness(
+        {**base, "CELA_RUN_STORE_URL": "distributed://"}, root=ROOT
+    )
+    assert "persistent_run_store_required" in {
+        error["id"] for error in incomplete_distributed["errors"]
+    }
+
+
+def test_production_doctor_rejects_a_target_blueprint_without_the_disabled_mode(
+    tmp_path: Path,
+) -> None:
+    from os_server.automation import check_deployment_readiness
+
+    (tmp_path / "render.yaml").write_text(
+        "services:\n  - type: web\n    envVars:\n"
+        "      - key: CELA_CODE_EXEC_MODE\n        value: local\n",
+        encoding="utf-8",
+    )
+    report = check_deployment_readiness(
+        {
+            "RENDER": "true",
+            "CELA_API_TOKEN": "public-token",
+            "CELA_PRIVATE_API_TOKEN": "different-private-token",
+            # A safe current process must not override an unsafe target Blueprint.
+            "CELA_CODE_EXEC_MODE": "disabled",
+        },
+        root=tmp_path,
+    )
+    assert report["ready"] is False
+    assert "code_exec_not_disabled" in {error["id"] for error in report["errors"]}
+
+    (tmp_path / "render.yaml").write_text(
+        "services:\n  - type: web\n    envVars:\n"
+        "      - key: CELA_CODE_EXEC_MODE\n        value: disabled\n"
+        "      - key: CELA_CODE_EXEC_MODE\n        value: local\n",
+        encoding="utf-8",
+    )
+    duplicate = check_deployment_readiness(
+        {
+            "RENDER": "true",
+            "CELA_API_TOKEN": "public-token",
+            "CELA_PRIVATE_API_TOKEN": "different-private-token",
+            "CELA_CODE_EXEC_MODE": "disabled",
+        },
+        root=tmp_path,
+    )
+    assert "code_exec_not_disabled" in {error["id"] for error in duplicate["errors"]}
+
+
 def test_doctor_accepts_preview_mode_without_any_provider() -> None:
     from os_server.automation import check_deployment_readiness
 
@@ -168,7 +314,7 @@ def test_cloudflare_proxy_mirrors_the_next_bff_contract() -> None:
     # Tokens are injected server-side; nothing may be exposed to the browser.
     assert "NEXT_PUBLIC_" not in source
     assert "Authorization: `Bearer ${token}`" in source
-    assert "redirect: \"manual\"" in source
+    assert 'redirect: "manual"' in source
     assert "no-store, no-transform" in source
     assert "text/event-stream" in source
 
@@ -224,12 +370,13 @@ def test_runbook_documents_the_three_services() -> None:
         "CELA_BACKEND_URL",
         "deploy_doctor.py",
         "CELA_USE_LIVE_PROVIDER",
+        "CELA_CODE_EXEC_MODE=disabled",
+        "make verify-deploy",
         "test_postgres_persistence.py",
     ):
         assert needle in text, needle
     # The doc must not contain a real-looking credential.
     assert "postgresql://postgres:" not in text
-
 
 
 def test_doctor_refuses_postgres_without_psycopg(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -327,7 +474,11 @@ def test_doctor_still_gates_missing_or_identical_tokens() -> None:
     }
 
     identical = check_deployment_readiness(
-        {"CELA_API_TOKEN": "same", "CELA_PRIVATE_API_TOKEN": "same"},
+        {
+            "CELA_API_TOKEN": "same",
+            "CELA_PRIVATE_API_TOKEN": "same",
+            "CELA_CODE_EXEC_MODE": "disabled",
+        },
         root=ROOT,
         strict_production=True,
     )
@@ -353,6 +504,7 @@ def test_doctor_never_echoes_secrets() -> None:
         assert secret not in rendered
     assert "db-password-777" not in rendered
     assert "leaked-value-666" not in rendered
+
 
 def test_doctor_passes_a_clean_vercel_build() -> None:
     from os_server.automation import check_deployment_readiness
@@ -443,4 +595,3 @@ def test_doctor_vercel_is_silent_outside_build() -> None:
         {"CELA_BACKEND_URL": "https://celia-api.onrender.com"}, root=ROOT
     )
     assert quiet["warnings"] == []
-

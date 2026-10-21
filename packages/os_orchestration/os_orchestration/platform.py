@@ -23,16 +23,25 @@ from os_core.models import ChatModel, describe_execution
 from os_core.router import ModelRouter, RouterConfig
 from os_core.state import RunState, RunStatus
 from os_tools.registry import ToolRegistry
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class PlatformConfig(BaseModel):
     mode: str = "auto"  # "auto" | "react" | "flow"
-    max_steps: int = 25
+    # Internal platform config accepts 0 as an explicit zero-step budget;
+    # StartRunRequest deliberately requires at least 1.
+    max_steps: int = Field(
+        default=25,
+        ge=0,
+        le=100,
+        description="Maximum tool steps; 0 means immediate exhaustion, not unlimited.",
+    )
     max_seconds: float = 300.0
     token_budget: int = 200_000
     max_replans: int = 2
     parallelism: int = 4
+
+    model_config = ConfigDict(validate_assignment=True)
 
 
 class Platform(BaseModel):

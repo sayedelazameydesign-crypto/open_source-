@@ -35,7 +35,8 @@ from urllib.parse import quote, urlencode, urlsplit
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from os_core.redact import scrub_credentials
-from os_tools.egress import EgressPolicy, EgressRule
+from os_tools.egress import EgressPolicy, EgressRule, EgressVerdict, parse_http_target
+from os_tools.pinned_http import PinnedAsyncHTTPTransport
 from os_tools.ssrf import BlockedURLError, SSRFGuard
 from pydantic import BaseModel
 
@@ -200,12 +201,12 @@ class IndigoClient:
         self._transport = transport
         self._browser_fetcher = browser_fetcher
         self._timeout = timeout
-        self._http: httpx.AsyncClient | None = None
         self._pw: Any = None
         self._pw_browser: Any = None
         self._pw_context: Any = None
         self._pw_page: Any = None
         self._pw_loop: asyncio.AbstractEventLoop | None = None
+        self._pw_pin: tuple[str, str, int, str] | None = None
 
     def _read_secret(self) -> str:
         source = self._env if self._env is not None else os.environ
@@ -223,19 +224,19 @@ class IndigoClient:
             f"credential_var={self.credential_var!r}, configured={self.has_key})"
         )
 
-    def _client(self) -> httpx.AsyncClient:
-        if self._http is None:
-            self._http = httpx.AsyncClient(
-                timeout=self._timeout,
-                transport=self._transport,
-                follow_redirects=False,
-                headers={
-                    "User-Agent": DEFAULT_INDIGO_USER_AGENT,
-                    "Accept": "application/json, text/plain, */*",
-                    "Accept-Language": "en-US,en;q=0.9",
-                },
-            )
-        return self._http
+    def _client(self, verdict: EgressVerdict) -> httpx.AsyncClient:
+        """Create a one-origin client whose socket uses the approved IP."""
+        return httpx.AsyncClient(
+            timeout=self._timeout,
+            transport=PinnedAsyncHTTPTransport(verdict, transport=self._transport),
+            follow_redirects=False,
+            trust_env=False,
+            headers={
+                "User-Agent": DEFAULT_INDIGO_USER_AGENT,
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+        )
 
     async def _close_browser(self) -> None:
         if self._pw_context is not None:
@@ -249,42 +250,60 @@ class IndigoClient:
             self._pw = None
         self._pw_page = None
         self._pw_loop = None
+        self._pw_pin = None
 
     async def aclose(self) -> None:
-        if self._http is not None:
-            await self._http.aclose()
-            self._http = None
         await self._close_browser()
 
     async def _fetch_via_playwright(
-        self, full_url: str, headers: Mapping[str, str]
+        self,
+        full_url: str,
+        headers: Mapping[str, str],
+        *,
+        connect_ip: str | None,
     ) -> RawIndigoResponse | None:
-        """Execute same-origin ``fetch`` inside headless Chromium when installed."""
+        """Run a same-origin Chromium fetch using the HTTP client's pinned IP."""
         if self._browser_fetcher is not None:
             return await self._browser_fetcher(full_url, dict(headers))
         if self._transport is not None:
             return None
+        if not connect_ip:
+            raise BlockedURLError("Chromium fallback requires a DNS-resolved connect_ip")
         try:
             from playwright.async_api import async_playwright
         except ImportError:
             return None
 
+        scheme, host, port = parse_http_target(full_url)
+        parsed = urlsplit(full_url)
+        netloc = parsed.netloc
+        origin_probe = f"{scheme}://{netloc}/robots.txt"
+        pin = (scheme, host, port, connect_ip)
         loop = asyncio.get_running_loop()
-        if self._pw_page is not None and self._pw_loop is not loop:
+        if self._pw_page is not None and (self._pw_loop is not loop or self._pw_pin != pin):
             await self._close_browser()
 
         if self._pw_page is None:
-            parsed = urlsplit(full_url)
-            origin_probe = f"https://{parsed.hostname}/robots.txt"
-            self.policy.enforce(origin_probe, tool="indigo_api")
+            # The policy decision for full_url already resolved and authorized
+            # this IP. A static check confirms the probe remains on that origin;
+            # it must not perform a second, potentially different DNS lookup.
+            probe = self.policy.check(origin_probe, tool="indigo_api", resolve_dns=False)
+            probe.raise_if_denied()
 
+            host_rule = f"[{host}]" if ":" in host else host
+            ip_rule = f"[{connect_ip}]" if ":" in connect_ip else connect_ip
+            resolver_rules = f"MAP {host_rule} {ip_rule},MAP * ~NOTFOUND"
             pw = await async_playwright().start()
             launch_kwargs: dict[str, Any] = {
                 "headless": True,
                 "args": [
                     "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
+                    "--disable-background-networking",
+                    "--disable-quic",
+                    "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+                    "--no-proxy-server",
                     "--disable-dev-shm-usage",
+                    f"--host-resolver-rules={resolver_rules}",
                 ],
             }
             if shutil.which("google-chrome"):
@@ -293,9 +312,28 @@ class IndigoClient:
             context = await browser.new_context(
                 user_agent=DEFAULT_INDIGO_USER_AGENT,
                 locale="en-US",
+                service_workers="block",
             )
+
+            async def _same_origin_only(route: Any) -> None:
+                try:
+                    request_origin = parse_http_target(route.request.url)
+                except ValueError:
+                    await route.abort("blockedbyclient")
+                    return
+                if request_origin != (scheme, host, port):
+                    await route.abort("blockedbyclient")
+                    return
+                await route.continue_()
+
+            await context.route("**/*", _same_origin_only)
             await context.add_init_script(
                 "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
+                "Object.defineProperty(window, 'WebSocket', {"
+                "value: class { constructor() { "
+                "throw new Error('WebSocket blocked by egress policy'); "
+                "} }"
+                "});"
             )
             page = await context.new_page()
             await page.goto(origin_probe, wait_until="domcontentloaded", timeout=20_000)
@@ -310,6 +348,7 @@ class IndigoClient:
             self._pw_context = context
             self._pw_page = page
             self._pw_loop = loop
+            self._pw_pin = pin
 
         result: dict[str, Any] = await self._pw_page.evaluate(
             """async ({ url, headers }) => {
@@ -346,16 +385,17 @@ class IndigoClient:
         """Low-level policy-checked GET returning status, headers, and body."""
         clean_path = "/" + path.lstrip("/")
         base_target = f"{self.base_url}{clean_path}"
-        filtered_params = {
-            k: v for k, v in (params or {}).items() if v is not None and v != ""
-        }
-        full_url = (
-            f"{base_target}?{urlencode(filtered_params)}" if filtered_params else base_target
+        filtered_params = {k: v for k, v in (params or {}).items() if v is not None and v != ""}
+        full_url = f"{base_target}?{urlencode(filtered_params)}" if filtered_params else base_target
+        verdict = self.policy.enforce(
+            full_url,
+            tool="indigo_api",
+            resolve_dns=not isinstance(self._transport, httpx.MockTransport),
         )
-        self.policy.enforce(full_url, tool="indigo_api")
 
         req_headers = dict(headers or {})
-        raw = await self._client().get(base_target, params=filtered_params, headers=req_headers)
+        async with self._client(verdict) as client:
+            raw = await client.get(base_target, params=filtered_params, headers=req_headers)
         first = RawIndigoResponse(
             status_code=raw.status_code,
             headers=raw.headers,
@@ -363,7 +403,9 @@ class IndigoClient:
             transport_used="httpx",
         )
         if _is_cloudflare_waf_challenge(first.status_code, first.headers):
-            fallback = await self._fetch_via_playwright(full_url, req_headers)
+            fallback = await self._fetch_via_playwright(
+                full_url, req_headers, connect_ip=verdict.connect_ip
+            )
             if fallback is not None:
                 return fallback
         return first
@@ -444,9 +486,7 @@ class IndigoClient:
             raise IndigoError(
                 status_code=403,
                 code="indigo_scope_denied",
-                detail=(
-                    "AI Indigo returned HTTP 403 (tier/scope does not include this endpoint)"
-                ),
+                detail=("AI Indigo returned HTTP 403 (tier/scope does not include this endpoint)"),
                 rate_limit=rate,
             )
         if response.status_code == 404:
@@ -668,9 +708,7 @@ def create_indigo_router(
     async def tools(
         category: str | None = Query(default=None, max_length=64),
         pricing: str | None = Query(default=None, pattern="^(free|freemium|paid)$"),
-        sort: str | None = Query(
-            default=None, pattern="^(popularity|name|rating|newest|reviews)$"
-        ),
+        sort: str | None = Query(default=None, pattern="^(popularity|name|rating|newest|reviews)$"),
         page: int = Query(default=1, ge=1, le=1000),
         per_page: int = Query(default=20, ge=1, le=100),
         fields: str | None = Query(default=None, max_length=256),

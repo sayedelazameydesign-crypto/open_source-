@@ -23,7 +23,8 @@ classifiers = [
 ]
 dependencies = [
     "pydantic>=2.7",
-    "httpx>=0.27",
+    "httpx>=0.27,<1.0",
+    "httpcore>=1.0,<2.0",
 ]
 
 [project.optional-dependencies]
@@ -34,8 +35,8 @@ dev = [
     "ruff>=0.6",
     # tests/test_eval_workflow_security.py parses the workflow YAML to
     # assert the eval job cannot be given a free-text destination;
-    # the `reach` extra also pulls PyYAML, but CI installs only
-    # `[dev,server]`, so the test dependency is declared here.
+    # the `reach` extra also pulls PyYAML, but CI must not rely on that optional
+    # integration extra, so the test dependency is declared here.
     "pyyaml>=6.0",
 ]
 server = [

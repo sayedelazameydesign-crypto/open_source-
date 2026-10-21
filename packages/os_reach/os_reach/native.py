@@ -25,7 +25,8 @@ import urllib.parse
 import xml.etree.ElementTree as ET
 from typing import Any
 
-from os_tools.egress import EgressPolicy
+from os_tools.egress import EgressPolicy, EgressVerdict, parse_http_target
+from os_tools.pinned_http import PinnedAsyncHTTPTransport
 from pydantic import BaseModel, Field
 
 from os_reach.contract import ChannelHealth, ReachState, ReachTier
@@ -83,9 +84,16 @@ class ReachFetcher(BaseModel):
 
     model_config = {"arbitrary_types_allowed": True}
 
-    def authorize(self, url: str) -> None:
-        """Raise unless *url* passes both the policy rules and the SSRF floor."""
-        self.policy.enforce(url, tool=self.tool)
+    def authorize(self, url: str) -> EgressVerdict:
+        """Authorize one hop and return the IP the network transport must use."""
+        import httpx
+
+        return self.policy.enforce(
+            url,
+            tool=self.tool,
+            # MockTransport has no socket and intentionally keeps tests offline.
+            resolve_dns=not isinstance(self.transport, httpx.MockTransport),
+        )
 
     async def fetch(
         self,
@@ -100,42 +108,58 @@ class ReachFetcher(BaseModel):
         request_headers = {"User-Agent": self.user_agent, "Accept": accept}
         if headers:
             request_headers.update(headers)
+        caller_has_sensitive_headers = any(
+            name.lower() not in {"accept", "user-agent"} for name in (headers or {})
+        )
 
         current = url
-        async with httpx.AsyncClient(
-            timeout=self.client_timeout,
-            transport=self.transport,
-            follow_redirects=False,
-        ) as client:
-            for _ in range(self.max_redirects + 1):
-                self.authorize(current)
-                async with client.stream("GET", current, headers=request_headers) as resp:
-                    if resp.status_code in _REDIRECT_CODES:
-                        nxt = resp.next_request
-                        if nxt is None:  # pragma: no cover - httpx always builds one
-                            raise RuntimeError(f"redirect without a target from {current}")
-                        # The next hop is authorized on the way round the loop:
-                        # an allow-listed host may not bounce us into a denied one.
-                        current = str(nxt.url)
-                        continue
-                    resp.raise_for_status()
-                    chunks: list[bytes] = []
-                    size = 0
-                    async for chunk in resp.aiter_bytes():
-                        chunks.append(chunk)
-                        size += len(chunk)
-                        if size > self.max_bytes:
-                            break
-                    encoding = resp.encoding or "utf-8"
-                    raw = b"".join(chunks)
-                    truncated = size > self.max_bytes
-                    return FetchResult(
-                        url=str(resp.url),
-                        status_code=resp.status_code,
-                        text=raw[: self.max_bytes].decode(encoding, errors="replace"),
-                        bytes_read=min(size, self.max_bytes),
-                        truncated=truncated,
-                    )
+        for _ in range(self.max_redirects + 1):
+            verdict = self.authorize(current)
+            pinned_transport = PinnedAsyncHTTPTransport(verdict, transport=self.transport)
+            async with (
+                httpx.AsyncClient(
+                    timeout=self.client_timeout,
+                    transport=pinned_transport,
+                    follow_redirects=False,
+                    trust_env=False,
+                ) as client,
+                client.stream("GET", current, headers=request_headers) as resp,
+            ):
+                if resp.status_code in _REDIRECT_CODES:
+                    nxt = resp.next_request
+                    if nxt is None:  # pragma: no cover - httpx always builds one
+                        raise RuntimeError(f"redirect without a target from {current}")
+                    # The next hop is separately resolved, checked and pinned;
+                    # DNS cannot change between authorization and connect. Never
+                    # forward caller-supplied credentials/custom headers to a
+                    # different origin, even when both origins are allow-listed.
+                    next_url = str(nxt.url)
+                    if caller_has_sensitive_headers and parse_http_target(
+                        current
+                    ) != parse_http_target(next_url):
+                        raise RuntimeError(
+                            "refusing cross-origin redirect with caller-provided headers"
+                        )
+                    current = next_url
+                    continue
+                resp.raise_for_status()
+                chunks: list[bytes] = []
+                size = 0
+                async for chunk in resp.aiter_bytes():
+                    chunks.append(chunk)
+                    size += len(chunk)
+                    if size > self.max_bytes:
+                        break
+                encoding = resp.encoding or "utf-8"
+                raw = b"".join(chunks)
+                truncated = size > self.max_bytes
+                return FetchResult(
+                    url=str(resp.url),
+                    status_code=resp.status_code,
+                    text=raw[: self.max_bytes].decode(encoding, errors="replace"),
+                    bytes_read=min(size, self.max_bytes),
+                    truncated=truncated,
+                )
         raise RuntimeError(f"too many redirects (>{self.max_redirects}) starting at {url}")
 
     async def fetch_json(self, url: str, *, headers: dict[str, str] | None = None) -> Any:

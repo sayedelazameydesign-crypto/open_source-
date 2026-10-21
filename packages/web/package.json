@@ -29,11 +29,11 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "eslint": "^9.39.5",
-    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-hooks": "~5.2.0",
     "globals": "^17.13.0",
-    "typescript": "^7.0.2",
-    "typescript-eslint": "^8.71.2",
-    "jsdom": "^26.1.0"
+    "jsdom": "^26.1.0",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.71.2"
   },
   "overrides": {
     "next": {

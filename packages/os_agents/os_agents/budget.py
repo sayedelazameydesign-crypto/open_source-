@@ -22,7 +22,14 @@ from pydantic import BaseModel, Field, PrivateAttr
 
 
 class BudgetConfig(BaseModel):
-    max_steps: int = 25
+    # Internal callers may set 0 to allow zero tool steps (immediate exhaustion);
+    # it never means "unlimited". The public API rejects 0 at request validation.
+    max_steps: int = Field(
+        default=25,
+        ge=0,
+        le=100,
+        description="Maximum tool steps; 0 means no tool steps, never unlimited.",
+    )
     max_seconds: float = 300.0
     max_tokens: int = 200_000
     max_consecutive_errors: int = 3

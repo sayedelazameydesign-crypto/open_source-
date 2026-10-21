@@ -8,10 +8,7 @@ import pytest
 import yaml
 
 WORKFLOW = (
-    pathlib.Path(__file__).resolve().parents[1]
-    / ".github"
-    / "workflows"
-    / "live-acceptance.yml"
+    pathlib.Path(__file__).resolve().parents[1] / ".github" / "workflows" / "live-acceptance.yml"
 )
 
 
@@ -39,17 +36,20 @@ def test_destination_is_a_constant_not_an_input(spec: dict) -> None:
             f"a free-text `{forbidden}` input could redirect the API key"
         )
     env = _step(spec, "Run A1/A6")["env"]
-    assert env["CELA_PROVIDER_BASE_URL"].startswith(
-        "https://generativelanguage.googleapis.com/"
-    )
+    assert env["CELA_PROVIDER_BASE_URL"].startswith("https://generativelanguage.googleapis.com/")
     assert "${{" not in env["CELA_PROVIDER_BASE_URL"]
+
+
+def test_live_provider_workflow_is_manual_only(spec: dict) -> None:
+    triggers = spec.get("on", spec.get(True))
+    assert set(triggers) == {"workflow_dispatch"}
+    assert spec["jobs"]["a1-a6"].get("if") == "github.event_name == 'workflow_dispatch'"
 
 
 def test_kill_switch_gates_the_live_call(spec: dict) -> None:
     preflight = _step(spec, "Preflight")
     assert (
-        preflight["env"]["ALLOW_LIVE_EXTERNAL_CALLS"]
-        == "${{ secrets.ALLOW_LIVE_EXTERNAL_CALLS }}"
+        preflight["env"]["ALLOW_LIVE_EXTERNAL_CALLS"] == "${{ secrets.ALLOW_LIVE_EXTERNAL_CALLS }}"
     )
     assert '!= "true"' in preflight["run"], "anything but literal 'true' must skip"
     run_step = _step(spec, "Run A1/A6")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from os_agents.budget import Budget, BudgetConfig
 from os_core.types import ToolCall
 
@@ -10,6 +11,12 @@ def make_budget(**overrides: object) -> Budget:
     budget = Budget(config=BudgetConfig(**overrides))  # type: ignore[arg-type]
     budget.start()
     return budget
+
+
+@pytest.mark.parametrize("max_steps", [-1, 101])
+def test_max_steps_configuration_has_a_hard_range(max_steps: int) -> None:
+    with pytest.raises(ValueError):
+        BudgetConfig(max_steps=max_steps)
 
 
 def test_fresh_budget_does_not_stop() -> None:

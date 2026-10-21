@@ -47,7 +47,8 @@ PLANNER_PROMPT = (
     '  {"id": "s1", "title": "...", "tool": "tool_name", "args": {...}, '
     '"depends_on": []}\n'
     "Rules: independent steps must not depend on each other (they run in "
-    "parallel); use only the listed tools; keep it under 8 steps."
+    "parallel); use only the listed tools; emit at most {max_steps} steps. "
+    "This is a hard execution limit, not a suggestion."
 )
 
 _REF_RE = re.compile(r"\{\{\s*([\w.-]+)\s*\}\}")
@@ -75,9 +76,9 @@ class PlanningFlow(BaseModel):
     guardrails: Guardrails = Field(default_factory=Guardrails)
     approver: Approver = Field(default_factory=DenyApprover)
     budget_cfg: BudgetConfig = Field(default_factory=BudgetConfig)
-    max_replans: int = 2
-    parallelism: int = 4
-    retry_backoff: float = 0.1
+    max_replans: int = Field(default=2, ge=0, le=5)
+    parallelism: int = Field(default=4, ge=1, le=16)
+    retry_backoff: float = Field(default=0.1, ge=0.0, le=10.0)
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -98,21 +99,49 @@ class PlanningFlow(BaseModel):
             Event(
                 type=EventType.RUN_STARTED,
                 run_id=self.bus.run_id,
-                data={"task": task, "mode": "flow"},
+                data={
+                    "task": task,
+                    "mode": "flow",
+                    "max_steps": budget.config.max_steps,
+                },
             )
         )
 
+        if budget.steps_left == 0:
+            reason = f"max_steps={budget.config.max_steps} reached before planning"
+            run.mark_finished(RunStatus.MAX_STEPS, error=reason)
+            await self.bus.publish(
+                Event(
+                    type=EventType.RUN_FINISHED,
+                    run_id=self.bus.run_id,
+                    data={
+                        "status": run.status.value,
+                        "steps": 0,
+                        "replans": 0,
+                        "budget": budget.status(),
+                        "answer": "",
+                    },
+                )
+            )
+            return FlowResult(run=run, answer="")
+
         graph = await self._plan(task, run, budget, context="")
         if graph is None:
-            run.mark_finished(RunStatus.FAILED, error="planner produced no executable plan")
+            rejected = run.metadata.pop("plan_rejection", None)
+            error = "planner produced no executable plan"
+            if rejected:
+                error = f"{error}: {rejected}"
+            run.mark_finished(RunStatus.FAILED, error=error)
             return FlowResult(run=run, answer="")
 
         observations: dict[str, str] = {}
         while graph.pending_count:
+            if budget.steps_left == 0:
+                break
             ready = graph.ready()
             if not ready:
                 break
-            batch = ready[: self.parallelism]
+            batch = ready[: min(self.parallelism, budget.steps_left)]
             results = await asyncio.gather(
                 *[self._run_step(step, graph, run, budget, observations) for step in batch]
             )
@@ -130,13 +159,29 @@ class PlanningFlow(BaseModel):
             elif failed:
                 break
 
+        max_steps_exhausted = graph.pending_count > 0 and budget.steps_left == 0
+        skipped: list[str] = []
+        if max_steps_exhausted:
+            skipped = await self._skip_pending_steps(
+                graph, reason=f"max_steps={budget.config.max_steps} reached"
+            )
+
         answer = await self._synthesise(task, run, observations)
-        status = (
-            RunStatus.COMPLETED
-            if any(s.status is StepStatus.DONE for s in graph.steps) or answer
-            else RunStatus.FAILED
-        )
-        run.mark_finished(status, answer=answer)
+        if max_steps_exhausted:
+            status = RunStatus.MAX_STEPS
+            error = (
+                f"max_steps={budget.config.max_steps} reached; "
+                f"skipped {len(skipped)} pending step(s)"
+            )
+        else:
+            status = (
+                RunStatus.COMPLETED
+                if any(s.status is StepStatus.DONE for s in graph.steps) or answer
+                else RunStatus.FAILED
+            )
+            error = None
+        run.steps_used = budget.steps
+        run.mark_finished(status, answer=answer, error=error)
         await self.bus.publish(
             Event(
                 type=EventType.RUN_FINISHED,
@@ -153,15 +198,42 @@ class PlanningFlow(BaseModel):
         return FlowResult(run=run, answer=answer, replans=run.replans)
 
     # -- planning -------------------------------------------------------
+    async def _skip_pending_steps(self, graph: PlanGraph, *, reason: str) -> list[str]:
+        """Make every unexecuted step terminal when the hard budget is spent."""
+        skipped: list[str] = []
+        for step in graph.steps:
+            if step.status not in {StepStatus.PENDING, StepStatus.READY}:
+                continue
+            step.status = StepStatus.SKIPPED
+            skipped.append(step.id)
+            await self.bus.publish(
+                Event(
+                    type=EventType.STEP_FINISHED,
+                    run_id=self.bus.run_id,
+                    step_id=step.id,
+                    data={"status": StepStatus.SKIPPED.value, "reason": reason},
+                )
+            )
+        return skipped
+
     async def _plan(
         self, task: str, run: RunState, budget: Budget, *, context: str
     ) -> PlanGraph | None:
+        max_steps = budget.steps_left
+        if max_steps <= 0:
+            run.metadata["plan_rejection"] = (
+                f"max_steps={budget.config.max_steps} exhausted before planning"
+            )
+            return None
         specs = ", ".join(
             f"{t.name}({', '.join(t.parameters.get('required', [])) or '-'})"
             for t in self.registry.tools.values()
         )
         prior = f"Prior observations:\n{context}" if context else ""
-        prompt = f"{PLANNER_PROMPT}\n\nAvailable tools: {specs}\n\nTask: {task}\n{prior}"
+        prompt = (
+            f"{PLANNER_PROMPT.replace('{max_steps}', str(max_steps))}\n\n"
+            f"Available tools: {specs}\n\nTask: {task}\n{prior}"
+        )
         choice = self.router.route(self.router.profile(prompt, complexity_hint="complex"))
         run.model_choices.append(choice)
         await self.bus.model_selected(choice)
@@ -171,8 +243,9 @@ class PlanningFlow(BaseModel):
         budget.charge_tokens(response.usage.total)
         run.tokens_used += response.usage.total
         try:
-            graph = parse_plan(response.content)
+            graph = parse_plan(response.content, max_steps=max_steps)
         except PlanError as exc:
+            run.metadata["plan_rejection"] = str(exc)
             await self.bus.log(f"plan rejected: {exc}", level="error")
             return None
         run.steps = list(graph.steps)
@@ -224,8 +297,8 @@ class PlanningFlow(BaseModel):
     ) -> ToolResult:
         step.attempts += 1
         step.status = StepStatus.RUNNING
-        run.steps_used = budget.steps + 1
         budget.tick()
+        run.steps_used = budget.steps
         await self.bus.publish(
             Event(
                 type=EventType.STEP_STARTED,

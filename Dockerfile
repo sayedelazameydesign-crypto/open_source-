@@ -1,6 +1,7 @@
-# Root Dockerfile — mirror of deploy/g1a/Dockerfile for container platforms that
-# look for a Dockerfile at the repository root (Back4app Containers, ClawCloud
-# Run, and similar). Keep in sync with deploy/g1a/Dockerfile.
+# Canonical Docker build input for the GHCR image workflow. Container providers
+# deploy the published GHCR image; this build uses deploy/g1a/main.py as its
+# thin ASGI wrapper around os_server.app:create_app. deploy/g1a/Dockerfile is
+# retained only as a local parity build input; keep its runtime settings aligned.
 #
 # Code execution is DISABLED by default (CELA_CODE_EXEC_MODE=disabled): untrusted
 # code never runs on a shared cloud host — every code-exec request is refused by
@@ -13,7 +14,8 @@
 # (Back4app probes the EXPOSEd port, then auto-switches and saves what it found
 # to the app settings). We honor $PORT and fall back to 8080.
 
-FROM python:3.14-slim
+# Keep the container runtime aligned with Render's Python 3.11 line.
+FROM python:3.11-slim AS runtime
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
