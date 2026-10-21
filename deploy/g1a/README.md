@@ -1,10 +1,9 @@
 # g1a — self-contained FastAPI Cloud deploy bundle
 
-`g1a` is a ready-to-deploy bundle for hosting the **Celia.sh Mission OS** FastAPI
-service (`os_server.app:create_app`) on a cloud platform, with **code execution
-disabled**. It is *self-contained*: the entrypoint, dependency manifest, deploy
-configs and environment template all live here, so an operator can ship the
-service without assembling pieces from across the monorepo.
+`g1a` is the Docker/ASGI entrypoint for hosting the **Celia.sh Mission OS**
+FastAPI service (`os_server.app:create_app`) on container platforms, with **code
+execution disabled**. Render has one canonical Blueprint at the repository root
+(`render.yaml`); this directory does not define a second Render artifact.
 
 ## Why code execution is disabled
 
@@ -42,8 +41,7 @@ untrusted code on the host.
 |---|---|
 | `main.py` | ASGI entrypoint: `app = create_app()`. Portable across ASGI servers. |
 | `requirements.txt` | Third-party runtime closure (mirrors `[server]` + `[distributed]`). |
-| `render.yaml` | Render web-service blueprint (Python runtime), code-exec disabled. |
-| `Dockerfile` | Container build for Docker-based clouds (Fly, Railway, Cloud Run, …). |
+| `Dockerfile` | Local parity build input; production providers use the single GHCR image. |
 | `.env.example` | Environment/secret template. Never commit real values. |
 
 ## Deploy
@@ -53,17 +51,30 @@ All commands run from the **repository root** (the service is installed with
 
 ### Render
 
-Point a Render Blueprint at `deploy/g1a/render.yaml` (or copy the service block
-into your own blueprint). Set the `sync: false` secrets in the Render dashboard:
-`CELA_API_TOKEN`, `CELA_PRIVATE_API_TOKEN`, and — recommended — `CELA_RUN_STORE_URL`
-pointing at Supabase Postgres. The health check is `GET /health`.
+Use the single canonical Blueprint at the repository root, `render.yaml`; do not
+create a second Render Blueprint from this bundle. It starts
+`os_server.app:create_app` directly, pins Python 3.11.9, explicitly disables
+code execution, and requires the operator-supplied `sync: false` secrets. Set
+`CELA_API_TOKEN`, `CELA_PRIVATE_API_TOKEN`, and `CELA_RUN_STORE_URL` pointing at
+Postgres. `deploy_doctor.py --strict` is a manual preflight, not a central deploy
+gate; no provider deployment is permitted until that gate is wired into the
+deployment orchestrator. The health check is `GET /health`.
 
-### Any Docker host
+### Docker-based hosts
+
+For non-Render providers, deploy the image published by the repository's
+`docker-image` workflow to GHCR (do not build a provider-specific artifact):
 
 ```bash
-docker build -f deploy/g1a/Dockerfile -t celia-g1a .
-docker run --rm -e CELA_API_TOKEN=... -e CELA_RUN_STORE_URL=... -p 8080:8080 celia-g1a
+docker pull ghcr.io/sayedelazameydesign-crypto/open_source:latest
+docker run --rm -e CELA_API_TOKEN=... -e CELA_PRIVATE_API_TOKEN=... \
+  -e CELA_RUN_STORE_URL=... -p 8080:8080 \
+  ghcr.io/sayedelazameydesign-crypto/open_source:latest
 ```
+
+The image starts the `deploy/g1a` ASGI wrapper, which delegates to the canonical
+`os_server.app:create_app` factory. The checked-in Dockerfiles are build inputs
+for that one GHCR image, not separate provider deployments.
 
 ### Local smoke test
 

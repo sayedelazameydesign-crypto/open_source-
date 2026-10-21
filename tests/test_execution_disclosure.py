@@ -9,10 +9,19 @@ from fastapi.testclient import TestClient
 from os_core.models import OpenAICompatModel, ScriptedModel, describe_execution
 from os_core.state import RunState, RunStatus
 from os_core.types import Message
+from os_orchestration.platform import PlatformConfig
 from os_server.app import create_app
 from os_server.cli import main
 from os_server.demo import build_demo_platform, build_demo_platform_for, demo_react_model
 from os_server.runtime import ApiRuntime
+
+
+def test_platform_step_limit_is_validated_on_construction_and_assignment():
+    with pytest.raises(ValueError):
+        PlatformConfig(max_steps=101)
+    config = PlatformConfig(max_steps=25)
+    with pytest.raises(ValueError):
+        config.max_steps = 101
 
 
 def test_cli_serve_uses_fresh_mode_specific_platforms(monkeypatch):

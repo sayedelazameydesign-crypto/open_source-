@@ -36,7 +36,8 @@ from typing import Any
 import httpx
 from os_core.redact import scrub_credentials, truncate
 from os_core.types import ToolResult, ToolStatus
-from os_tools.egress import EgressPolicy, EgressPolicyError, parse_http_target
+from os_tools.egress import EgressPolicy, EgressPolicyError, EgressVerdict, parse_http_target
+from os_tools.pinned_http import PinnedAsyncHTTPTransport
 
 from os_mcp.protocol import (
     METHOD_INITIALIZE,
@@ -616,9 +617,13 @@ class HttpMCPClient(BaseMCPClient):
                     resolved.pop(key)
         return resolved
 
-    def _enforce_policy(self) -> None:
+    def _enforce_policy(self) -> EgressVerdict:
         try:
-            self.policy.enforce(self.url, tool=self.tool_label)
+            return self.policy.enforce(
+                self.url,
+                tool=self.tool_label,
+                resolve_dns=not isinstance(self.transport, httpx.MockTransport),
+            )
         except (EgressPolicyError, ValueError) as exc:
             raise MCPTransportError(
                 f"egress policy refused {scrub_credentials(self.url)}: {exc}. "
@@ -679,7 +684,7 @@ class HttpMCPClient(BaseMCPClient):
     ) -> dict[str, Any] | None:
         if self._closed:
             raise MCPTransportError(f"mcp client '{self.server_name}' is closed")
-        self._enforce_policy()
+        verdict = self._enforce_policy()
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
@@ -694,7 +699,10 @@ class HttpMCPClient(BaseMCPClient):
         try:
             async with (
                 httpx.AsyncClient(
-                    timeout=timeout, transport=self.transport, follow_redirects=False
+                    timeout=timeout,
+                    transport=PinnedAsyncHTTPTransport(verdict, transport=self.transport),
+                    follow_redirects=False,
+                    trust_env=False,
                 ) as client,
                 client.stream("POST", self.url, headers=headers, content=body) as response,
             ):
@@ -776,10 +784,13 @@ class HttpMCPClient(BaseMCPClient):
         # Best-effort session teardown; a server that does not support DELETE
         # answers 405 and that is fine.
         try:
-            self.policy.enforce(self.url, tool=self.tool_label)
+            verdict = self._enforce_policy()
             headers = {**self._resolve_headers(), "Mcp-Session-Id": self.session_id}
             async with httpx.AsyncClient(
-                timeout=min(self.timeout, 10.0), transport=self.transport, follow_redirects=False
+                timeout=min(self.timeout, 10.0),
+                transport=PinnedAsyncHTTPTransport(verdict, transport=self.transport),
+                follow_redirects=False,
+                trust_env=False,
             ) as client:
                 await client.delete(self.url, headers=headers)
         except Exception:

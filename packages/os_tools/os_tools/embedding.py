@@ -20,8 +20,9 @@ must do when it cannot answer.
 ``provider``            OpenAI-compatible ``POST {base_url}/embeddings`` over HTTPS. The only
                         backend that sends corpus text off the machine per call, so it needs an
                         explicit opt-in flag **and** a host allow-list, and every batch passes
-                        :meth:`~os_tools.egress.EgressPolicy.check` with ``tool="embeddings"``.
-                        A short or re-ordered response is a hard error, never a shifted vector.
+                        :meth:`~os_tools.egress.EgressPolicy.enforce` with ``tool="embeddings"``;
+                        the resolved IP is pinned at the socket layer. A short or re-ordered
+                        response is a hard error, never a shifted vector.
 ======================  ==========================================================================
 
 The factory follows ``code_exec_backend_from_env`` (ADR-0005): an unknown value
@@ -67,7 +68,8 @@ from urllib.parse import urlsplit
 from os_core.redact import scrub_credentials
 from os_core.vectors import l2_normalize
 
-from os_tools.egress import EgressPolicy, EgressRule
+from os_tools.egress import EgressPolicy, EgressPolicyError, EgressRule, EgressVerdict
+from os_tools.pinned_http import PinnedHTTPTransport
 from os_tools.ssrf import SSRFGuard
 
 #: ``off | local | model | provider``. Unset means ``off`` (ADR-0022).
@@ -568,10 +570,10 @@ class ProviderEmbedding:
     Redirects are disabled, so the bearer token cannot be forwarded to another
     host by a 30x hop; a 3xx is an error here, not a detour.
 
-    The SSRF floor resolves the host before the policy admits it, but ``httpx``
-    resolves again when it connects — full IP pinning needs a custom transport
-    and is a repository-wide limitation documented in ``os_tools.ssrf``, not a
-    guarantee this class claims.
+    DNS is resolved before the policy admits the host, and the resulting IP is
+    pinned by the HTTP transport for the request. The original hostname remains
+    in the URL so HTTP ``Host``, TLS certificate verification and SNI continue
+    to use the configured provider origin.
     """
 
     def __init__(
@@ -675,25 +677,30 @@ class ProviderEmbedding:
         headers[self.auth_header] = f"{self.auth_prefix}{key}".strip()
         return headers
 
-    def _check(self) -> None:
-        """The endpoint is configuration, not a permit for arbitrary hosts.
+    def _check(self) -> EgressVerdict:
+        """Authorize this provider origin and resolve its connection IP.
 
         ``tool="embeddings"`` is a *named* tool in the policy, so an operator can
         allow the embedding origin for embeddings alone and still deny it to
         ``browser``. Reusing a shared tool name would have been the easier code,
         and the harder audit.
         """
-        verdict = self.policy.check(self.url, tool="embeddings")
-        if not verdict.allowed:
-            raise EmbeddingUnavailable(
-                "provider", f"{self.url} is not permitted: {verdict.reason}"
+        import httpx
+
+        try:
+            return self.policy.enforce(
+                self.url,
+                tool="embeddings",
+                resolve_dns=not isinstance(self._transport, httpx.MockTransport),
             )
+        except (EgressPolicyError, ValueError) as exc:
+            raise EmbeddingUnavailable("provider", f"{self.url} is not permitted: {exc}") from exc
 
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
         bodies = [str(text or "")[: self.max_input_chars] for text in texts]
         if not bodies:
             return []
-        self._check()
+        verdict = self._check()
         headers = self._headers()  # raises before the socket opens
         import httpx
 
@@ -709,9 +716,9 @@ class ProviderEmbedding:
             # A 30x that carried the bearer token to another host would bypass the
             # allow-list; the policy checked one origin, so only that origin is used.
             "follow_redirects": False,
+            "trust_env": False,
+            "transport": PinnedHTTPTransport(verdict, transport=self._transport),
         }
-        if self._transport is not None:  # tests inject MockTransport; nothing else changes
-            kwargs["transport"] = self._transport
         try:
             with httpx.Client(**kwargs) as client:
                 response = client.post(self.url, json=payload)
@@ -725,8 +732,7 @@ class ProviderEmbedding:
             detail = scrub_credentials(response.text[:_MAX_ERROR_CHARS]).strip()
             raise EmbeddingUnavailable(
                 "provider",
-                f"HTTP {response.status_code} from {self.url}"
-                + (f": {detail}" if detail else ""),
+                f"HTTP {response.status_code} from {self.url}" + (f": {detail}" if detail else ""),
             )
         if len(response.content) > _MAX_RESPONSE_BYTES:
             raise EmbeddingUnavailable(
@@ -757,9 +763,7 @@ class ProviderEmbedding:
         seen: set[int] = set()
         for position, row in enumerate(rows):
             if not isinstance(row, Mapping):
-                raise EmbeddingContractError(
-                    "provider", f"data[{position}] is not an object"
-                )
+                raise EmbeddingContractError("provider", f"data[{position}] is not an object")
             raw_index = row.get("index", position)
             try:
                 index = int(raw_index)
@@ -772,9 +776,7 @@ class ProviderEmbedding:
                     "provider", f"data[{position}] index {index} is outside 0..{expected - 1}"
                 )
             if index in seen:
-                raise EmbeddingContractError(
-                    "provider", f"index {index} appears more than once"
-                )
+                raise EmbeddingContractError("provider", f"index {index} appears more than once")
             seen.add(index)
             vectors[index] = row.get("embedding")
         if len(seen) != expected:
@@ -815,9 +817,7 @@ def embedding_backend_from_env(
     limit = _max_chars(source)
 
     if backend == "local":
-        dim = _int_env(
-            source, ENV_DIM, DEFAULT_DIM, minimum=MIN_HASH_DIM, maximum=MAX_DIM
-        )
+        dim = _int_env(source, ENV_DIM, DEFAULT_DIM, minimum=MIN_HASH_DIM, maximum=MAX_DIM)
         return HashEmbedding(dim=dim, max_input_chars=limit).prepare()
 
     if backend == "model":

@@ -74,11 +74,11 @@ postgresql://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/p
 
 ```bash
 CELA_API_TOKEN="…" CELA_PRIVATE_API_TOKEN="…" \
-CELA_RUN_STORE_URL="postgresql://…" RENDER=true \
+CELA_RUN_STORE_URL="postgresql://…" RENDER=true CELA_CODE_EXEC_MODE=disabled \
 python scripts/deploy_doctor.py --strict
 ```
 
-يجب أن يعود `"ready": true` مع `"store_backend_scheme": "postgresql"` وبلا تحذير `ephemeral_sqlite_on_render`.
+يجب أن يعود `"ready": true` مع `"store_backend_scheme": "postgresql"`. غياب `CELA_RUN_STORE_URL` أو ضبطه على SQLite/ذاكرة خطأ مانع (`persistent_run_store_required`)، لا تحذيرًا؛ Postgres لازم لبقاء التشغيلات بعد restart على Render Free. يفحص `deploy_doctor` متغير البيئة و`render.yaml` الهدف معًا (يحتاج PyYAML من extra `dev`؛ `make install` يثبّته). يفشل هذا الفحص مغلقًا ما لم يكن `CELA_CODE_EXEC_MODE=disabled` صريحًا في كليهما. **لكنه preflight يدوي، وليس بعدُ بوابة يفرضها orchestrator مركزي على كل deploy**؛ المستودع لا يحتوي حاليًا deploy adapter يستدعيه لكل provider. لذلك لا تنفّذ نشرًا يدويًا من لوحة Render أو عبر أي provider حتى تُربط هذه البوابة مركزيًا؛ لا تتجاوز الرفض ولا تختَر provider بديلًا.
 
 5. **التحقق بعد النشر:**
 
@@ -95,7 +95,7 @@ curl -sS -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer $CELA_PRIVAT
 
 ```bash
 export CELA_API_TOKEN=...            # الرمز العام؛ لا يُطبع أبدًا
-python scripts/verify_deployment.py --api "$API"
+make verify-deploy API="$API" EXPECT_KIND=scripted
 # Celia.sh — deployment verification
 #   service : https://<service>.onrender.com
 #   commit  : <40-char sha>
@@ -108,28 +108,38 @@ python scripts/verify_deployment.py --api "$API"
 # 4/4 criteria passed.
 ```
 
-السكربت **لا يخمّن**: فحوصه الأربعة مسمّاة، ورمز الخروج `0` يعني أن كل الفحوص
+الـprobe **لا يخمّن**: فحوصه الأربعة مسمّاة، ورمز الخروج `0` يعني أن كل الفحوص
 نجحت، و`1` يعني أن فشل واحدًا على الأقل (فيُطبع أيّها بالتفصيل)، و`2` يعني أن
-الفحص لم يعمل أصلًا (لا رمز، أو عنوان غير صالح). الرمز لا يُطبع ولا يُخزَّن في
-التقرير، والعنوان يجب أن يكون `https` خارج loopback لأن الفحص يرسل رمزًا
-بـ`Bearer`. أضف `--json` لآلة تقرأ التقرير.
+الفحص لم يعمل أصلًا (لا رمز، أو عنوان غير صالح). يستخدم HTTPS/443 فقط، ويطابق
+المضيف مع `*.onrender.com` قبل DNS أو إرسال أي طلب، ويثبّت كل عناوين DNS العامة،
+ولا يتبع redirects ولا يثق بمتغيرات proxy. يبدأ بـ`/health` بلا رمز؛ ولا يفحص
+Postgres عبر HTTP. الرمز لا يُطبع ولا يُخزَّن في التقرير. لمزوّد API آخر، حدّد
+`ALLOW_HOSTS` صراحةً بعد مراجعة adapter؛ لا تستخدم نطاقات قاعدة البيانات كخدمة HTTP.
+أضف `--json` عند استدعاء `scripts/verify_deployment.py` مباشرةً لآلة تقرأ التقرير.
 
 ### 2.6 الوضع التجريبي أولًا، ثم الوضع الحي
 
-`render.yaml` يُنشئ الخدمة في **وضع المعاينة**: `CELA_USE_LIVE_PROVIDER=0`.
+`render.yaml` يُنشئ الخدمة في **وضع المعاينة**: `CELA_USE_LIVE_PROVIDER=0`،
+ويفرض `CELA_CODE_EXEC_MODE=disabled` في إعداد الخدمة نفسه؛ لا يُعتمد على
+`CELA_SANDBOXED=1` كحدّ للشبكة أو على Dockerfile لأن Blueprint يستخدم Python runtime.
 لذلك يقلع الخادم بلا أي مفتاح، ويُعلن عن نفسه بصدق: `/runtime-info` يعيد
 `execution.kind = "scripted"`، وواجهة `ExecutionDisclosure` تعرض «تنفيذ تجريبي»
 بدل الإيحاء بأن نموذجًا حيًّا أجاب.
 
 1. أكمل خطوات §3–§4 أولًا وتأكد أن المهمة التجريبية تُحفظ وتُستعاد بعد إعادة تشغيل Render.
-2. أضف `GEMINI_API_KEY` كسرًا في Render (Dashboard → Environment)، ثم غيّر
-   `CELA_USE_LIVE_PROVIDER` إلى `1` وأعد النشر.
-3. شغّل اختبار القبول A1/A6 بمفتاح حقيقي (انظر `docs/DEPLOYMENT_RUNBOOK.md` §المرحلة أ)،
+2. **لا تفعّل الوضع الحي في هذه المرحلة.** عميل `OpenAICompatModel` الحالي لا يستخدم بعد
+   `PinnedHTTPTransport` ولا سياسة مضيف خاصة بالمزوّد؛ يجب أولًا إكمال adapter المزوّد
+   ومراجعة مضيف Gemini رسميًا واختبار DNS/TLS/الـredirects. أبقِ
+   `CELA_USE_LIVE_PROVIDER=0` حتى إغلاق هذا العمل؛ وجود المفتاح وحده ليس إذنًا لإرسال
+   prompts أو الأسرار إلى المضيف.
+3. بعد إغلاق adapter فقط، أضف `GEMINI_API_KEY` كسرّ في Render (Dashboard → Environment)،
+   ثم غيّر `CELA_USE_LIVE_PROVIDER` إلى `1` وأعد النشر.
+4. شغّل اختبار القبول A1/A6 بمفتاح حقيقي (انظر `docs/DEPLOYMENT_RUNBOOK.md` §المرحلة أ)،
    ثم تحقق من الخدمة المنشورة نفسها: `/runtime-info` يجب أن يعيد
    `provider_adapter` مع `fallback_triggered=False` في مسار النجاح. أي:
 
    ```bash
-   python scripts/verify_deployment.py --api "$API" --expect-kind provider_adapter
+   make verify-deploy API="$API" EXPECT_KIND=provider_adapter
    ```
 
    الفحص الافتراضي يتوقّع `scripted` (وضع المعاينة)، فإن استُدعي على خدمة حيّة

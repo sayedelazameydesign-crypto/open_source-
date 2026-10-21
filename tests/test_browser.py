@@ -129,7 +129,65 @@ def test_playwright_backend_reports_missing_dependency_clearly() -> None:
     import asyncio
 
     with pytest.raises(RuntimeError, match="pip install playwright"):
+        asyncio.run(PlaywrightBrowser().navigate("https://example.org", connect_ip="93.184.216.34"))
+
+
+def test_playwright_browser_fails_closed_without_an_approved_ip() -> None:
+    import asyncio
+
+    from os_tools.browser import PlaywrightBrowser
+
+    with pytest.raises(RuntimeError, match="DNS-authorized"):
         asyncio.run(PlaywrightBrowser().navigate("https://example.org"))
+
+
+@pytest.mark.parametrize(
+    "connect_ip",
+    [
+        "127.0.0.1",
+        "10.0.0.5",
+        "169.254.169.254",
+        "100.100.100.200",
+        "::1",
+        "::ffff:127.0.0.1",
+        "fd00:ec2::254",
+    ],
+)
+def test_playwright_browser_rejects_non_public_connection_pins(connect_ip: str) -> None:
+    import asyncio
+
+    from os_tools.browser import PlaywrightBrowser
+
+    with pytest.raises(RuntimeError, match="globally routable"):
+        asyncio.run(PlaywrightBrowser().navigate("https://example.org", connect_ip=connect_ip))
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://localhost/",
+        "http://127.1/",
+        "http://169.254.169.254/latest/meta-data/",
+    ],
+)
+def test_playwright_browser_rejects_ssrf_hosts_even_with_a_public_pin(url: str) -> None:
+    import asyncio
+
+    from os_tools.browser import PlaywrightBrowser
+
+    with pytest.raises(RuntimeError, match="SSRF boundary"):
+        asyncio.run(PlaywrightBrowser().navigate(url, connect_ip="93.184.216.34"))
+
+
+def test_existing_playwright_page_cannot_navigate_without_a_fresh_pin() -> None:
+    import asyncio
+
+    from os_tools.browser import PlaywrightBrowser
+
+    browser = PlaywrightBrowser()
+    browser._page = object()
+    with pytest.raises(RuntimeError, match="approved connect_ip"):
+        asyncio.run(browser.navigate("https://example.org/changed"))
 
 
 async def test_snapshot_tool_shape() -> None:

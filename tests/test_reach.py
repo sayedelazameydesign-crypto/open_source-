@@ -299,6 +299,26 @@ async def test_an_allowed_redirect_is_followed() -> None:
     assert len(transport.requests) == 2
 
 
+async def test_cross_origin_redirect_refuses_to_forward_caller_headers() -> None:
+    transport = CountingTransport(
+        lambda request: httpx.Response(
+            302,
+            headers={"location": "https://other.example/final"},
+            request=request,
+        )
+    )
+    fetcher = ReachFetcher(
+        policy=policy_for("example.org", "other.example"),
+        transport=transport,
+    )
+
+    with pytest.raises(RuntimeError, match="cross-origin redirect"):
+        await fetcher.fetch("https://example.org/start", headers={"Authorization": "Bearer secret"})
+
+    assert len(transport.requests) == 1
+    assert transport.requests[0].headers["Authorization"] == "Bearer secret"
+
+
 async def test_a_redirect_loop_is_refused_rather_than_followed_forever() -> None:
     transport = CountingTransport(
         lambda request: httpx.Response(302, headers={"location": "https://example.org/loop"})

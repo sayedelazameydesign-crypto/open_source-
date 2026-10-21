@@ -42,7 +42,17 @@ def test_non_http_schemes_are_blocked(guard: SSRFGuard, url: str) -> None:
     assert not guard.check(url).allowed
 
 
-@pytest.mark.parametrize("url", ["//example.org/x", "example.org/x", "http://"])
+@pytest.mark.parametrize(
+    "url",
+    [
+        "//example.org/x",
+        "example.org/x",
+        "http://",
+        "https://user:secret@example.org/",
+        "http://example.org:0/",
+        "http://example.org:65536/",
+    ],
+)
 def test_malformed_urls_are_blocked(guard: SSRFGuard, url: str) -> None:
     assert not guard.check(url).allowed
 
@@ -115,12 +125,91 @@ def test_dns_failure_is_reported_not_raised() -> None:
     assert "DNS resolution failed" in verdict.reason
 
 
+def test_dns_override_returns_approved_address_even_if_guard_default_is_off(monkeypatch) -> None:
+    import socket
+
+    calls: list[str] = []
+
+    def resolve(host, port, *args, **kwargs):
+        calls.append(host)
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolve)
+    verdict = SSRFGuard(resolve_dns=False).check("https://example.org/", resolve_dns=True)
+
+    assert verdict.allowed
+    assert verdict.connect_ip == "93.184.216.34"
+    assert verdict.connect_ips == ["93.184.216.34"]
+    assert calls == ["example.org"]
+
+
+def test_dns_keeps_every_public_answer_in_stable_deduplicated_order(monkeypatch) -> None:
+    import socket
+
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0)),
+            (
+                socket.AF_INET6,
+                socket.SOCK_STREAM,
+                6,
+                "",
+                ("2606:2800:220:1:248:1893:25c8:1946", 0, 0, 0),
+            ),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0)),
+        ],
+    )
+    verdict = SSRFGuard(resolve_dns=True).check("https://example.org/")
+
+    assert verdict.allowed
+    assert verdict.connect_ip == "93.184.216.34"
+    assert verdict.connect_ips == [
+        "93.184.216.34",
+        "2606:2800:220:1:248:1893:25c8:1946",
+    ]
+
+
+def test_empty_or_mixed_private_dns_answers_fail_closed(monkeypatch) -> None:
+    import socket
+
+    guard = SSRFGuard(resolve_dns=True)
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.4", 0)),
+        ],
+    )
+    mixed = guard.check("https://example.org/")
+    assert not mixed.allowed
+    assert mixed.connect_ip == "10.0.0.4"
+    assert "DNS rebinding" in mixed.reason
+
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *args, **kwargs: [])
+    empty = guard.check("https://example.org/")
+    assert not empty.allowed
+    assert "no addresses returned" in empty.reason
+
+
+def test_trailing_dot_localhost_and_shared_space_are_not_public() -> None:
+    guard = SSRFGuard(resolve_dns=False)
+    assert not guard.check("http://localhost./").allowed
+    assert not guard.check("http://100.64.0.1/").allowed
+
+
 @pytest.mark.parametrize(
     "url",
     [
         "http://2130706433/",  # decimal form of 127.0.0.1
         "http://127.1/",  # short form of 127.0.0.1
-        "http://0x7f.0.0.1/",  # hex form of 127.0.0.1
+        "http://127.0.1/",  # two-part short form of 127.0.0.1
+        "http://0x7f.0.0.1/",  # dotted-hex form of 127.0.0.1
+        "http://0x7f000001/",  # one-part hex form of 127.0.0.1
+        "http://0177.0.0.1/",  # octal form of 127.0.0.1
+        "http://00177.0.0.1/",  # zero-padded octal form of 127.0.0.1
     ],
 )
 def test_ambiguous_numeric_hosts_are_refused(guard: SSRFGuard, url: str) -> None:
@@ -152,6 +241,19 @@ def test_v4_mapped_loopback_literal_is_refused_by_the_ip_rules(guard: SSRFGuard)
     address = ipaddress.ip_address(verdict.connect_ip)
     mapped = getattr(address, "ipv4_mapped", None) or address
     assert mapped.is_loopback
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://[::ffff:169.254.169.254]/latest/meta-data/",
+        "http://[::ffff:100.100.100.200]/latest/meta-data/",
+        "http://[fd00:ec2::254]/latest/meta-data/",
+        "http://100.100.100.200/latest/meta-data/",
+    ],
+)
+def test_metadata_service_addresses_are_refused_even_when_mapped(url: str) -> None:
+    assert not SSRFGuard(resolve_dns=False).check(url).allowed
 
 
 def test_single_label_hosts_are_refused_unless_opted_in(guard: SSRFGuard) -> None:

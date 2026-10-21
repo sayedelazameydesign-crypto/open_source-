@@ -11,8 +11,11 @@ Runbooks are read by people; this module is the *same check executed by a
 machine*, so a deployment claim can be produced by a command instead of
 asserted. The rules it keeps:
 
-* the bearer token is never printed, never stored in a report, and never sent
-  over cleartext ``http://`` to a non-loopback host;
+* the bearer token is never printed or stored in a report; production requests
+  are HTTPS/443-only, use an explicit API-host allowlist, bypass proxy
+  environment variables, and pin every resolved public IP;
+* redirects are not followed, and the destination is authorized before the
+  client is created or any request (especially the token-bearing request) is sent;
 * every criterion is named and independently pass/fail, so a failure says
   *which* promise of the deployment broke;
 * the expectation is explicit. A preview deployment must answer
@@ -27,16 +30,25 @@ asserted. The rules it keeps:
 
 from __future__ import annotations
 
+import ipaddress
 import json
+import socket
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
+from os_tools.egress import EgressPolicy, EgressPolicyError, EgressVerdict, parse_http_target
+from os_tools.pinned_http import PinnedHTTPTransport
 
 from os_server.automation import backend_url_problem
 
 #: The execution kinds the server may report (see ``os_core.types.ExecutionInfo``).
 VALID_EXECUTION_KINDS: tuple[str, ...] = ("scripted", "provider_adapter", "unknown")
+
+#: The published-service checker is an API probe, not a general-purpose client.
+VERIFY_TOOL = "verify_deployment"
+DEFAULT_VERIFY_ALLOWED_HOSTS: tuple[str, ...] = ("*.onrender.com",)
 
 #: ``"any"`` accepts whichever kind the service reports, as long as it is one
 #: of :data:`VALID_EXECUTION_KINDS`.
@@ -110,7 +122,114 @@ def normalize_base_url(raw: str) -> str:
     problem = backend_url_problem(candidate, var_name="the service URL")
     if problem is not None:
         raise ProbeConfigurationError(f"{problem} (refused: {candidate})")
+    if "?" in candidate or "#" in candidate:
+        raise ProbeConfigurationError("the service base URL must not contain a query or fragment")
     return candidate.rstrip("/")
+
+
+def _explicit_loopback_verdict(base_url: str) -> EgressVerdict:
+    """Authorize the opt-in local-test exception without weakening public rules."""
+    try:
+        scheme, host, port = parse_http_target(base_url)
+    except ValueError as exc:
+        raise ProbeConfigurationError(f"invalid local service URL: {exc}") from None
+    if scheme != "http":
+        raise ProbeConfigurationError("the local-loopback exception is for http:// only")
+
+    try:
+        address = ipaddress.ip_address(host)
+        addresses = [address]
+    except ValueError:
+        if host not in {"localhost", "localhost.localdomain"}:
+            raise ProbeConfigurationError(
+                "--allow-loopback accepts only localhost or a canonical loopback IP"
+            ) from None
+        try:
+            infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+            addresses = [ipaddress.ip_address(info[4][0]) for info in infos]
+        except (OSError, IndexError, TypeError, ValueError) as exc:
+            raise ProbeConfigurationError(f"could not resolve local loopback host: {exc}") from None
+
+    if not addresses or any(not address.is_loopback for address in addresses):
+        raise ProbeConfigurationError(
+            "--allow-loopback refused a name that does not resolve exclusively to loopback"
+        )
+    return EgressVerdict(
+        allowed=True,
+        url=base_url,
+        host=host,
+        connect_ip=addresses[0].compressed,
+        connect_ips=list(dict.fromkeys(address.compressed for address in addresses)),
+        reason="explicit loopback-only test exception",
+        scheme=scheme,
+        port=port,
+        tool=VERIFY_TOOL,
+        matched_rule="allow:loopback",
+    )
+
+
+def authorize_probe_destination(
+    base_url: str,
+    *,
+    allowed_hosts: Sequence[str] | None = None,
+    allow_loopback: bool = False,
+) -> EgressVerdict:
+    """Apply HTTPS/API-host policy, resolve safely, and return the pinned IP.
+
+    The default is deliberately narrow: HTTPS on port 443 for a subdomain of
+    ``onrender.com``. Alternate API domains must be named explicitly by the
+    operator (or a future provider adapter). The local exception exists only
+    for tests and requires an explicit opt-in.
+    """
+    try:
+        scheme, host, port = parse_http_target(base_url)
+    except ValueError as exc:
+        raise ProbeConfigurationError(f"invalid service URL: {exc}") from None
+
+    if (
+        allow_loopback
+        and scheme == "http"
+        and (host in {"localhost", "localhost.localdomain"} or _is_loopback_literal(host))
+    ):
+        return _explicit_loopback_verdict(base_url)
+
+    if scheme != "https":
+        raise ProbeConfigurationError("published-service verification requires HTTPS")
+    if port != 443:
+        raise ProbeConfigurationError("published-service verification permits HTTPS port 443 only")
+
+    if allowed_hosts is None:
+        patterns = DEFAULT_VERIFY_ALLOWED_HOSTS
+    elif isinstance(allowed_hosts, str):
+        patterns = (allowed_hosts,)
+    else:
+        patterns = tuple(allowed_hosts)
+    if not patterns:
+        raise ProbeConfigurationError("at least one explicit API service host must be allowed")
+    try:
+        policy = EgressPolicy.allow_hosts(
+            *patterns,
+            schemes={"https"},
+            ports={443},
+            tools={VERIFY_TOOL},
+            resolve_dns=True,
+            default_tool=VERIFY_TOOL,
+        )
+        # Match the host/scheme/port before resolving it. This avoids even a
+        # DNS query for a host that is outside the operator's allowlist.
+        policy.check(base_url, tool=VERIFY_TOOL, resolve_dns=False).raise_if_denied()
+        return policy.enforce(base_url, tool=VERIFY_TOOL, resolve_dns=True)
+    except (EgressPolicyError, ValueError) as exc:
+        raise ProbeConfigurationError(
+            f"service destination refused by egress policy: {exc}"
+        ) from None
+
+
+def _is_loopback_literal(host: str) -> bool:
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def _short(body: str, limit: int = 200) -> str:
@@ -118,42 +237,83 @@ def _short(body: str, limit: int = 200) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def _token_variants(token: str) -> tuple[str, ...]:
+    """Return the supplied token and common URL-encoded forms."""
+    from urllib.parse import quote, quote_plus
+
+    return tuple(
+        sorted(
+            {item for item in (token, quote(token, safe=""), quote_plus(token, safe="")) if item},
+            key=len,
+            reverse=True,
+        )
+    )
+
+
+def _contains_token(text: str, token: str) -> bool:
+    """Detect the raw token and common URL encodings, including hex case variants."""
+    if not token:
+        return False
+    from urllib.parse import unquote, unquote_plus
+
+    if any(variant in text for variant in _token_variants(token)):
+        return True
+    return token in unquote(text) or token in unquote_plus(text)
+
+
+def _redact_token(text: str, token: str) -> str:
+    """Remove the supplied token and common URL-encoded forms from output."""
+    cleaned = str(text)
+    for variant in _token_variants(token):
+        cleaned = cleaned.replace(variant, "[REDACTED]")
+    # URL percent escapes are case-insensitive; if an encoded variant remains,
+    # redact the whole excerpt rather than accidentally echoing its decoded form.
+    return "[REDACTED]" if _contains_token(cleaned, token) else cleaned
+
+
+def _safe_excerpt(body: str, token: str) -> str:
+    return _short(_redact_token(body, token))
+
+
 def _result(name: str, ok: bool, detail: str) -> ProbeResult:
     return ProbeResult(name=name, ok=ok, detail=detail)
 
 
-def _check_health(http: httpx.Client, url: str, bodies: list[str]) -> ProbeResult:
+def _check_health(http: httpx.Client, url: str, token: str, bodies: list[str]) -> ProbeResult:
     """``GET /health`` must answer ``{"status":"ok"}`` without any token."""
     name = 'health answers {"status":"ok"} without a token'
     try:
         response = http.get(f"{url}/health")
     except httpx.HTTPError as exc:
-        return _result(name, False, f"request failed: {type(exc).__name__}: {exc}")
+        detail = _redact_token(str(exc), token)
+        return _result(name, False, f"request failed: {type(exc).__name__}: {detail}")
     bodies.append(response.text)
     if response.status_code != 200:
         return _result(name, False, f"expected HTTP 200, got HTTP {response.status_code}")
     try:
         payload = response.json()
     except ValueError:
-        return _result(name, False, f"body is not JSON: {_short(response.text)!r}")
+        return _result(name, False, f"body is not JSON: {_safe_excerpt(response.text, token)!r}")
     if payload != {"status": "ok"}:
+        safe_payload = _safe_excerpt(json.dumps(payload, ensure_ascii=False), token)
         return _result(
             name,
             False,
-            f'expected {{"status": "ok"}}, got {json.dumps(payload, ensure_ascii=False)[:200]}',
+            f'expected {{"status": "ok"}}, got {safe_payload}',
         )
     return _result(name, True, 'HTTP 200 with {"status": "ok"}')
 
 
 def _check_runtime_info_requires_auth(
-    http: httpx.Client, url: str, bodies: list[str]
+    http: httpx.Client, url: str, token: str, bodies: list[str]
 ) -> ProbeResult:
     """``/runtime-info`` must stay behind the platform token."""
     name = "runtime-info requires the platform token"
     try:
         response = http.get(f"{url}/runtime-info")
     except httpx.HTTPError as exc:
-        return _result(name, False, f"request failed: {type(exc).__name__}: {exc}")
+        detail = _redact_token(str(exc), token)
+        return _result(name, False, f"request failed: {type(exc).__name__}: {detail}")
     bodies.append(response.text)
     if response.status_code != 401:
         return _result(
@@ -183,7 +343,8 @@ def _check_execution_identity(
             headers={"Authorization": f"Bearer {token}"},
         )
     except httpx.HTTPError as exc:
-        return _result(name, False, f"request failed: {type(exc).__name__}: {exc}")
+        detail = _redact_token(str(exc), token)
+        return _result(name, False, f"request failed: {type(exc).__name__}: {detail}")
     bodies.append(response.text)
     if response.status_code != 200:
         return _result(
@@ -194,39 +355,42 @@ def _check_execution_identity(
     try:
         payload = response.json()
     except ValueError:
-        return _result(name, False, f"body is not JSON: {_short(response.text)!r}")
+        return _result(name, False, f"body is not JSON: {_safe_excerpt(response.text, token)!r}")
     execution = payload.get("execution") if isinstance(payload, dict) else None
     if not isinstance(execution, dict):
         return _result(name, False, "the response carries no 'execution' object")
     kind = execution.get("kind")
     if kind not in VALID_EXECUTION_KINDS:
-        return _result(name, False, f"unknown execution.kind {kind!r}")
+        safe_kind = _redact_token(repr(kind), token)
+        return _result(name, False, f"unknown execution.kind {safe_kind}")
     if expected_kind != ANY_KIND and kind != expected_kind:
         hint = _KIND_HINTS.get((expected_kind, kind), "")
         detail = f"execution.kind is {kind!r}, expected {expected_kind!r}"
         return _result(name, False, f"{detail}; {hint}" if hint else detail)
-    if execution.get("goal_verification") != "not_verified":
+    goal_verification = execution.get("goal_verification")
+    if goal_verification != "not_verified":
+        safe_goal = _redact_token(repr(goal_verification), token)
         return _result(
             name,
             False,
-            "execution.goal_verification must be 'not_verified', got "
-            f"{execution.get('goal_verification')!r}",
+            f"execution.goal_verification must be 'not_verified', got {safe_goal}",
         )
     model_name = execution.get("model_name")
     if not model_name:
         return _result(name, False, "execution.model_name is missing")
+    safe_model_name = _redact_token(str(model_name), token)
     return _result(
         name,
         True,
-        f"execution.kind={kind}; model_name={model_name}; goal_verification=not_verified",
+        f"execution.kind={kind}; model_name={safe_model_name}; goal_verification=not_verified",
     )
 
 
 def _check_no_credential_echo(token: str, bodies: list[str]) -> ProbeResult:
-    """No response body may echo the token back."""
+    """No response body may echo the token back, including URL-encoded forms."""
     name = "no response echoes the API token"
-    if any(token and token in body for body in bodies):
-        return _result(name, False, "the API token appeared verbatim in a response body")
+    if any(_contains_token(body, token) for body in bodies):
+        return _result(name, False, "the API token appeared in a response body")
     return _result(name, True, "the API token appears in no response body")
 
 
@@ -236,6 +400,8 @@ def verify_published_service(
     *,
     expected_kind: str = "scripted",
     timeout: float = 20.0,
+    allowed_hosts: Sequence[str] | None = None,
+    allow_loopback: bool = False,
     client: httpx.Client | None = None,
 ) -> ProbeReport:
     """Run the post-deploy criteria against *base_url* and return the report.
@@ -245,29 +411,63 @@ def verify_published_service(
     whichever kind the service reports.
 
     Raises :class:`ProbeConfigurationError` when the probe cannot run: no
-    token, an unusable URL, or an unknown expectation.
+    token, an unusable or disallowed URL, or an unknown expectation. The
+    production default is ``*.onrender.com`` over HTTPS/443. Set
+    ``allow_loopback=True`` only for local tests. An injected client is accepted
+    only when backed by ``httpx.MockTransport`` (a socket-free test seam).
     """
-    if not (token or "").strip():
+    token = (token or "").strip()
+    if not token:
         raise ProbeConfigurationError("no API token was given (set CELA_API_TOKEN)")
     expectation = (expected_kind or ANY_KIND).strip().lower()
     if expectation not in (ANY_KIND, *VALID_EXECUTION_KINDS):
-        raise ProbeConfigurationError(
+        message = (
             f"unknown expectation {expected_kind!r}; use one of "
             f"{', '.join((ANY_KIND, *VALID_EXECUTION_KINDS))}"
         )
-    url = normalize_base_url(base_url)
+        raise ProbeConfigurationError(_redact_token(message, token))
+    try:
+        url = normalize_base_url(base_url)
+        if _contains_token(url, token):
+            raise ProbeConfigurationError("the service base URL must not contain the API token")
+        verdict = authorize_probe_destination(
+            url,
+            allowed_hosts=allowed_hosts,
+            allow_loopback=allow_loopback,
+        )
+    except ProbeConfigurationError as exc:
+        raise ProbeConfigurationError(_redact_token(str(exc), token)) from None
 
-    bodies: list[str] = []
     owns_client = client is None
-    http = client if client is not None else httpx.Client(timeout=timeout, follow_redirects=False)
+    if client is not None:
+        if not isinstance(getattr(client, "_transport", None), httpx.MockTransport):
+            raise ProbeConfigurationError(
+                "injected clients must use httpx.MockTransport; "
+                "network clients require pinned transport"
+            )
+        if getattr(client, "follow_redirects", False):
+            raise ProbeConfigurationError("injected clients must not follow redirects")
+    http = (
+        client
+        if client is not None
+        else httpx.Client(
+            timeout=timeout,
+            transport=PinnedHTTPTransport(verdict),
+            follow_redirects=False,
+            trust_env=False,
+        )
+    )
+    bodies: list[str] = []
     try:
         results = [
-            _check_health(http, url, bodies),
-            _check_runtime_info_requires_auth(http, url, bodies),
+            _check_health(http, url, token, bodies),
+            _check_runtime_info_requires_auth(http, url, token, bodies),
             _check_execution_identity(http, url, token, expectation, bodies),
             _check_no_credential_echo(token, bodies),
         ]
     finally:
         if owns_client:
             http.close()
-    return ProbeReport(base_url=url, expected_kind=expectation, results=tuple(results))
+    return ProbeReport(
+        base_url=_redact_token(url, token), expected_kind=expectation, results=tuple(results)
+    )

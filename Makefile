@@ -3,7 +3,7 @@
         verify-deploy
 
 install:
-	pip install -e ".[dev,server]"
+	pip install -e ".[dev,server,papers]"
 
 test:
 	pytest -q
@@ -15,8 +15,9 @@ format:
 	ruff format .
 
 # The test count is generated, not typed: `evidence-check` fails when
-# docs/EVIDENCE.md drifts from what the suite actually collects.
-check: lint evidence-check test
+# docs/EVIDENCE.md drifts from what the suite actually collects. Verify the
+# vendored snapshot explicitly as part of the full local check as well.
+check: lint evidence-check vendored-verify test
 
 demo-react:
 	python -m os_server.cli run --demo "Sum the integers from 0 to 100"
@@ -27,13 +28,16 @@ demo-flow:
 serve:
 	python -m os_server.cli serve --demo --host 0.0.0.0 --port 8080
 
-# Post-deploy verification of a published service. Needs the service URL and
-# the public platform token in the environment; the token is never printed.
-#   make verify-deploy API=https://<service>.onrender.com
+# Post-deploy verification of a published API service. Needs the service URL
+# and public platform token; the token is never printed. API hosts default to
+# Render only. An alternate host pattern must be approved for its adapter first:
+#   make verify-deploy API=https://<service> ALLOW_HOSTS='*.operator-approved.example'
 #   make verify-deploy API=... EXPECT_KIND=provider_adapter
+ALLOW_HOSTS ?= *.onrender.com
+VERIFY_ALLOW_HOST_ARGS = $(foreach host,$(ALLOW_HOSTS),--allow-host "$(host)")
 verify-deploy:
 	@test -n "$(API)" || { echo "usage: make verify-deploy API=https://<service>.onrender.com"; exit 2; }
-	python scripts/verify_deployment.py --api "$(API)" --expect-kind "$(or $(EXPECT_KIND),scripted)"
+	python scripts/verify_deployment.py --api "$(API)" --expect-kind "$(or $(EXPECT_KIND),scripted)" $(VERIFY_ALLOW_HOST_ARGS)
 
 # Vendored ArtCraft Launcher workspace (packages/craft-launcher, ADR-0015).
 # Independent of the Python toolchain: needs Rust 1.90+ on PATH.

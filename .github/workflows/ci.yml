@@ -28,7 +28,7 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev,server]"
+          pip install -e ".[dev,server,papers]"
 
       - name: Lint
         run: ruff check .
@@ -106,4 +106,24 @@ jobs:
             --out /tmp/trace.json
           python -c "import json; d=json.load(open('/tmp/trace.json')); rs=d['resourceSpans']; assert rs and rs[0]['scopeSpans'][0]['spans'], d"
           python -c "import subprocess,sys; r=subprocess.run([sys.executable,'-m','os_server.cli','telemetry','export','--store-url','sqlite:///:memory:'],capture_output=True,text=True); sys.exit(0 if r.returncode==1 and 'nothing to export' in r.stderr else (print(r.returncode,r.stderr) or 1))"
+
+  live-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install browser test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,server,browser]"
+          python -m playwright install --with-deps chromium
+
+      - name: Verify live Chromium navigation and cross-origin blocking
+        run: pytest -q -s -m "browser and network" tests/test_browser_live.py
 

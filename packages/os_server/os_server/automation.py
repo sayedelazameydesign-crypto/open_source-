@@ -32,8 +32,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+import httpx
 from os_core.redact import scrub_credentials
 from os_tools.egress import EgressPolicy, EgressRule
+from os_tools.pinned_http import PinnedAsyncHTTPTransport
 from os_tools.ssrf import SSRFGuard
 
 ENV_ACTIVEPIECES_URL = "CELA_ACTIVEPIECES_WEBHOOK_URL"
@@ -195,7 +197,11 @@ class ActivepiecesDispatcher:
 
         # 1. Enforce SSRFGuard + EgressPolicy before consuming quota or touching network
         try:
-            self.policy.enforce(target, tool="activepieces_webhook")
+            verdict = self.policy.enforce(
+                target,
+                tool="activepieces_webhook",
+                resolve_dns=not isinstance(self.transport, httpx.MockTransport),
+            )
         except Exception as exc:
             return {
                 "dispatched": False,
@@ -215,9 +221,7 @@ class ActivepiecesDispatcher:
             }
 
         # 3. Scrub secrets from payload and compute deterministic idempotency key
-        idem_key = idempotency_key or hashlib.sha256(
-            f"{run_id}:{event_type}".encode()
-        ).hexdigest()
+        idem_key = idempotency_key or hashlib.sha256(f"{run_id}:{event_type}".encode()).hexdigest()
         envelope = {
             "schema": "celia.mission.webhook.v1",
             "run_id": scrub_credentials(run_id),
@@ -239,13 +243,12 @@ class ActivepiecesDispatcher:
         if secret:
             headers["X-Celia-Signature-256"] = sign_webhook_payload(raw_bytes, secret)
 
-        import httpx
-
         try:
             async with httpx.AsyncClient(
                 timeout=10.0,
-                transport=self.transport,
+                transport=PinnedAsyncHTTPTransport(verdict, transport=self.transport),
                 follow_redirects=False,
+                trust_env=False,
             ) as client:
                 resp = await client.post(target, content=raw_bytes, headers=headers)
             return {
@@ -326,6 +329,8 @@ def _postgres_driver_available() -> bool:
     A seam so tests can simulate both environments without installing a driver.
     """
     return importlib.util.find_spec("psycopg") is not None
+
+
 _CLOUDFLARE_BFF_PATH = Path("packages/web/functions/api/backend/[[path]].ts")
 _NEXTJS_BFF_PATH = Path("packages/web/app/api/backend/[...path]/route.ts")
 
@@ -344,15 +349,50 @@ def backend_url_problem(raw: str, *, var_name: str = "CELA_BACKEND_URL") -> str 
     if parts.username or parts.password:
         return f"{var_name} must not embed credentials"
     if parts.scheme == "http" and parts.hostname not in _LOOPBACK_HOSTS:
-        return (
-            f"{var_name} must use https outside loopback: "
-            "tokens must not travel in cleartext"
-        )
+        return f"{var_name} must use https outside loopback: tokens must not travel in cleartext"
     return None
 
 
 # Kept for the callers that used the private name.
 _backend_url_problem = backend_url_problem
+
+
+def _render_blueprint_code_exec_modes(workspace: Path) -> tuple[str | None, ...] | None:
+    """Read target Render web-service modes; return None when YAML is unreadable.
+
+    PyYAML is a development/doctor dependency. If it is unavailable or the
+    target Blueprint is malformed, production readiness fails closed instead
+    of trusting an environment value that could disagree with the deploy file.
+    """
+    try:
+        import yaml
+    except ImportError:
+        return None
+
+    try:
+        blueprint = yaml.safe_load((workspace / "render.yaml").read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return None
+    if not isinstance(blueprint, dict) or not isinstance(blueprint.get("services"), list):
+        return None
+
+    modes: list[str | None] = []
+    for service in blueprint["services"]:
+        if not isinstance(service, dict) or service.get("type") != "web":
+            continue
+        env_vars = service.get("envVars", [])
+        if not isinstance(env_vars, list):
+            modes.append(None)
+            continue
+        configured = [
+            str(item.get("value", "")).strip().lower()
+            for item in env_vars
+            if isinstance(item, dict) and item.get("key") == "CELA_CODE_EXEC_MODE"
+        ]
+        # Reject missing or duplicate declarations; an ambiguous target config
+        # is not safe to deploy even if one entry happens to say "disabled".
+        modes.append(configured[0] if len(configured) == 1 else None)
+    return tuple(modes)
 
 
 def check_deployment_readiness(
@@ -397,6 +437,23 @@ def check_deployment_readiness(
     # by default, error under --strict).
     is_vercel = active_env.get("VERCEL", "").lower() in {"1", "true", "yes"}
     backend_url = active_env.get("CELA_BACKEND_URL", "").strip()
+
+    if is_render:
+        code_exec_mode = active_env.get("CELA_CODE_EXEC_MODE", "").strip().lower()
+        target_modes = _render_blueprint_code_exec_modes(workspace)
+        target_safe = bool(target_modes) and all(mode == "disabled" for mode in target_modes)
+        if code_exec_mode != "disabled" or not target_safe:
+            errors.append(
+                {
+                    "id": "code_exec_not_disabled",
+                    "variable": "CELA_CODE_EXEC_MODE",
+                    "message_ar": (
+                        "يجب أن يحدد Render Blueprint وكل بيئة تشغيل CELA_CODE_EXEC_MODE=disabled "
+                        "صراحةً قبل أي نشر؛ لا يُقبل الافتراضي المحلي ولا يُتجاوز الفحص "
+                        "باختيار مزوّد بديل."
+                    ),
+                }
+            )
 
     if strict_production or is_render:
         if not api_token:
@@ -454,17 +511,24 @@ def check_deployment_readiness(
                 }
             )
 
-    if is_render and (not store_url or store_url.startswith("sqlite:")):
-        warnings.append(
-            {
-                "id": "ephemeral_sqlite_on_render",
-                "variable": "CELA_RUN_STORE_URL",
-                "message_ar": (
-                    "قرص Render Free مؤقت ويُمسح عند إعادة التشغيل؛ استخدم رابط "
-                    "postgresql:// (مثل Supabase Postgres Free) لحفظ المهام والتقارير."
-                ),
-            }
+    if is_render:
+        postgres_store = store_url.startswith(("postgres://", "postgresql://"))
+        distributed_store = store_url in {"distributed://", "distributed"} and all(
+            active_env.get(name, "").strip() for name in ("CELA_POSTGRES_URL", "CELA_REDIS_URL")
         )
+        if not postgres_store and not distributed_store:
+            errors.append(
+                {
+                    "id": "persistent_run_store_required",
+                    "variable": "CELA_RUN_STORE_URL",
+                    "message_ar": (
+                        "يتطلب نشر Render مخزن تشغيل دائمًا: اضبط CELA_RUN_STORE_URL على "
+                        "postgresql:// أو postgres://؛ أو استخدم distributed:// مع ضبط "
+                        "CELA_POSTGRES_URL وCELA_REDIS_URL. SQLite والذاكرة لا يصمدان أمام "
+                        "إعادة تشغيل Render Free، لذا يُرفض النشر بدل فقد التشغيلات."
+                    ),
+                }
+            )
 
     if store_url.startswith(("postgres://", "postgresql://", "distributed")) and not (
         _postgres_driver_available()

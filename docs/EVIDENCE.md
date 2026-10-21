@@ -6,13 +6,14 @@
 بينما كبرت المجموعة، وصار أول دليل يقرأه الزائر هو أول دليل يخذله.
 
 <!-- generated:test-count -->
-**1455 اختبارًا في المجموعة** — 1453 مُختارًا · 2 مُستبعَدًا (deselected) · `pytest --collect-only -q`
+**1526 اختبارًا في المجموعة** — 1523 مُختارًا · 3 مُستبعَدًا (deselected) · `pytest --collect-only -q`
 <!-- /generated:test-count -->
 
 > **الرقمان ليسا تناقضًا.** العدد أعلاه حصيلة `pytest --collect-only -q`، أي
-> المُختار **زائد** المُستبعَد (اختباران موسومان `network`). سطر `pytest -q` يطبع
-> `N passed, 2 deselected` ويقيس المُختار وحده، فهو أقل من العدد أعلاه باثنين
-> بالضبط. المقارنة الصحيحة هي مع `--collect-only`، لا مع سطر النجاح.
+> المُختار **زائد** المُستبعَد. الثلاثة موسومة `network`: اختبارا eval حيان
+> واختبار Chromium حيّ يحمّل صفحة Python.org ويثبت حجب الموارد من الأصول الخارجية.
+> سطر `pytest -q` يطبع `N passed, 3 deselected` ويقيس المُختار وحده، فهو أقل
+> من العدد أعلاه بثلاثة بالضبط. المقارنة الصحيحة هي مع `--collect-only`، لا مع سطر النجاح.
 
 كيف يُفحص:
 
@@ -22,20 +23,26 @@ make evidence-check    # يفشل إن كانت الكتلة لا تطابق م�
 ```
 
 `--check` يُشغَّل في CI على Python 3.11، فلا يمرّ تغيير يضيف اختبارات (أو
-يحذفها) دون تحديث الرقم. أما `pytest -q` فيُشغّل المجموعة كاملة، و`ruff check .`
-يفحص الأسلوب — وكلاهما لا يحتاج شبكة ولا مفاتيح API.
+يحذفها) دون تحديث الرقم. `pytest -q` يشغّل المجموعة المحلية دون شبكة ويستبعد
+الاختبارات الثلاثة المعلّمة `network`؛ مهمة `live-browser` في CI تشغّل اختبار
+Chromium الحيّ صراحةً، لكن اختباري Reach الشبكيين لا تشغّلهما `ci.yml` حاليًا.
+يثبّت CI extra `papers` حتى يُنفَّذ اختبار PDF الفعلي، و`ruff check .` يفحص الأسلوب.
 
 ## ١) الأوامر التي تُنتج كل ادعاء
 
 | الادعاء | الأمر | ما يعنيه بالضبط |
 |---|---|---|
 | عدد الاختبارات | `pytest --collect-only -q` | ما **تُجمعه** المجموعة، لا ما نجح في تشغيل بعينه |
-| نجاح المجموعة | `pytest -q` | تشغيل كامل، دون شبكة؛ اختبار واحد يتخطّى حين يكون `psycopg` مثبَّتًا |
+| نجاح المجموعة | `pytest -q` | يشغّل الاختبارات المحلية؛ يستبعد 3 اختبارات موسومة `network` افتراضيًا |
 | نظافة الأسلوب | `ruff check .` | كل قواعد `pyproject.toml` |
 | واجهة الويب | `npm run test:components` / `test:hooks` / `test:deploy` | مكوّنات React · خطّافات · دالة الحافة (بلا شبكة) |
 | بناء الويب (شكلان) | `npm run build` · `npm run build:pages` | بناء Next الخادمي · تصدير ثابت لـ Cloudflare Pages |
-| جاهزية النشر | `python scripts/deploy_doctor.py` | أسرار، عناوين، برنامج Postgres، وكيل الحافة |
-| هوية خدمة منشورة | `python scripts/verify_deployment.py --api https://<service>.onrender.com` | `{"status":"ok"}` بلا رمز · `/runtime-info` محميّة · `execution.kind` هو المتوقَّع · الرمز لا يُطبع |
+| جاهزية النشر | `python scripts/deploy_doctor.py --strict` | أسرار وعناوين؛ Render يشترط مخزن Postgres دائمًا و`CELA_CODE_EXEC_MODE=disabled` في البيئة وBlueprint الهدف؛ هذا preflight ليس orchestrator مركزيًا |
+| artifacts | `render.yaml` واختبارات GHCR | Blueprint واحد في الجذر لـRender؛ بقية container providers تستخدم صورة GHCR ذات مدخل `deploy/g1a` |
+| Provider API حيّ | **غير مفعّل** | `OpenAICompatModel` لم يُربط بعد بالنقل المثبّت أو allowlist خاصة بالمزوّد؛ لا تفعّل `CELA_USE_LIVE_PROVIDER=1` حتى مراجعة host Gemini وإكمال adapter واختباراته |
+| هوية خدمة منشورة | `python scripts/verify_deployment.py --api https://<service>.onrender.com` | HTTPS/443 · allowlist افتراضية `*.onrender.com` · DNS pinning · `/health` أولًا بلا رمز · بلا redirects أو proxy env · DB خارج فحص HTTP |
+| مستندات PDF | `pip install -e ".[dev,server,papers]"` ثم `pytest tests/test_resource_collection.py` | extra `papers` يثبت `pypdf`؛ CI و`make install` يثبتانه لتشغيل التغطية الحقيقية |
+| Chromium حيّ | `pytest -m "browser and network" tests/test_browser_live.py` | الاختبار يشترط محتوى من Python.org ورصد طلبات CDN عابرة للأصل وفشلها؛ لا يُعدّ نجاحًا حتى يمر job الـCI |
 
 ## ٢) لقطة تحقّق — 2026-10-17 عند `3498ce3`
 
@@ -64,11 +71,32 @@ make evidence-check    # يفشل إن كانت الكتلة لا تطابق م�
 | C5 (Render) | **لم يُنفَّذ** |
 | C6 (PostgreSQL) | **لم يُنفَّذ** — لا قاعدة اختبار حيّة |
 
+## ٢-ج) إصلاح سياسة النشر وفحص الخدمة — 2026-10-20
+
+هذه نتيجة محلية للـworking tree الحالي، وليست ادعاءً بأن Render أو GitHub Actions
+نُفِّذا. فُعّل `pypdf` من extra `papers` قبل تشغيل المجموعة.
+
+| الفحص | النتيجة |
+|---|---|
+| `make check` | نجح: `ruff check .` · `evidence-check` · `vendored-verify` (198 ملفًا) · `1523 passed, 3 deselected` |
+| `ruff format --check .` | **يفشل على 36 ملفًا موجودًا مسبقًا خارج تغييرات هذه الجولة**؛ كل ملفات Python المعدلة تمرّ بفحص التنسيق المستهدف. لم أُعد تنسيق ملفات غير مرتبطة لتجنب diff جانبي واسع |
+| `git diff --check` و`python scripts/update_evidence.py --check` | نجحا؛ الكتلة المولّدة تسجل 1526 مجموعة / 1523 مختارًا / 3 مستبعدة |
+| `pytest -m network` | **محاولة محلية فاشلة: 3/3**؛ Chromium تعذّر لعدم تثبيت Playwright، وGitHub فشل TLS بسبب CA محلي، وexample.org أنهى TLS بـEOF. لا ادعاء بأن اختبار CDN نجح محليًا |
+| PDF / `papers` | extra يثبت `pypdf 6.21.1`؛ الاختبار الحقيقي دخل المجموعة بدل تخطيه |
+| Probe / نشر مستهدف | 439 اختبارًا ناجحًا؛ تشمل TLS/SNI، hostname verification، proxy env، health-first/no-token، تنقيح token في body/exception/config، redirects scheme/port، fallback بين IPv6 وIPv4، allowlist Render، وبوابتي code-exec وPostgres |
+| Chromium حيّ | لم يكتمل تشغيل Chromium في Arena؛ CI لديه job منفصل يثبت Playwright/Chromium ويشغّل Python.org مع قياس حجب CDN. النتيجة تظل غير مؤكدة حتى يكتمل CI |
+| Render / Postgres حيّان | **لم يُنفَّذا**؛ لا توجد خدمة/قاعدة تجربة مرتبطة بهذه الجولة |
+| بوابة نشر مركزية | **غير موجودة بعد**؛ `deploy_doctor --strict` يفحص Render Blueprint والبيئة لكنه preflight يدوي لا يفرضه orchestrator لكل provider. هذا مانع لأي deploy، ولا يُتجاوز باختيار provider آخر |
+
 ## ٣) ما لا يغطّيه هذا الملف — بصراحة
 
 * **لا Postgres ولا Redis حيّين في CI.** `PostgresRunStore` و`DistributedRunStore`
   مُختبَران بمزودين مزيَّفين (اتصال DBAPI على SQLite + عميل Redis في الذاكرة)،
   وتشغيلهما متعدد النسخ يحتاج خدمتين حقيقيتين — انظر [ADR-0006](../adr/0006-distributed-run-store.md).
+* **تكاملات شبكة اختيارية لم تُربط كلها بالنقل المثبّت.** إلى جانب مزوّد النموذج
+  (`os_core.models`)، ما زالت واجهات Firecracker-manager وOTLP وWAAPI تستخدم عملاء HTTP
+  منفصلين. ليست مفعّلة في إعداد Render الافتراضي؛ لا تفعّلها قبل إضافة سياسة egress وpinning
+  واختبار المضيف لكل adapter على حدة. لا تُعدّ `CELA_SANDBOXED=1` بديلًا لذلك.
 * **لا أرقام معيارية بعد.** GAIA / SWE-bench / OSWorld غير مبنيّة، والبوابة 2 في
   [`docs/ROADMAP.md`](ROADMAP.md) تنتظر ملف خط أساس منشورًا مثل هذا.
 * **لا قياس زمن استجابة منشور.** الخطة المجانية تنام (Render) وتتوقّف بعد خمول

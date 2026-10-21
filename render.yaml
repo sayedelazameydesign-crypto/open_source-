@@ -30,6 +30,10 @@ services:
       # instead of pretending to be live.
       - key: CELA_USE_LIVE_PROVIDER
         value: "0"
+      # The Blueprint uses the Python runtime (not the root Dockerfile), so
+      # disable arbitrary code execution explicitly in the service config.
+      - key: CELA_CODE_EXEC_MODE
+        value: disabled
       # These tokens must be supplied by the operator (and injected into the
       # Pages/Workers build as CELA_API_TOKEN). They are never generated here
       # because the client side needs to know the value to issue requests.

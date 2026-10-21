@@ -9,6 +9,7 @@ provable), and every policy rule is asserted against real
 from __future__ import annotations
 
 import json
+import socket
 import time
 
 import httpx
@@ -23,6 +24,7 @@ from os_tools.registry import ToolRegistry
 from os_launcher import (
     DEFAULT_ALLOW_HOSTS,
     CraftReleaseClient,
+    LauncherError,
     by_id,
     default_launcher_policy,
     is_own_release_download,
@@ -289,11 +291,11 @@ def test_a_stale_feed_reads_as_stale_and_a_missing_timestamp_too() -> None:
 def test_the_default_policy_allows_only_the_four_launcher_hosts() -> None:
     policy = default_launcher_policy(env={})
     for host in DEFAULT_ALLOW_HOSTS:
-        policy.enforce(f"https://{host}/path", tool="t")
+        policy.enforce(f"https://{host}/path", tool="t", resolve_dns=False)
     with pytest.raises(EgressPolicyError):
-        policy.enforce("https://example.org/", tool="t")
+        policy.enforce("https://example.org/", tool="t", resolve_dns=False)
     with pytest.raises(EgressPolicyError):
-        policy.enforce("http://127.0.0.1/", tool="t")
+        policy.enforce("http://127.0.0.1/", tool="t", resolve_dns=False)
 
 
 def test_the_ssrf_floor_survives_an_allow_hosts_override() -> None:
@@ -301,15 +303,17 @@ def test_the_ssrf_floor_survives_an_allow_hosts_override() -> None:
     policy = default_launcher_policy(
         env={"CELA_LAUNCHER_ALLOW_HOSTS": "api.github.com,169.254.169.254"}
     )
-    policy.enforce("https://api.github.com/", tool="t")
+    policy.enforce("https://api.github.com/", tool="t", resolve_dns=False)
     with pytest.raises(EgressPolicyError):
-        policy.enforce("https://169.254.169.254/", tool="t")
+        policy.enforce("https://169.254.169.254/", tool="t", resolve_dns=False)
 
 
 def test_deny_wins_over_allow() -> None:
     policy = default_launcher_policy(env={"CELA_LAUNCHER_DENY_HOSTS": "api.github.com"})
     with pytest.raises(EgressPolicyError):
-        policy.enforce("https://api.github.com/repos/storytold/photocraft", tool="t")
+        policy.enforce(
+            "https://api.github.com/repos/storytold/photocraft", tool="t", resolve_dns=False
+        )
 
 
 def test_own_release_downloads_narrow_to_the_exact_repo() -> None:
@@ -357,6 +361,21 @@ def transport() -> CountingTransport:
 @pytest.fixture
 def client(transport: CountingTransport) -> CraftReleaseClient:
     return CraftReleaseClient(transport=transport, policy=default_launcher_policy(env={}))
+
+
+async def test_feed_dns_failure_is_treated_as_an_unreachable_feed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def no_dns(*_args, **_kwargs):
+        raise socket.gaierror("temporary resolver failure")
+
+    monkeypatch.setattr(socket, "getaddrinfo", no_dns)
+    client = CraftReleaseClient(policy=default_launcher_policy(env={}))
+
+    snapshot = await client.fetch_feed()
+
+    assert snapshot.apps == {}
+    assert snapshot.last_fetched is None
 
 
 async def test_latest_release_falls_back_to_github_and_fills_checksums(
@@ -441,7 +460,7 @@ async def test_a_blocked_destination_raises_before_the_request_leaves(
     transport: CountingTransport,
 ) -> None:
     strict = CraftReleaseClient(transport=transport, policy=default_launcher_policy(env={}))
-    with pytest.raises(EgressPolicyError):
+    with pytest.raises(LauncherError, match="EgressPolicyError"):
         await strict._get("https://example.org/exfil")
     assert transport.requests == []
 

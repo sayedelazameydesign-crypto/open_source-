@@ -48,6 +48,14 @@ def test_start_run_returns_an_id(client: TestClient) -> None:
     assert resp.json()["run_id"].startswith("run_")
 
 
+def test_start_run_rejects_max_steps_outside_the_supported_range(client: TestClient) -> None:
+    for max_steps in (0, 101):
+        response = client.post(
+            "/runs", json={"task": "bounded task", "mode": "flow", "max_steps": max_steps}
+        )
+        assert response.status_code == 422
+
+
 def test_unknown_run_is_404(client: TestClient) -> None:
     assert client.get("/runs/run_nope").status_code == 404
 

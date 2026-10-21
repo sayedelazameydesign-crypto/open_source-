@@ -192,7 +192,19 @@ class EgressPolicy(BaseModel):
                 seen.append(rule.host)
         return seen
 
-    def check(self, url: str, *, tool: str | None = None) -> EgressVerdict:
+    def check(
+        self,
+        url: str,
+        *,
+        tool: str | None = None,
+        resolve_dns: bool | None = None,
+    ) -> EgressVerdict:
+        """Evaluate policy, optionally resolving DNS for a socket-bound decision.
+
+        ``check`` keeps the guard's configured DNS behavior for compatibility
+        with dry-run/UI checks. Network callers should use :meth:`enforce`,
+        which resolves names by default and returns the approved ``connect_ip``.
+        """
         active_tool = tool or self.default_tool
         try:
             scheme, host, port = parse_http_target(url)
@@ -209,7 +221,7 @@ class EgressPolicy(BaseModel):
             self.audit_log.append(verdict)
             return verdict
 
-        boundary = self.guard.check(url)
+        boundary = self.guard.check(url, resolve_dns=resolve_dns)
         if not boundary.allowed:
             verdict = EgressVerdict(
                 allowed=False,
@@ -219,6 +231,7 @@ class EgressPolicy(BaseModel):
                 port=port,
                 tool=active_tool,
                 connect_ip=boundary.connect_ip,
+                connect_ips=boundary.connect_ips,
                 reason=f"network boundary: {boundary.reason}",
             )
             self.audit_log.append(verdict)
@@ -238,6 +251,7 @@ class EgressPolicy(BaseModel):
                     port=port,
                     tool=active_tool,
                     connect_ip=boundary.connect_ip,
+                    connect_ips=boundary.connect_ips,
                     matched_rule=f"deny:{rule.host}",
                     reason=f"deny rule '{rule.host}' blocks {origin} for {active_tool!r}",
                 )
@@ -256,6 +270,7 @@ class EgressPolicy(BaseModel):
                     port=port,
                     tool=active_tool,
                     connect_ip=boundary.connect_ip,
+                    connect_ips=boundary.connect_ips,
                     matched_rule=f"allow:{rule.host}",
                     reason=f"allow rule '{rule.host}' permits {origin} for {active_tool!r}",
                 )
@@ -270,18 +285,31 @@ class EgressPolicy(BaseModel):
             port=port,
             tool=active_tool,
             connect_ip=boundary.connect_ip,
+            connect_ips=boundary.connect_ips,
             reason=f"no allow rule permits {origin} for {active_tool!r}",
         )
         self.audit_log.append(verdict)
         return verdict
 
-    def enforce(self, url: str, *, tool: str | None = None) -> EgressVerdict:
-        """Validate ``url`` syntax and raise :class:`EgressPolicyError` if denied."""
+    def enforce(
+        self,
+        url: str,
+        *,
+        tool: str | None = None,
+        resolve_dns: bool = True,
+    ) -> EgressVerdict:
+        """Validate and authorize an outbound request, resolving DNS by default.
+
+        The returned verdict contains ``connect_ip`` and all validated
+        ``connect_ips`` for hostname targets. Pass it to a pinned HTTP transport;
+        bypassing resolution is reserved for explicit dry runs and socket-free
+        ``MockTransport`` tests.
+        """
         parse_http_target(url)
-        verdict = self.check(url, tool=tool)
+        verdict = self.check(url, tool=tool, resolve_dns=resolve_dns)
         verdict.raise_if_denied()
         return verdict
 
-    def for_tool(self, tool: str) -> Callable[[str], EgressVerdict]:
-        """Return a single-argument check suitable for ``ssrf_check`` hooks."""
-        return lambda url: self.check(url, tool=tool)
+    def for_tool(self, tool: str, *, resolve_dns: bool = True) -> Callable[[str], EgressVerdict]:
+        """Return a single-argument, DNS-resolving check for browser hooks."""
+        return lambda url: self.check(url, tool=tool, resolve_dns=resolve_dns)

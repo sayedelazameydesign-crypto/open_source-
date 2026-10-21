@@ -131,7 +131,8 @@ User UI (Next.js split-view)  ← WebSockets / SSE
 ### الحلقات المفرغة
 `os_agents/budget.py` يكسر الحلقة بشرطين **متوازيين**، لا بعدّاد خطوات فقط:
 
-* سقوف صلبة: `max_steps=25`، `max_seconds=300`، `max_tokens`، و`max_consecutive_errors=3`.
+* سقوف صلبة: `max_steps=25` افتراضيًا (الحد الأعلى 100)، `max_seconds=300`، `max_tokens`، و`max_consecutive_errors=3`؛ وتُحدّ خطة DAG بما تبقى من ميزانية الخطوات.
+* معنى `max_steps=0` داخليًا: السماح بصفر خطوات أدوات ثم التوقف فورًا (`MAX_STEPS`)، وليس «بلا حد». طلب API العام يرفض الصفر (`StartRunRequest.max_steps >= 1`) حتى لا يبدأ تشغيل لا يمكنه تنفيذ أي خطوة.
 * **الركود (stagnation):** بصمة `tool:args` مُرتَّبة؛ تكرار نفس الاستدعاء
   `repeat_threshold=3` مرات يُوقف الحلقة ويُحيل إلى المراجع.
 
@@ -163,16 +164,16 @@ User UI (Next.js split-view)  ← WebSockets / SSE
 
 ## 6. الاختبار والتقييم
 
-934 اختبارًا، كلها دون مفاتيح API ودون شبكة. على جهاز يتوفر فيه `unshare` تظهر
-`934 passed`؛ وعلى عدّاء CI الذي يرفض إنشاء netns يُتخطّى اختبار الشبكة تحديدًا
-(`test_sandbox_cannot_reach_the_network`) تخطيًا صريحًا بدل ادعاء عزل غير موجود.
-
-CI أخضر على Python 3.11 / 3.12 / 3.13 — انظر <https://github.com/sayedelazameydesign-crypto/open_source-/actions>:
+العدد والنتيجة الحالية للمجموعة موثّقان في [`docs/EVIDENCE.md`](EVIDENCE.md) فقط؛
+لا يُنسخ رقم متغير إلى هذا المستند. تختبر المجموعة المحلية دون مفاتيح API ودون
+شبكة افتراضيًا، بينما تُوسم اختبارات الشبكة/Chromium الحية وتُشغّل صراحةً في
+مسار CI منفصل. راجع ملف الأدلة وسجل GitHub Actions للحالة المؤرخة بدل افتراض
+أن نتيجة تاريخية ما زالت تمثل الشجرة الحالية.
 
 ```bash
-pip install -e ".[dev]"
-pytest            # 934 passed محليًا (تخطٍّ واحد على عدّاء بلا netns)
-ruff check .      # All checks passed
+make install
+make test           # الاختبارات المحلية دون اختبارات الشبكة الحية
+ruff check .        # فحص الأسلوب
 ```
 
 | ما يُختبَر فعليًا | الملف |

@@ -237,12 +237,12 @@ def test_dns_rebinding_is_stopped_at_network_boundary(monkeypatch: pytest.Monkey
 
 def test_enforce_raises_egress_policy_error_which_is_a_blocked_url_error() -> None:
     policy = EgressPolicy.allow_hosts("example.org")
-    verdict = policy.enforce("https://example.org/search")
+    verdict = policy.enforce("https://example.org/search", resolve_dns=False)
     assert isinstance(verdict, EgressVerdict)
     assert verdict.allowed
 
     with pytest.raises(EgressPolicyError) as exc_info:
-        policy.enforce("https://evil.net/")
+        policy.enforce("https://evil.net/", resolve_dns=False)
     assert isinstance(exc_info.value, BlockedURLError)
     assert str(exc_info.value) == "no allow rule permits https://evil.net:443 for 'browser'"
 
@@ -279,13 +279,31 @@ def test_allowed_hosts_summary_filters_by_tool_and_action() -> None:
 async def test_browser_tool_enforces_egress_policy() -> None:
     browser = demo_browser()
     policy = demo_egress_policy()
-    ok = await browser.navigate("https://example.org/search", ssrf_check=policy.for_tool("browser"))
+    fake_check = policy.for_tool("browser", resolve_dns=False)
+    ok = await browser.navigate("https://example.org/search", ssrf_check=fake_check)
     assert ok.status is ToolStatus.SUCCESS
 
-    denied = await browser.navigate("https://evil.net/login", ssrf_check=policy.for_tool("browser"))
+    denied = await browser.navigate("https://evil.net/login", ssrf_check=fake_check)
     assert denied.status is ToolStatus.DENIED
     assert "no allow rule permits https://evil.net:443 for 'browser'" in (denied.error or "")
     assert "https://evil.net/login" in browser.blocked_urls
+
+
+async def test_browser_hook_passes_approved_dns_address_to_backend(monkeypatch) -> None:
+    import socket
+
+    def resolve_public_ip(host, port, *args, **kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolve_public_ip)
+    browser = demo_browser()
+    policy = EgressPolicy.allow_hosts("example.org", resolve_dns=True)
+    result = await browser.navigate(
+        "https://example.org/search", ssrf_check=policy.for_tool("browser")
+    )
+
+    assert result.status is ToolStatus.SUCCESS
+    assert browser.backend.navigated_connect_ips == ["93.184.216.34"]
 
 
 async def test_build_registry_wires_default_deny_egress_into_browser_navigate() -> None:

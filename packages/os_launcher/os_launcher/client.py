@@ -19,7 +19,8 @@ from __future__ import annotations
 from typing import Any
 
 import httpx
-from os_tools.egress import EgressPolicy
+from os_tools.egress import EgressPolicy, EgressPolicyError
+from os_tools.pinned_http import PinnedAsyncHTTPTransport
 
 from os_launcher.catalog import FEED_URL, CraftApp, by_id
 from os_launcher.contract import (
@@ -30,7 +31,7 @@ from os_launcher.contract import (
     parse_github_release,
     parse_sha256sums,
 )
-from os_launcher.security import default_launcher_policy, enforce_url, scrub_credentials
+from os_launcher.security import default_launcher_policy, scrub_credentials
 
 #: Tool name that travels with every policy check this client makes.
 TOOL_NAME = "craft_release_client"
@@ -91,22 +92,32 @@ class CraftReleaseClient:
         self._policy = policy if policy is not None else default_launcher_policy(env)
         self._feed_url = feed_url
         self._timeout = timeout
-        self._client = httpx.AsyncClient(
-            transport=transport, timeout=timeout, follow_redirects=False
-        )
+        self._transport = transport
 
     async def aclose(self) -> None:
-        await self._client.aclose()
+        """Retained for the release-client lifecycle; requests own their transports."""
+        return None
 
     @property
     def policy(self) -> EgressPolicy:
         return self._policy
 
     async def _get(self, url: str) -> httpx.Response:
-        enforce_url(self._policy, url, tool=TOOL_NAME)
         try:
-            return await self._client.get(url)
-        except httpx.HTTPError as exc:
+            verdict = self._policy.enforce(
+                url,
+                tool=TOOL_NAME,
+                resolve_dns=not isinstance(self._transport, httpx.MockTransport),
+            )
+            pinned = PinnedAsyncHTTPTransport(verdict, transport=self._transport)
+            async with httpx.AsyncClient(
+                timeout=self._timeout,
+                transport=pinned,
+                follow_redirects=False,
+                trust_env=False,
+            ) as client:
+                return await client.get(url)
+        except (EgressPolicyError, ValueError, httpx.HTTPError) as exc:
             raise LauncherError(exc) from None
 
     async def fetch_feed(self) -> FeedSnapshot:

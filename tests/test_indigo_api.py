@@ -114,9 +114,7 @@ def indigo_stub(request: httpx.Request) -> httpx.Response:
             text="<!DOCTYPE html><title>Just a moment...</title>",
         )
     if path == "/api/v1/tools/redirect-trap":
-        return httpx.Response(
-            302, headers={**headers, "Location": "https://evil.example/steal"}
-        )
+        return httpx.Response(302, headers={**headers, "Location": "https://evil.example/steal"})
     if path.startswith("/api/v1/tools/"):
         slug = path.rsplit("/", 1)[-1]
         return httpx.Response(
@@ -414,6 +412,7 @@ def test_redaction_and_deploy_doctor_cover_indigo_secrets() -> None:
         {
             "CELA_API_TOKEN": PLATFORM_TOKEN,
             "CELA_PRIVATE_API_TOKEN": PRIVATE_TOKEN,
+            "CELA_CODE_EXEC_MODE": "disabled",
             "CELA_INDIGO_ENABLE": "1",
         },
         root=ROOT,
@@ -482,4 +481,3 @@ def test_browser_fallback_recovers_from_cloudflare_waf_challenge() -> None:
         assert ok.json()["rate_limit"]["remaining"] == 99
     assert len(seen_browser_calls) == 1
     assert seen_browser_calls[0][1] == {"X-API-Key": TEST_INDIGO_KEY}
-

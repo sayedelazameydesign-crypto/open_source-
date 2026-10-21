@@ -36,6 +36,7 @@ from os_core.types import Artifact, RiskLevel, ToolResult, ToolStatus
 
 from os_tools.egress import EgressPolicy, EgressRule
 from os_tools.files import _SKIPPED_DIRS, _is_sensitive, os_walk_sorted, resolve_under
+from os_tools.pinned_http import PinnedAsyncHTTPTransport
 from os_tools.registry import Tool
 from os_tools.ssrf import SSRFGuard
 
@@ -146,69 +147,75 @@ async def inspect_public_url(
     started = time.monotonic()
     current = url
     try:
-        async with httpx.AsyncClient(
-            timeout=bounded_timeout,
-            transport=transport,
-            follow_redirects=False,
-        ) as client:
-            for _ in range(max_redirects + 1):
-                active_policy.enforce(current, tool="inspect_public_url")
-                async with client.stream("GET", current, headers=headers) as resp:
-                    if resp.status_code in _REDIRECT_CODES:
-                        nxt = resp.next_request
-                        if nxt is None:
-                            raise RuntimeError(f"redirect without Location from {current}")
-                        current = str(nxt.url)
-                        continue
+        for _ in range(max_redirects + 1):
+            verdict = active_policy.enforce(
+                current,
+                tool="inspect_public_url",
+                resolve_dns=not isinstance(transport, httpx.MockTransport),
+            )
+            pinned_transport = PinnedAsyncHTTPTransport(verdict, transport=transport)
+            async with (
+                httpx.AsyncClient(
+                    timeout=bounded_timeout,
+                    transport=pinned_transport,
+                    follow_redirects=False,
+                    trust_env=False,
+                ) as client,
+                client.stream("GET", current, headers=headers) as resp,
+            ):
+                if resp.status_code in _REDIRECT_CODES:
+                    nxt = resp.next_request
+                    if nxt is None:
+                        raise RuntimeError(f"redirect without Location from {current}")
+                    current = str(nxt.url)
+                    continue
 
-                    chunks: list[bytes] = []
-                    size = 0
-                    async for chunk in resp.aiter_bytes():
-                        chunks.append(chunk)
-                        size += len(chunk)
-                        if size > max_bytes:
-                            break
-                    raw = b"".join(chunks)[:max_bytes]
-                    encoding = resp.encoding or "utf-8"
-                    body_text = raw.decode(encoding, errors="replace")
+                chunks: list[bytes] = []
+                size = 0
+                async for chunk in resp.aiter_bytes():
+                    chunks.append(chunk)
+                    size += len(chunk)
+                    if size > max_bytes:
+                        break
+                raw = b"".join(chunks)[:max_bytes]
+                encoding = resp.encoding or "utf-8"
+                body_text = raw.decode(encoding, errors="replace")
 
-                    lower_headers = {k.lower(): v for k, v in resp.headers.items()}
-                    sec_headers = {
-                        name: scrub_credentials(lower_headers[name])
-                        if name in lower_headers
-                        else None
-                        for name in SECURITY_HEADER_NAMES
-                    }
-                    missing = [name for name, val in sec_headers.items() if val is None]
-                    elapsed_ms = round((time.monotonic() - started) * 1000, 2)
-                    checked_at = datetime.now(UTC).isoformat()
+                lower_headers = {k.lower(): v for k, v in resp.headers.items()}
+                sec_headers = {
+                    name: scrub_credentials(lower_headers[name]) if name in lower_headers else None
+                    for name in SECURITY_HEADER_NAMES
+                }
+                missing = [name for name, val in sec_headers.items() if val is None]
+                elapsed_ms = round((time.monotonic() - started) * 1000, 2)
+                checked_at = datetime.now(UTC).isoformat()
 
-                    core_evidence = {
-                        "url": scrub_credentials(url),
-                        "final_url": scrub_credentials(str(resp.url)),
-                        "status_code": int(resp.status_code),
-                        "ok": 200 <= resp.status_code < 400,
-                        "content_type": scrub_credentials(lower_headers.get("content-type", "")),
-                        "bytes_read": len(raw),
-                        "truncated": size > max_bytes,
-                        "title": _extract_title(body_text),
-                        "security_headers": sec_headers,
-                        "missing_security_headers": missing,
-                        "verification_kind": "LIVE_HTTP_CHECK",
-                        "tests_executed": False,
-                    }
-                    return {
-                        "tool": "inspect_public_url",
-                        **core_evidence,
-                        "elapsed_ms": elapsed_ms,
-                        "checked_at": checked_at,
-                        "verification_note_ar": (
-                            "تم فحص استجابة الرابط وترويسات الأمان فعليًا عبر HTTP المحمي "
-                            "بحارس SSRF؛ هذا الفحص لا يمثل اختبار اختراق شاملًا."
-                        ),
-                        "evidence_sha256": _canonical_sha256(core_evidence),
-                    }
-            raise RuntimeError(f"too many redirects (>{max_redirects}) starting at {url}")
+                core_evidence = {
+                    "url": scrub_credentials(url),
+                    "final_url": scrub_credentials(str(resp.url)),
+                    "status_code": int(resp.status_code),
+                    "ok": 200 <= resp.status_code < 400,
+                    "content_type": scrub_credentials(lower_headers.get("content-type", "")),
+                    "bytes_read": len(raw),
+                    "truncated": size > max_bytes,
+                    "title": _extract_title(body_text),
+                    "security_headers": sec_headers,
+                    "missing_security_headers": missing,
+                    "verification_kind": "LIVE_HTTP_CHECK",
+                    "tests_executed": False,
+                }
+                return {
+                    "tool": "inspect_public_url",
+                    **core_evidence,
+                    "elapsed_ms": elapsed_ms,
+                    "checked_at": checked_at,
+                    "verification_note_ar": (
+                        "تم فحص استجابة الرابط وترويسات الأمان فعليًا عبر HTTP المحمي "
+                        "بحارس SSRF؛ هذا الفحص لا يمثل اختبار اختراق شاملًا."
+                    ),
+                    "evidence_sha256": _canonical_sha256(core_evidence),
+                }
+        raise RuntimeError(f"too many redirects (>{max_redirects}) starting at {url}")
     except Exception as exc:
         raise RuntimeError(scrub_credentials(f"{type(exc).__name__}: {exc}")) from None
 
@@ -401,13 +408,16 @@ def _build_html_report(report_data: dict[str, Any]) -> str:
     ver_note = esc(report_data["verification"]["summary_ar"])
     tests_status = esc(report_data["verification"]["tests_execution_status_ar"])
 
-    findings_rows = "".join(
-        f"<tr><td>{esc(f.get('severity', 'info'))}</td>"
-        f"<td>{esc(f.get('title_ar', ''))}</td>"
-        f"<td>{esc(f.get('detail_ar', ''))}</td>"
-        f"<td><code>{esc(f.get('evidence_path', '-'))}</code></td></tr>"
-        for f in report_data["findings"]
-    ) or "<tr><td colspan='4'>لم تُرصد مخالفات حرجة في الفحص الساكن المحدود.</td></tr>"
+    findings_rows = (
+        "".join(
+            f"<tr><td>{esc(f.get('severity', 'info'))}</td>"
+            f"<td>{esc(f.get('title_ar', ''))}</td>"
+            f"<td>{esc(f.get('detail_ar', ''))}</td>"
+            f"<td><code>{esc(f.get('evidence_path', '-'))}</code></td></tr>"
+            for f in report_data["findings"]
+        )
+        or "<tr><td colspan='4'>لم تُرصد مخالفات حرجة في الفحص الساكن المحدود.</td></tr>"
+    )
 
     stack_rows = "".join(
         f"<tr><td><strong>{esc(item['layer'])}</strong></td>"
@@ -604,9 +614,7 @@ def generate_deployment_plan_report(
             f"{parsed_url.get('status_code')} وبصمة دليل sha256:{url_sha}…"
         )
     else:
-        unverified_items.append(
-            "لم يُفحص رابط عام حي في هذه المهمة (أو لم يُمرَّر ملخص فحص الرابط)."
-        )
+        unverified_items.append("لم يُفحص رابط عام حي في هذه المهمة (أو لم يُمرَّر ملخص فحص الرابط).")
 
     if tests_ran:
         verified_items.append(f"تم تمرير مخرج تشغيل اختبارات فعلي: {truncate(clean_tests, 160)}")
@@ -626,8 +634,7 @@ def generate_deployment_plan_report(
             "service": "Cloudflare Pages + Workers",
             "role_ar": "نشر الواجهة العربية (RTL) وإخفاء رموز الـ API داخل Worker خادمي",
             "free_tier_limit_ar": (
-                "500 عملية بناء شهريًا و100,000 طلب Worker يوميًا دون بطاقة؛ "
-                "لا تضع الرموز في المتصفح"
+                "500 عملية بناء شهريًا و100,000 طلب Worker يوميًا دون بطاقة؛ لا تضع الرموز في المتصفح"
             ),
         },
         {
@@ -646,8 +653,7 @@ def generate_deployment_plan_report(
                 "حفظ حالة المهام والأحداث والتقارير عبر postgresql:// خارج قرص Render المؤقت"
             ),
             "free_tier_limit_ar": (
-                "500 ميجابايت، وقد يتوقف المشروع بعد 7 أيام من انعدام النشاط؛ "
-                "يلزم نسخ احتياطي دوري"
+                "500 ميجابايت، وقد يتوقف المشروع بعد 7 أيام من انعدام النشاط؛ يلزم نسخ احتياطي دوري"
             ),
         },
         {

@@ -18,8 +18,11 @@ This script is that check, executed::
         --expect-kind provider_adapter
 
 The token is read from the environment and never printed: it appears in no
-output line, no report and no error message. The service URL must be https
-outside loopback, because the check sends a bearer token to it.
+output line, no report and no error message. Production targets must use HTTPS
+on port 443 and match the default ``*.onrender.com`` API allowlist; the probe
+resolves and pins approved public IPs, ignores proxy environment variables, and
+does not follow redirects. Alternate API hosts require explicit ``--allow-host``
+entries. ``--allow-loopback`` is only for local tests.
 
 Exit codes: 0 = every criterion passed, 1 = at least one criterion failed,
 2 = the probe could not run (no token, unusable URL, unknown expectation).
@@ -51,6 +54,7 @@ sys.path.insert(0, _ROOT)
 
 from os_server.deploy_probe import (  # noqa: E402
     ANY_KIND,
+    DEFAULT_VERIFY_ALLOWED_HOSTS,
     VALID_EXECUTION_KINDS,
     ProbeConfigurationError,
     verify_published_service,
@@ -130,6 +134,19 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="per-request timeout in seconds (default: 20)",
     )
     parser.add_argument(
+        "--allow-host",
+        action="append",
+        default=None,
+        metavar="PATTERN",
+        help="explicit API host allowlist entry (repeatable; default: "
+        f"{', '.join(DEFAULT_VERIFY_ALLOWED_HOSTS)}; HTTPS/443 only)",
+    )
+    parser.add_argument(
+        "--allow-loopback",
+        action="store_true",
+        help="allow only localhost/loopback HTTP for local tests (never for public deploys)",
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="print the machine-readable report instead of the human summary",
@@ -161,6 +178,8 @@ def main(argv: list[str] | None = None) -> int:
             token,
             expected_kind=args.expect_kind,
             timeout=args.timeout,
+            allowed_hosts=tuple(args.allow_host) if args.allow_host is not None else None,
+            allow_loopback=args.allow_loopback,
         )
     except ProbeConfigurationError as exc:
         print(f"error: {exc}", file=sys.stderr)

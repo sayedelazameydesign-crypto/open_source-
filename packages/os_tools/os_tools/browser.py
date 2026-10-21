@@ -20,11 +20,15 @@ the retry/fallback logic is exercised deterministically and offline).
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal, Protocol, runtime_checkable
 
 from os_core.types import Artifact, ToolResult, ToolStatus
 from pydantic import BaseModel, Field, PrivateAttr
+
+from os_tools.egress import parse_http_target
+from os_tools.ssrf import SSRFGuard
 
 SelectorStrategy = Literal["css", "text", "vision"]
 
@@ -55,7 +59,7 @@ class StaleElementError(RuntimeError):
 
 @runtime_checkable
 class BrowserBackend(Protocol):
-    async def navigate(self, url: str) -> PageSnapshot: ...
+    async def navigate(self, url: str, *, connect_ip: str | None = None) -> PageSnapshot: ...
     async def click(self, selector: str) -> PageSnapshot: ...
     async def fill(self, selector: str, value: str) -> PageSnapshot: ...
     async def type(self, selector: str, text: str) -> PageSnapshot: ...
@@ -96,10 +100,12 @@ class FakeBrowser(BaseModel):
     current: PageSnapshot | None = None
     actions: list[str] = Field(default_factory=list)
     navigated: list[str] = Field(default_factory=list)
+    navigated_connect_ips: list[str | None] = Field(default_factory=list)
     viewport: tuple[int, int] = (1280, 800)
 
-    async def navigate(self, url: str) -> PageSnapshot:
+    async def navigate(self, url: str, *, connect_ip: str | None = None) -> PageSnapshot:
         self.navigated.append(url)
+        self.navigated_connect_ips.append(connect_ip)  # FakeBrowser performs no network I/O.
         page = self.pages.get(url)
         if page is None:
             raise StaleElementError(f"no such page in fake browser: {url}")
@@ -179,14 +185,57 @@ class PlaywrightBrowser(BaseModel):
     timeout_ms: int = 15_000
     _pw: Any = PrivateAttr(default=None)
     _browser: Any = PrivateAttr(default=None)
+    _context: Any = PrivateAttr(default=None)
     _page: Any = PrivateAttr(default=None)
+    _pinned_origin: tuple[str, str, int, str] | None = PrivateAttr(default=None)
     _last_center: tuple[int, int] | None = PrivateAttr(default=None)
 
     model_config = {"arbitrary_types_allowed": True}
 
-    async def _ensure_page(self) -> Any:
-        if self._page is not None:
+    @staticmethod
+    def _origin(url: str) -> tuple[str, str, int]:
+        return parse_http_target(url)
+
+    async def _ensure_page(self, url: str | None = None, connect_ip: str | None = None) -> Any:
+        if url is None and connect_ip is None:
+            if self._page is not None:
+                return self._page
+            raise RuntimeError("navigate to a DNS-authorized HTTP(S) URL before using the browser")
+        if url is None:
+            raise RuntimeError("browser navigation requires a URL")
+        if connect_ip is None:
+            raise RuntimeError("browser navigation requires a DNS-authorized, approved connect_ip")
+
+        scheme, host, port = self._origin(url)
+        boundary = SSRFGuard(resolve_dns=False).check(url, resolve_dns=False)
+        if not boundary.allowed:
+            raise RuntimeError(f"browser URL refused by SSRF boundary: {boundary.reason}")
+        try:
+            address = ipaddress.ip_address(connect_ip)
+        except ValueError as exc:
+            raise RuntimeError(f"invalid approved browser connect_ip {connect_ip!r}") from exc
+        if getattr(address, "scope_id", None):
+            raise RuntimeError("scoped IP addresses cannot be used as browser destinations")
+        effective_address = getattr(address, "ipv4_mapped", None) or address
+        if not (
+            effective_address.is_global
+            and not (
+                effective_address.is_loopback
+                or effective_address.is_link_local
+                or effective_address.is_reserved
+                or effective_address.is_multicast
+                or effective_address.is_unspecified
+            )
+        ):
+            raise RuntimeError(
+                "browser connect_ip must be a globally routable address approved by policy"
+            )
+        pin = (scheme, host, port, address.compressed)
+        if self._page is not None and self._pinned_origin == pin:
             return self._page
+        if self._page is not None:
+            await self._reset_browser()
+
         try:
             from playwright.async_api import async_playwright
         except ImportError as exc:  # pragma: no cover - optional dependency
@@ -194,17 +243,68 @@ class PlaywrightBrowser(BaseModel):
                 "Playwright is not installed. Run: pip install playwright && "
                 "playwright install chromium"
             ) from exc
+
+        host_rule = f"[{host}]" if ":" in host else host
+        ip_rule = f"[{address.compressed}]" if address.version == 6 else address.compressed
+        resolver_rules = f"MAP {host_rule} {ip_rule},MAP * ~NOTFOUND"
         self._pw = await async_playwright().start()
-        self._browser = await self._pw.chromium.launch(headless=self.headless)
-        context = await self._browser.new_context(
-            viewport={"width": self.viewport[0], "height": self.viewport[1]}
+        self._browser = await self._pw.chromium.launch(
+            headless=self.headless,
+            args=[
+                f"--host-resolver-rules={resolver_rules}",
+                "--disable-extensions",
+                "--disable-background-networking",
+                "--disable-quic",
+                "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+                "--no-proxy-server",
+                "--disable-dev-shm-usage",
+            ],
         )
-        self._page = await context.new_page()
+        self._context = await self._browser.new_context(
+            viewport={"width": self.viewport[0], "height": self.viewport[1]},
+            service_workers="block",
+        )
+
+        async def _same_origin_only(route: Any) -> None:
+            try:
+                request_origin = self._origin(route.request.url)
+            except ValueError:
+                await route.abort("blockedbyclient")
+                return
+            if request_origin != (scheme, host, port):
+                await route.abort("blockedbyclient")
+                return
+            await route.continue_()
+
+        await self._context.route("**/*", _same_origin_only)
+        # Do not let page scripts open a second, un-routed network channel.
+        await self._context.add_init_script(
+            "Object.defineProperty(window, 'WebSocket', {"
+            "value: class { constructor() { "
+            "throw new Error('WebSocket blocked by egress policy'); "
+            "} }"
+            "});"
+        )
+        self._page = await self._context.new_page()
         self._page.set_default_timeout(self.timeout_ms)
+        self._pinned_origin = pin
         return self._page
 
-    async def navigate(self, url: str) -> PageSnapshot:
-        page = await self._ensure_page()
+    async def _reset_browser(self) -> None:
+        if self._context is not None:
+            await self._context.close()
+            self._context = None
+        if self._browser is not None:
+            await self._browser.close()
+            self._browser = None
+        if self._pw is not None:
+            await self._pw.stop()
+            self._pw = None
+        self._page = None
+        self._pinned_origin = None
+
+    async def navigate(self, url: str, *, connect_ip: str | None = None) -> PageSnapshot:
+        page = await self._ensure_page(url, connect_ip)
         await page.goto(url, wait_until="domcontentloaded")
         return await self._snapshot(page)
 
@@ -288,10 +388,7 @@ class PlaywrightBrowser(BaseModel):
         return await self._snapshot(page)
 
     async def close(self) -> None:
-        if self._browser is not None:
-            await self._browser.close()
-            self._browser = None
-            self._page = None
+        await self._reset_browser()
 
     async def _snapshot(self, page: Any) -> PageSnapshot:
         import base64
@@ -341,6 +438,7 @@ class BrowserTool(BaseModel):
     async def navigate(
         self, url: str, *, ssrf_check: Callable[[str], Any] | None = None
     ) -> ToolResult:
+        connect_ip: str | None = None
         if ssrf_check is not None:
             verdict = ssrf_check(url)
             if not getattr(verdict, "allowed", True):
@@ -351,8 +449,9 @@ class BrowserTool(BaseModel):
                     status=ToolStatus.DENIED,
                     error=f"SSRF guard blocked navigation: {getattr(verdict, 'reason', '')}",
                 )
+            connect_ip = getattr(verdict, "connect_ip", None)
         try:
-            page = await self.backend.navigate(url)
+            page = await self.backend.navigate(url, connect_ip=connect_ip)
         except Exception as exc:
             return ToolResult(
                 tool_call_id="",
