@@ -16,6 +16,7 @@
     "test:gate-parity": "node ../../tests/web/run-gate-parity.cjs",
     "test:access-gate": "node ../../tests/web/run-access-gate-ui.cjs",
     "test:ai-tools": "node ../../tests/web/run-ai-tools.cjs",
+    "test:page-links": "node ../../tests/web/run-page-links.cjs",
     "test:platform-console": "node ../../tests/web/run-platform-console.cjs"
   },
   "dependencies": {

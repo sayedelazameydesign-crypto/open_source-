@@ -1,15 +1,21 @@
 "use client";
 
+import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Icon } from "./icon";
 import { AccessGate } from "./access-gate";
+import {
+  CONSOLE_NAV_ITEMS,
+  WORKSPACE_NAV_ITEMS,
+  resolvePageTitle,
+} from "../lib/page-links";
 
 function Navigation({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
   return (
     <>
-      <a
+      <Link
         className="brand"
         href="/"
         aria-label="CELIA — مساحة العمل"
@@ -21,62 +27,38 @@ function Navigation({ onNavigate }: { onNavigate?: () => void }) {
         <span className="brand-word" dir="ltr">
           CELIA<span>WORKSPACE</span>
         </span>
-      </a>
+      </Link>
       <div className="nav-label">مساحتك</div>
       <nav aria-label="التنقل الرئيسي" className="primary-nav">
-        <a
-          href="/"
-          aria-current={pathname === "/" ? "page" : undefined}
-          onClick={onNavigate}
-        >
-          <Icon name="grid" /> مساحة العمل{" "}
-          <span className="nav-active-marker" />
-        </a>
-        <a
-          href="/documents"
-          aria-current={pathname === "/documents" ? "page" : undefined}
-          onClick={onNavigate}
-        >
-          <Icon name="file" /> المستندات النصية
-        </a>
-        <a
-          href="/status"
-          aria-current={pathname === "/status" ? "page" : undefined}
-          onClick={onNavigate}
-        >
-          <Icon name="shield" /> حالة المنصة
-        </a>
+        {WORKSPACE_NAV_ITEMS.map((item) => (
+          <Link
+            key={item.href}
+            href={item.href}
+            aria-current={pathname === item.href ? "page" : undefined}
+            onClick={onNavigate}
+          >
+            <Icon name={item.icon} /> {item.label}
+            {item.activeMarker && (
+              <>
+                {" "}
+                <span className="nav-active-marker" />
+              </>
+            )}
+          </Link>
+        ))}
       </nav>
       <div className="nav-label">المنصة</div>
       <nav aria-label="أدوات المنصة" className="primary-nav console-nav">
-        <a
-          href="/launchpad"
-          aria-current={pathname === "/launchpad" ? "page" : undefined}
-          onClick={onNavigate}
-        >
-          <Icon name="grid" /> App Launchpad
-        </a>
-        <a
-          href="/devbox"
-          aria-current={pathname === "/devbox" ? "page" : undefined}
-          onClick={onNavigate}
-        >
-          <Icon name="activity" /> Devbox
-        </a>
-        <a
-          href="/database"
-          aria-current={pathname === "/database" ? "page" : undefined}
-          onClick={onNavigate}
-        >
-          <Icon name="folder" /> Database
-        </a>
-        <a
-          href="/registry"
-          aria-current={pathname === "/registry" ? "page" : undefined}
-          onClick={onNavigate}
-        >
-          <Icon name="layers" /> Image Registry
-        </a>
+        {CONSOLE_NAV_ITEMS.map((item) => (
+          <Link
+            key={item.href}
+            href={item.href}
+            aria-current={pathname === item.href ? "page" : undefined}
+            onClick={onNavigate}
+          >
+            <Icon name={item.icon} /> {item.label}
+          </Link>
+        ))}
       </nav>
       <div className="sidebar-note">
         <span className="small-icon">
@@ -86,9 +68,9 @@ function Navigation({ onNavigate }: { onNavigate?: () => void }) {
         <p>
           طلبك، خطوات التنفيذ، والأدلة في مساحة واحدة. دون وعود تتجاوز ما نُفّذ.
         </p>
-        <a href="/documents" onClick={onNavigate}>
+        <Link href="/documents" onClick={onNavigate}>
           جرّب معالجة ملف TXT <Icon name="arrow" width="15" />
-        </a>
+        </Link>
       </div>
       <div className="sidebar-footer">
         <span className="local-avatar">
@@ -139,23 +121,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       /* localStorage optional */
     }
   };
-  const consoleTitles: Record<string, string> = {
-    "/launchpad": "App Launchpad · التطبيق المنشور",
-    "/devbox": "Devbox · بيئة التنفيذ",
-    "/database": "Database · المخزن والسجل",
-    "/registry": "Image Registry · صورة الحاوية",
-  };
-  const title =
-    consoleTitles[pathname] ??
-    (pathname === "/documents"
-      ? "المستندات النصية"
-      : pathname === "/status"
-        ? "حالة المنصة الحية"
-        : pathname === "/ai-tools"
-          ? "AI Tools for Developers"
-          : pathname === "/"
-            ? "مساحة العمل · Mission OS"
-            : "أدوات المشروع");
+  const title = resolvePageTitle(pathname);
   return (
     <div className="app-frame">
       <AccessGate />

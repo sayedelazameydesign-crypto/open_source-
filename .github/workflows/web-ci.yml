@@ -46,6 +46,7 @@ jobs:
       # `/ai-tools` had a suite but it was never wired into CI. Same rule as the
       # others: a suite that does not run on every web change cannot fail.
       - run: npm run test:ai-tools
+      - run: npm run test:page-links
       - run: npm run build
       # The Cloudflare Pages shape is a different build: static export with the
       # Next proxy excluded and the edge BFF taking over. Build it in CI so a

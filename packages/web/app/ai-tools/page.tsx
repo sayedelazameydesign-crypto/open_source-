@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { Icon } from "../../components/icon";
 import {
@@ -17,6 +18,7 @@ import {
   type ToolCategory,
   type ToolSort,
 } from "../../lib/ai-tools";
+import { buildStackTaskPrompt, buildWorkspaceHref } from "../../lib/page-links";
 
 const PATH_KEY = "cela:ai-tools:path";
 const STACK_KEY = "cela:ai-tools:stack";
@@ -188,6 +190,9 @@ export default function AiToolsPage() {
             <a href="#learning-path" className="ait-btn ait-btn-ghost">
               Your learning path
             </a>
+            <Link href="/" className="ait-btn ait-btn-ghost">
+              ← Workspace
+            </Link>
           </div>
           <dl className="ait-hero-stats">
             <div>
@@ -487,14 +492,29 @@ export default function AiToolsPage() {
                 ` · free tiers: ${stackSummary.freeTierAvailable.join(", ")}`}
             </span>
           </div>
-          <button
-            type="button"
-            className="ait-btn ait-btn-ghost"
-            onClick={copyStack}
-            disabled={stackSummary.count === 0}
-          >
-            {copied ? "Copied ✓" : "Copy my stack"}
-          </button>
+          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+            <button
+              type="button"
+              className="ait-btn ait-btn-ghost"
+              onClick={copyStack}
+              disabled={stackSummary.count === 0}
+            >
+              {copied ? "Copied ✓" : "Copy my stack"}
+            </button>
+            <Link
+              href={buildWorkspaceHref({
+                task: buildStackTaskPrompt(
+                  AI_TOOLS.filter((t) => stack.has(t.id)).map((t) => t.name),
+                  stackSummary.monthlyUsd,
+                  stackSummary.customPriced,
+                ),
+                mode: "flow",
+              })}
+              className="ait-btn ait-btn-primary"
+            >
+              Open stack in Workspace →
+            </Link>
+          </div>
         </aside>
       </section>
 

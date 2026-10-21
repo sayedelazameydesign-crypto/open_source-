@@ -1,6 +1,9 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+import { Icon } from "../../components/icon";
+import { buildWorkspaceHref } from "../../lib/page-links";
 
 type CatalogApp = {
   id: string;
@@ -80,10 +83,24 @@ export default function LauncherPage() {
 
   return (
     <div className="shell">
-      <header>
+      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
         <h1>
           Craft App Suite <span>لوحة اللانشر — قراءة فقط</span>
         </h1>
+        <div className="heading-actions">
+          <Link className="secondary-button" href="/launchpad">
+            <Icon name="grid" width="15" /> لوحة التشغيل
+          </Link>
+          <Link
+            className="secondary-button"
+            href={buildWorkspaceHref({
+              task: "افحص كتالوج تطبيقات Craft App Suite وحالة التحديثات المتاحة",
+              mode: "flow",
+            })}
+          >
+            <Icon name="arrow" width="15" /> فتح في مساحة العمل
+          </Link>
+        </div>
       </header>
       <p className="conn">
         الكتالوج والإصدارات عبر <code>/api/launcher/*</code> — لا تنزيل ولا تثبيت من هنا.

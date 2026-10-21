@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 
 import { Icon } from "../../components/icon";
@@ -87,6 +88,9 @@ export default function DevboxPage() {
           <Icon name="activity" width="15" />
           {probing ? "جارٍ القياس…" : "قياس الاتصال بالخلفية"}
         </button>
+        <Link className="secondary-button" href="/launchpad">
+          <Icon name="grid" width="15" /> لوحة التشغيل
+        </Link>
       </ConsoleHeading>
 
       {platform.loading && !info && <LoadingState>جارٍ قراءة إعدادات بيئة التنفيذ…</LoadingState>}

@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { ExecutionDisclosure } from "../components/execution-disclosure";
 import { Icon } from "../components/icon";
 import {
@@ -12,6 +13,27 @@ import {
 import { LoadingState, Notice, StatusPill } from "../components/workspace/ui";
 import { useAgentRun } from "../hooks/use-agent-run";
 import { object, TERMINAL, type PlanStep } from "../lib/contracts";
+import { parseWorkspaceParams, type WorkspaceMode } from "../lib/page-links";
+
+function WorkspaceQuerySync({
+  onParams,
+}: {
+  onParams: (params: {
+    runId: string | null;
+    task: string | null;
+    mode: WorkspaceMode | null;
+  }) => void;
+}) {
+  const searchParams = useSearchParams();
+  const raw = searchParams.toString();
+  const lastApplied = useRef<string | null>(null);
+  useEffect(() => {
+    if (!raw || lastApplied.current === raw) return;
+    lastApplied.current = raw;
+    onParams(parseWorkspaceParams(raw));
+  }, [raw, onParams]);
+  return null;
+}
 
 type Tab = "task" | "activity" | "evidence";
 const tabs: { id: Tab; title: string }[] = [
@@ -74,6 +96,28 @@ export default function Home() {
   }[run.connection];
   return (
     <main className="workspace-page">
+      <Suspense fallback={null}>
+        <WorkspaceQuerySync
+          onParams={({
+            runId: incomingRunId,
+            task: incomingTask,
+            mode: incomingMode,
+          }) => {
+            if (run.starting) return;
+            if (incomingRunId && run.runId !== incomingRunId) {
+              run.loadRun(incomingRunId);
+              return;
+            }
+            if (active) return;
+            if (incomingTask !== null) setTask(incomingTask);
+            if (incomingMode !== null) setMode(incomingMode);
+            if (incomingTask !== null || incomingMode !== null) {
+              setTab("task");
+              prompt.current?.focus();
+            }
+          }}
+        />
+      </Suspense>
       <div className="workspace-heading">
         <div>
           <span className="eyebrow">أفكار أوضح. خطوات قابلة للمراجعة.</span>
