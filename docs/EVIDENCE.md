@@ -98,6 +98,7 @@ Chromium الحيّ صراحةً، لكن اختباري Reach الشبكيين 
 | CodeQL `39523895517` | **نجح** لكل اللغات المهيّأة |
 | Web CI `39523895677` | **نجح**: `npm ci`، lint، typecheck، اختبارات الويب، `next build` و`build:pages` |
 | Docker PR smoke `39523895602` | **نجح** البناء وفحص `/health` وبوابة المصادقة؛ خطوة النشر إلى GHCR متخطاة في حدث PR |
+| نشر صورة الفرع إلى GHCR | دفعا `81ea197` و`9721494` أطلقا workflows النشر (`39522076906` و`39523890169`) واكتمل نشر صورة كل commit إلى GHCR. هذا نشر artifact إلى registry، وليس تشغيل خدمة أو Render deploy |
 | Vercel | **نجح** بعد تثبيت TypeScript `~5.9.3` و`eslint-plugin-react-hooks` `~5.2.0`. كان إعداد `main` السابق يستخدم TypeScript 7 خارج peer range لـ`typescript-eslint` ومع plugin hooks أحدث يرفض أنماط effects الحالية |
 | تشغيل providers غير المقصود | على commit `81ea197` أدّت مشغلات `push` القديمة إلى تشغيل فحصي Gemini وIndigo الحيّين (`39522076999` و`39522076907`) دون dispatch يدوي؛ سجّل كل منهما 7/7، وأُرسلت طلبات خارجية فعلية. لم تُطبع قيم الأسرار. أزيلت مشغلات `push` وجُعل التشغيل اليدوي شرطًا، وفحص Indigo offline افتراضيًا. لم يحدث deploy؛ أبقِ `CELA_USE_LIVE_PROVIDER=0` |
 | Render / PostgreSQL / بوابة النشر | **لم تُنفَّذ** خدمة Render أو قاعدة PostgreSQL حيّة؛ البوابة المركزية ما تزال مانع النشر |
