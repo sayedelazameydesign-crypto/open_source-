@@ -73,7 +73,7 @@ Chromium الحيّ صراحةً، لكن اختباري Reach الشبكيين 
 
 ## ٢-ج) إصلاح سياسة النشر وفحص الخدمة — 2026-10-20
 
-النتائج المحلية أدناه تخص الـworking tree الحالي، ولا تدّعي تنفيذ Render. صف Chromium يوثّق run منفصلًا في GitHub Actions على commit الأب `81ea197`، قبل حواجز الـprovider اليدوية. فُعّل `pypdf` من extra `papers` قبل تشغيل المجموعة.
+النتائج المحلية أدناه تخص الـworking tree الحالي، ولا تدّعي تنفيذ Render. صف Chromium يوثّق job منفصلًا في GitHub Actions على commit `9721494` بعد إصلاحات CI وVercel. فُعّل `pypdf` من extra `papers` قبل تشغيل المجموعة.
 
 | الفحص | النتيجة |
 |---|---|
@@ -83,10 +83,24 @@ Chromium الحيّ صراحةً، لكن اختباري Reach الشبكيين 
 | `pytest -m network` | **محاولة محلية فاشلة: 3/3**؛ Chromium تعذّر لعدم تثبيت Playwright، وGitHub فشل TLS بسبب CA محلي، وexample.org أنهى TLS بـEOF. لا ادعاء بأن اختبار CDN نجح محليًا |
 | PDF / `papers` | extra يثبت `pypdf 6.21.1`؛ الاختبار الحقيقي دخل المجموعة بدل تخطيه |
 | Probe / نشر مستهدف | 439 اختبارًا ناجحًا؛ تشمل TLS/SNI، hostname verification، proxy env، health-first/no-token، تنقيح token في body/exception/config، redirects scheme/port، fallback بين IPv6 وIPv4، allowlist Render، وبوابتي code-exec وPostgres |
-| Chromium حيّ | نجح job `live-browser` في CI run `39522081025` على commit `81ea197`; شغّل Python.org مع قياس حجب CDN. هذا run يسبق فقط تغييرات workflow التي جعلت اختبارات الـprovider يدوية حصريًا |
+| Chromium حيّ | نجح job `live-browser` في CI run `39523895556` على commit `9721494`; شغّل Python.org مع قياس حجب CDN |
 | حواجز اختبارات الـprovider | 11 اختبارًا مستهدفًا نجحت؛ أزيلت مشغلات `push` من workflows الحية، وصارت dispatch اليدوية شرطًا، كما أصبح فحص Indigo يعمل offline افتراضيًا ما لم يكن `ALLOW_LIVE_EXTERNAL_CALLS=true` صراحةً |
 | Render / Postgres حيّان | **لم يُنفَّذا**؛ لا توجد خدمة/قاعدة تجربة مرتبطة بهذه الجولة |
 | بوابة نشر مركزية | **غير موجودة بعد**؛ `deploy_doctor --strict` يفحص Render Blueprint والبيئة لكنه preflight يدوي لا يفرضه orchestrator لكل provider. هذا مانع لأي deploy، ولا يُتجاوز باختيار provider آخر |
+
+## ٢-د) نتائج CI وVercel للـPR #83 — 2026-10-20
+
+هذه النتائج تخص head `9721494` (بعد إصلاح تعارض `main` وحواجز الـprovider وتوافق أداة الويب). الـPR ما يزال مفتوحًا؛ لا تعني النتائج نشر Render أو تجاوز بوابة النشر المركزية.
+
+| الفحص | النتيجة |
+|---|---|
+| GitHub CI `39523895556` | **نجح** على Python 3.11 و3.12 و3.13؛ `live-browser` نجح أيضًا |
+| CodeQL `39523895517` | **نجح** لكل اللغات المهيّأة |
+| Web CI `39523895677` | **نجح**: `npm ci`، lint، typecheck، اختبارات الويب، `next build` و`build:pages` |
+| Docker PR smoke `39523895602` | **نجح** البناء وفحص `/health` وبوابة المصادقة؛ خطوة النشر إلى GHCR متخطاة في حدث PR |
+| Vercel | **نجح** بعد تثبيت TypeScript `~5.9.3` و`eslint-plugin-react-hooks` `~5.2.0`. كان إعداد `main` السابق يستخدم TypeScript 7 خارج peer range لـ`typescript-eslint` ومع plugin hooks أحدث يرفض أنماط effects الحالية |
+| تشغيل providers غير المقصود | على commit `81ea197` أدّت مشغلات `push` القديمة إلى تشغيل فحصي Gemini وIndigo الحيّين (`39522076999` و`39522076907`) دون dispatch يدوي؛ سجّل كل منهما 7/7، وأُرسلت طلبات خارجية فعلية. لم تُطبع قيم الأسرار. أزيلت مشغلات `push` وجُعل التشغيل اليدوي شرطًا، وفحص Indigo offline افتراضيًا. لم يحدث deploy؛ أبقِ `CELA_USE_LIVE_PROVIDER=0` |
+| Render / PostgreSQL / بوابة النشر | **لم تُنفَّذ** خدمة Render أو قاعدة PostgreSQL حيّة؛ البوابة المركزية ما تزال مانع النشر |
 
 ## ٣) ما لا يغطّيه هذا الملف — بصراحة
 
