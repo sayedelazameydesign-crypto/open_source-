@@ -98,12 +98,24 @@ Chromium الحيّ صراحةً، لكن اختباري Reach الشبكيين 
 | CodeQL `39523895517` | **نجح** لكل اللغات المهيّأة |
 | Web CI `39523895677` | **نجح**: `npm ci`، lint، typecheck، اختبارات الويب، `next build` و`build:pages` |
 | Docker PR smoke `39523895602` | **نجح** البناء وفحص `/health` وبوابة المصادقة؛ خطوة النشر إلى GHCR متخطاة في حدث PR |
-| نشر صورة الفرع إلى GHCR (تاريخي) | دفعا `81ea197` و`9721494` أطلقا workflows النشر (`39522076906` و`39523890169`) واكتمل نشر صورة كل commit إلى GHCR. هذا نشر artifact إلى registry، وليس تشغيل خدمة أو Render deploy؛ أُغلقت هذه السياسة لاحقًا في PR #83 |
-| سياسة GHCR الحالية في PR #83 | `.github/workflows/docker-image.yml`: `main` يحدّث `:latest`, `:edge`, و`:sha-*`; وسوم `v*` تدفع وسم الإصدار و`:sha-*`; فروع `arena/**` تبني وتختبر فقط. صلاحية `packages: write` محصورة في job النشر المشروط؛ اختبار `tests/test_docker_workflow_security.py` يحرس الفصل والشرط |
-| فحص حزمة GHCR | توثيق سابق في `docs/NO_CARD_DEPLOY_VERIFIED.md` يسجل `:edge` كحزمة عامة؛ إعادة الاستعلام في هذه المراجعة عن package metadata/versions فشلت بـ403 (`Resource not accessible by integration`). لذا لا أؤكد قائمة الوسوم الحالية من API، ولم يُحذف أي وسم |
+| نشر صورة الفرع إلى GHCR (تاريخي) | دفعا `81ea197` و`9721494` أطلقا workflows النشر (`39522076906` و`39523890169`) واكتمل نشر صورة كل commit إلى GHCR. هذا نشر artifact إلى registry، وليس تشغيل خدمة أو Render deploy |
 | Vercel | **نجح** بعد تثبيت TypeScript `~5.9.3` و`eslint-plugin-react-hooks`. كان إعداد `main` السابق يستخدم TypeScript 7 خارج peer range لـ`typescript-eslint` ومع plugin hooks أحدث يرفض أنماط effects الحالية |
 | تشغيل providers غير المقصود | على commit `81ea197` أدّت مشغلات `push` القديمة إلى تشغيل فحصي Gemini وIndigo الحيّين (`39522076999` و`39522076907`) دون dispatch يدوي؛ سجّل كل منهما 7/7، وأُرسلت طلبات خارجية فعلية. لم تُطبع قيم الأسرار. أزيلت مشغلات `push` وجُعل التشغيل اليدوي شرطًا، وفحص Indigo offline افتراضيًا. لم يحدث deploy؛ أبقِ `CELA_USE_LIVE_PROVIDER=0` |
 | Render / PostgreSQL / بوابة النشر | **لم تُنفَّذ** خدمة Render أو قاعدة PostgreSQL حيّة؛ البوابة المركزية ما تزال مانع النشر |
+
+## ٢-هـ) سياسة GHCR والتحقق الحالي — `1c7bf62` (2026-10-20)
+
+هذه لقطة PR #83 عند commit `1c7bf62` (قبل هذا التحديث التوثيقي)، لا لـ`main` بعد؛ كان الـPR مفتوحًا ولم يحدث merge أو deploy.
+
+| الفحص | النتيجة |
+|---|---|
+| `make check` محليًا | نجح: `ruff check .`، `evidence-check`، `vendored-verify` (198 ملفًا)، و`1529 passed, 3 deselected` |
+| GitHub CI / Web / CodeQL | CI `39526397554` نجح على Python 3.11/3.12/3.13 و`live-browser`; Web CI `39526397485` وCodeQL `39526397518` نجحا؛ Vercel checks نجحت |
+| Docker على PR وفرع الجلسة | PR run `39526397509` وpush run `39526393002`: build/smoke نجحا وjob `publish` **skipped**؛ لم يُدفع artifact من هذا الفرع |
+| سياسة GHCR في رأس PR | `main` يحدّث `:latest`, `:edge`, و`:sha-*`; وسوم `v*` تدفع وسم الإصدار و`:sha-*`; `arena/**` تبني وتختبر فقط. `packages: write` محصورة في job النشر المشروط؛ اختبار `tests/test_docker_workflow_security.py` يحرس الشرط والفصل |
+| ظهور الحزمة/الوسوم الحالية | توثيق سابق في `docs/NO_CARD_DEPLOY_VERIFIED.md` يسجل `:edge` كحزمة عامة. استعلام package metadata/versions أعاد 403 (`Resource not accessible by integration`)، لذلك لم أستطع إعادة تأكيد visibility أو جرد الوسوم الحالية؛ لم يُحذف أي tag |
+| `ruff format --check .` | يفشل على 34 ملفًا في رأس PR؛ فشل المقارنة على `main` عند `4e5ac17` يشمل 45 ملفًا، وجميع ملفات فشل PR ضمن تلك المجموعة. CI يشغّل `ruff check .` فقط ولا يفرض `ruff format --check` |
+| بوابة النشر وRender | لا توجد بوابة نشر مركزية قابلة للاستدعاء؛ `deploy_doctor --strict` preflight يدوي. لم يحدث Render deploy أو `make verify-deploy`، ولم تُكتب adapters |
 
 ## ٣) ما لا يغطّيه هذا الملف — بصراحة
 
