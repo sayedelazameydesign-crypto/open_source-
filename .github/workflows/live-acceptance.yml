@@ -2,13 +2,10 @@ name: Live acceptance (A1/A6, real Gemini)
 
 # Manual, secrets-injected run of scripts/test_gemini_provider.py.
 # The key travels only from repository secret to step env to model client.
-# The destination is pinned, not a dispatch input.
-# Push bootstraps runs before workflow_dispatch exists on the default branch.
+# The destination is pinned, not a dispatch input. Branch pushes never invoke
+# the provider; an explicit workflow_dispatch and the kill switch are required.
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - ".github/workflows/live-acceptance.yml"
 
 permissions:
   contents: read
@@ -21,8 +18,8 @@ jobs:
   a1-a6:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # Push to main is the merge itself: only dispatch should spend quota there.
-    if: github.event_name == 'workflow_dispatch' || github.ref_name != 'main'
+    # Paid provider calls require an explicit manual dispatch.
+    if: github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7

@@ -8,10 +8,7 @@ import pytest
 import yaml
 
 WORKFLOW = (
-    pathlib.Path(__file__).resolve().parents[1]
-    / ".github"
-    / "workflows"
-    / "indigo-live-check.yml"
+    pathlib.Path(__file__).resolve().parents[1] / ".github" / "workflows" / "indigo-live-check.yml"
 )
 
 
@@ -26,6 +23,16 @@ def _steps(spec: dict) -> list[dict]:
 
 def _step(spec: dict, needle: str) -> dict:
     return next(s for s in _steps(spec) if needle in s.get("name", ""))
+
+
+def test_live_verification_is_manual_and_kill_switch_defaults_closed(spec: dict) -> None:
+    triggers = spec.get("on", spec.get(True))
+    assert set(triggers) == {"workflow_dispatch"}
+    assert spec["jobs"]["indigo-check"].get("if") == "github.event_name == 'workflow_dispatch'"
+    preflight = _step(spec, "Preflight")
+    assert '!= "true"' in preflight["run"]
+    assert 'echo "OFFLINE_ONLY=1"' in preflight["run"]
+    assert "args+=(--offline-only)" in _step(spec, "Run AI Indigo verification")["run"]
 
 
 def test_destination_is_pinned_constant_not_an_input(spec: dict) -> None:

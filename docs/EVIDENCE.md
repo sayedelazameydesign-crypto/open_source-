@@ -6,7 +6,7 @@
 بينما كبرت المجموعة، وصار أول دليل يقرأه الزائر هو أول دليل يخذله.
 
 <!-- generated:test-count -->
-**1526 اختبارًا في المجموعة** — 1523 مُختارًا · 3 مُستبعَدًا (deselected) · `pytest --collect-only -q`
+**1528 اختبارًا في المجموعة** — 1525 مُختارًا · 3 مُستبعَدًا (deselected) · `pytest --collect-only -q`
 <!-- /generated:test-count -->
 
 > **الرقمان ليسا تناقضًا.** العدد أعلاه حصيلة `pytest --collect-only -q`، أي
@@ -73,18 +73,18 @@ Chromium الحيّ صراحةً، لكن اختباري Reach الشبكيين 
 
 ## ٢-ج) إصلاح سياسة النشر وفحص الخدمة — 2026-10-20
 
-هذه نتيجة محلية للـworking tree الحالي، وليست ادعاءً بأن Render أو GitHub Actions
-نُفِّذا. فُعّل `pypdf` من extra `papers` قبل تشغيل المجموعة.
+النتائج المحلية أدناه تخص الـworking tree الحالي، ولا تدّعي تنفيذ Render. صف Chromium يوثّق run منفصلًا في GitHub Actions على commit الأب `81ea197`، قبل حواجز الـprovider اليدوية. فُعّل `pypdf` من extra `papers` قبل تشغيل المجموعة.
 
 | الفحص | النتيجة |
 |---|---|
-| `make check` | نجح: `ruff check .` · `evidence-check` · `vendored-verify` (198 ملفًا) · `1523 passed, 3 deselected` |
-| `ruff format --check .` | **يفشل على 36 ملفًا موجودًا مسبقًا خارج تغييرات هذه الجولة**؛ كل ملفات Python المعدلة تمرّ بفحص التنسيق المستهدف. لم أُعد تنسيق ملفات غير مرتبطة لتجنب diff جانبي واسع |
-| `git diff --check` و`python scripts/update_evidence.py --check` | نجحا؛ الكتلة المولّدة تسجل 1526 مجموعة / 1523 مختارًا / 3 مستبعدة |
+| `make check` | نجح بعد إضافة حواجز تشغيل الـproviders: `ruff check .` · `evidence-check` · `vendored-verify` (198 ملفًا) · `1525 passed, 3 deselected` |
+| `ruff format --check .` | **يفشل على 34 ملفًا موجودًا مسبقًا خارج تغييرات هذه الجولة**؛ ملفات Python المعدّلة تمرّ بفحص التنسيق المستهدف. لم أُعد تنسيق ملفات غير مرتبطة لتجنب diff جانبي واسع |
+| `git diff --check` و`python scripts/update_evidence.py --check` | نجحا؛ الكتلة المولّدة تسجل 1528 مجموعة / 1525 مختارًا / 3 مستبعدة |
 | `pytest -m network` | **محاولة محلية فاشلة: 3/3**؛ Chromium تعذّر لعدم تثبيت Playwright، وGitHub فشل TLS بسبب CA محلي، وexample.org أنهى TLS بـEOF. لا ادعاء بأن اختبار CDN نجح محليًا |
 | PDF / `papers` | extra يثبت `pypdf 6.21.1`؛ الاختبار الحقيقي دخل المجموعة بدل تخطيه |
 | Probe / نشر مستهدف | 439 اختبارًا ناجحًا؛ تشمل TLS/SNI، hostname verification، proxy env، health-first/no-token، تنقيح token في body/exception/config، redirects scheme/port، fallback بين IPv6 وIPv4، allowlist Render، وبوابتي code-exec وPostgres |
-| Chromium حيّ | لم يكتمل تشغيل Chromium في Arena؛ CI لديه job منفصل يثبت Playwright/Chromium ويشغّل Python.org مع قياس حجب CDN. النتيجة تظل غير مؤكدة حتى يكتمل CI |
+| Chromium حيّ | نجح job `live-browser` في CI run `39522081025` على commit `81ea197`; شغّل Python.org مع قياس حجب CDN. هذا run يسبق فقط تغييرات workflow التي جعلت اختبارات الـprovider يدوية حصريًا |
+| حواجز اختبارات الـprovider | 11 اختبارًا مستهدفًا نجحت؛ أزيلت مشغلات `push` من workflows الحية، وصارت dispatch اليدوية شرطًا، كما أصبح فحص Indigo يعمل offline افتراضيًا ما لم يكن `ALLOW_LIVE_EXTERNAL_CALLS=true` صراحةً |
 | Render / Postgres حيّان | **لم يُنفَّذا**؛ لا توجد خدمة/قاعدة تجربة مرتبطة بهذه الجولة |
 | بوابة نشر مركزية | **غير موجودة بعد**؛ `deploy_doctor --strict` يفحص Render Blueprint والبيئة لكنه preflight يدوي لا يفرضه orchestrator لكل provider. هذا مانع لأي deploy، ولا يُتجاوز باختيار provider آخر |
 
