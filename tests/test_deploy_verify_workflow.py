@@ -84,6 +84,13 @@ def test_doctor_checks_the_same_credentials_the_service_uses(spec: dict) -> None
         assert doctor[name] == "${{ secrets." + name + " }}"
 
 
+def test_doctor_is_run_as_a_render_gate(spec):
+    env = _step(spec, "Doctor")["env"]
+    assert env["RENDER"] == "true"
+    assert env["CELA_CODE_EXEC_MODE"] == "disabled"
+    assert "secrets." not in env["CELA_CODE_EXEC_MODE"]
+
+
 @pytest.mark.parametrize(
     ("step_name", "secret"),
     [("Resolve Render service URL", "RENDER_API_KEY"), ("Verify deployment", "CELA_API_TOKEN")],

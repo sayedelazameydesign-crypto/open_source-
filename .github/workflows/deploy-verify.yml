@@ -87,7 +87,17 @@ jobs:
           rm -f services.json
 
       - name: Doctor (strict)
+        # RENDER=true is what makes this step a Render gate rather than a local
+        # preflight: the doctor hangs its Render rules (persistent_run_store_required,
+        # code_exec_not_disabled incl. the render.yaml blueprint) on `is_render`,
+        # and GitHub runners never set RENDER — without it a missing
+        # CELA_RUN_STORE_URL passes green with store_backend_scheme: memory.
+        # CELA_CODE_EXEC_MODE=disabled is declared alongside it, mirroring
+        # render.yaml, so the step cannot fail with code_exec_not_disabled for a
+        # reason unrelated to storage; it is a literal, never a secret.
         env:
+          RENDER: "true"
+          CELA_CODE_EXEC_MODE: disabled
           CELA_API_TOKEN: ${{ secrets.CELA_API_TOKEN }}
           CELA_PRIVATE_API_TOKEN: ${{ secrets.CELA_PRIVATE_API_TOKEN }}
           CELA_RUN_STORE_URL: ${{ secrets.CELA_RUN_STORE_URL }}
