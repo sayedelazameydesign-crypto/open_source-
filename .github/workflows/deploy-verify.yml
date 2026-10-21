@@ -7,6 +7,13 @@ name: Deploy verification (manual)
 
 on:
   workflow_dispatch:
+    inputs:
+      expect_kind:
+        description: "execution.kind the published service must report"
+        required: false
+        default: "scripted"
+        type: choice
+        options: [scripted, provider_adapter, any]
 
 permissions:
   contents: read
@@ -19,6 +26,11 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # A preview deployment must answer 'scripted'; flipping this to
+    # 'provider_adapter' is only honest after §2.6 of the free-tier runbook was
+    # actually completed (live adapter + key in Render).
+    env:
+      EXPECT_KIND: ${{ inputs.expect_kind }}
     steps:
       - uses: actions/checkout@v7
 
@@ -27,9 +39,15 @@ jobs:
           python-version: "3.11"
 
       - name: Install
+        # `distributed` is not optional here: the Doctor step below receives
+        # CELA_RUN_STORE_URL from the secret store, and the doctor refuses a
+        # Postgres run store when psycopg is not importable (scripts/deploy_doctor.py
+        # -> postgres_driver_missing). Installing only ".[dev,server]" therefore fails
+        # the run before the deployment is ever probed. This extras set mirrors the
+        # service build in render.yaml ("[server,distributed]").
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev,server]"
+          pip install -e ".[dev,server,distributed]"
 
       - name: Resolve Render service URL
         env:
@@ -47,7 +65,14 @@ jobs:
             -o services.json
           URL=$(python - <<'PY'
           import json, sys
-          items = json.load(open("services.json"))
+          try:
+              items = json.load(open("services.json"))
+          except (OSError, ValueError) as exc:
+              # A non-JSON body is a proxy/login page, not a Render answer; say so
+              # instead of drowning the operator in a traceback.
+              sys.exit("Render API returned an unreadable response (%s: %s)" % (type(exc).__name__, exc))
+          if not isinstance(items, list):
+              sys.exit("Render API returned %s, expected a list of services" % type(items).__name__)
           matches = [i["service"] for i in items if i.get("service", {}).get("name") == "celia-mission-os-api"]
           if len(matches) != 1:
               sys.exit("expected exactly one service named celia-mission-os-api, found %d" % len(matches))
@@ -78,4 +103,15 @@ jobs:
             echo "::error title=Preflight::CELA_API_TOKEN secret is empty or unset."
             exit 1
           fi
-          make verify-deploy API="${API_URL}" EXPECT_KIND=scripted
+          # The input is a closed choice, but the value still arrives through env
+          # rather than being interpolated into this shell line, and is re-checked:
+          # a hand-edited default must not reach the probe as an arbitrary string.
+          case "${EXPECT_KIND:-scripted}" in
+            scripted | provider_adapter | any) EXPECT="${EXPECT_KIND:-scripted}" ;;
+            *)
+              echo "::error title=Preflight::EXPECT_KIND must be scripted, provider_adapter or any."
+              exit 2
+              ;;
+          esac
+          echo "Verifying ${API_URL} expects execution.kind == ${EXPECT}"
+          make verify-deploy API="${API_URL}" EXPECT_KIND="${EXPECT}"
