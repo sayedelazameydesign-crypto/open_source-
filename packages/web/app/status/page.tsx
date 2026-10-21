@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Icon } from "../../components/icon";
 import { LoadingState, Notice, StatusPill } from "../../components/workspace/ui";
@@ -85,10 +86,16 @@ export default function StatusPage() {
           <span className="eyebrow">الشفافية التشغيلية · Live Platform Status</span>
           <h1>حالة المنصة الحية</h1>
         </div>
-        <a className="secondary-button" href="/">
-          <Icon name="arrow" width="15" />
-          العودة إلى مساحة العمل
-        </a>
+        <div className="heading-actions">
+          <Link className="secondary-button" href="/launchpad">
+            <Icon name="grid" width="15" />
+            App Launchpad
+          </Link>
+          <Link className="secondary-button" href="/">
+            <Icon name="arrow" width="15" />
+            العودة إلى مساحة العمل
+          </Link>
+        </div>
       </div>
 
       {loading && <LoadingState>جارٍ فحص حالة المنصة الحية…</LoadingState>}

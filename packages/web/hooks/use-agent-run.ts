@@ -317,6 +317,8 @@ export function useAgentRun() {
     try {
       const url = new URL(window.location.href);
       url.searchParams.delete("run_id");
+      url.searchParams.delete("task");
+      url.searchParams.delete("mode");
       window.history.replaceState(null, "", url.toString());
     } catch {
       /* history update optional */

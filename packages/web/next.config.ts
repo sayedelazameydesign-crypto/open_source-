@@ -20,6 +20,8 @@ const config: NextConfig = staticExport
       // Next image optimizer (and therefore no sharp) is part of that surface.
       images: { unoptimized: true },
     }
-  : {};
+  : {
+      allowedDevOrigins: ["*.e2b.app"],
+    };
 
 export default config;

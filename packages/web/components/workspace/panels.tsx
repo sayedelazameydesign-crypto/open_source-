@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { Icon } from "../icon";
 import { EmptyState, StatusPill } from "./ui";
 import {
@@ -260,14 +261,14 @@ export function EvidencePanel({
             المخرجات التي ترسلها المهمة ستظهر هنا. لا نعرض ملفات تجريبية ثابتة.
           </EmptyState>
         )}
-        <a className="document-shortcut" href="/documents">
+        <Link className="document-shortcut" href="/documents">
           <Icon name="file" />
           <span>
             <strong>لديك ملف TXT؟</strong>
             <small>حلّله محليًا وأنشئ تقريرًا قابلًا للتنزيل</small>
           </span>
           <Icon name="arrow" width="17" />
-        </a>
+        </Link>
         {artifacts.length > 0 && (
           <p className="section-note">
             المسار العام يعيد بيانات الملف بصيغة JSON؛ ليس رابط تنزيل مباشر.

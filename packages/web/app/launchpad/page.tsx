@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { Icon } from "../../components/icon";
 import {
   ConsoleHeading,
@@ -17,6 +18,7 @@ import {
   StatusPill,
 } from "../../components/workspace/ui";
 import { useLedgerReport, usePlatformInfo } from "../../hooks/use-platform-console";
+import { buildWorkspaceHref } from "../../lib/page-links";
 import { formatDuration, formatPercent, formatUptime } from "../../lib/platform";
 
 /**
@@ -53,9 +55,9 @@ export default function LaunchpadPage() {
             ledger.refresh();
           }}
         />
-        <a className="secondary-button" href="/status">
+        <Link className="secondary-button" href="/status">
           <Icon name="shield" width="15" /> حالة المنصة
-        </a>
+        </Link>
       </ConsoleHeading>
 
       {platform.loading && !info && <LoadingState>جارٍ قراءة حقائق التشغيل…</LoadingState>}
@@ -175,15 +177,18 @@ export default function LaunchpadPage() {
                 />
               </FactGrid>
               <div className="console-links">
-                <a className="secondary-button" href="/devbox">
+                <Link className="secondary-button" href="/devbox">
                   <Icon name="activity" width="15" /> بيئة التنفيذ
-                </a>
-                <a className="secondary-button" href="/database">
+                </Link>
+                <Link className="secondary-button" href="/database">
                   <Icon name="folder" width="15" /> المخزن والسجل
-                </a>
-                <a className="secondary-button" href="/registry">
+                </Link>
+                <Link className="secondary-button" href="/registry">
                   <Icon name="layers" width="15" /> صورة الحاوية
-                </a>
+                </Link>
+                <Link className="secondary-button" href="/launcher">
+                  <Icon name="link" width="15" /> Craft App Suite
+                </Link>
               </div>
             </ConsolePanel>
           </div>
@@ -223,6 +228,23 @@ export default function LaunchpadPage() {
                           <StatusPill status={entry.status} />{" "}
                           · {formatDuration(entry.duration_ms)} ·{" "}
                           <span dir="ltr">{entry.mode}</span>
+                          {" · "}
+                          <Link href={buildWorkspaceHref({ runId: entry.run_id })}>
+                            عرض التشغيل
+                          </Link>
+                          {entry.task ? (
+                            <>
+                              {" · "}
+                              <Link
+                                href={buildWorkspaceHref({
+                                  task: entry.task,
+                                  mode: entry.mode,
+                                })}
+                              >
+                                إعادة التعبئة
+                              </Link>
+                            </>
+                          ) : null}
                         </small>
                       </div>
                     </li>

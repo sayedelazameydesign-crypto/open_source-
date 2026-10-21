@@ -1,6 +1,8 @@
 "use client";
 
-import { useRef, useState } from "react";
+import Link from "next/link";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { Icon } from "../../components/icon";
 import {
   EmptyState,
@@ -9,6 +11,24 @@ import {
   StatusPill,
 } from "../../components/workspace/ui";
 import { object } from "../../lib/contracts";
+import { buildDocumentsHref, parseDocumentsParams } from "../../lib/page-links";
+
+function DocumentsQuerySync({
+  onRunId,
+}: {
+  onRunId: (runId: string) => void;
+}) {
+  const searchParams = useSearchParams();
+  const raw = searchParams.toString();
+  const lastApplied = useRef<string | null>(null);
+  useEffect(() => {
+    if (!raw || lastApplied.current === raw) return;
+    lastApplied.current = raw;
+    const { runId } = parseDocumentsParams(raw);
+    if (runId) onRunId(runId);
+  }, [raw, onRunId]);
+  return null;
+}
 
 type DocumentRun = {
   run_id: string;
@@ -86,6 +106,9 @@ export default function Documents() {
 
   return (
     <main className="documents-page">
+      <Suspense fallback={null}>
+        <DocumentsQuerySync onRunId={(runId) => setRestoreId(runId)} />
+      </Suspense>
       <span className="eyebrow">
         ملف واحد. معالجة محلية. نتيجة قابلة للمراجعة.
       </span>
@@ -161,7 +184,11 @@ export default function Documents() {
               </div>
               <p className="document-run-id">
                 معرّف المهمة:{" "}
-                <code style={{ overflowWrap: "anywhere" }}>{run.run_id}</code>
+                <code style={{ overflowWrap: "anywhere" }}>{run.run_id}</code>{" "}
+                ·{" "}
+                <Link href={buildDocumentsHref({ runId: run.run_id })}>
+                  رابط مباشر للاسترجاع
+                </Link>
               </p>
               <ol>
                 {run.plan.map((step, i) => (

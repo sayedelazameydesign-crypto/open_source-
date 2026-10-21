@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { Icon } from "../../components/icon";
 import {
   ConsoleHeading,
@@ -18,6 +19,7 @@ import {
   statusLabels,
 } from "../../components/workspace/ui";
 import { useLedgerReport, usePlatformInfo } from "../../hooks/use-platform-console";
+import { buildWorkspaceHref } from "../../lib/page-links";
 import {
   formatDuration,
   formatPercent,
@@ -120,9 +122,9 @@ export default function DatabasePage() {
             ledger.refresh();
           }}
         />
-        <a className="secondary-button" href="/launchpad">
+        <Link className="secondary-button" href="/launchpad">
           <Icon name="grid" width="15" /> لوحة التشغيل
-        </a>
+        </Link>
       </ConsoleHeading>
 
       {platform.error && <Notice title="تعذر قراءة إعداد المخزن">{platform.error}</Notice>}
@@ -222,7 +224,24 @@ export default function DatabasePage() {
                         <td dir="ltr">{entry.seq}</td>
                         <td>
                           <span className="table-task">{entry.task || "بلا نص"}</span>
-                          <small dir="ltr">{entry.run_id}</small>
+                          <small dir="ltr">
+                            <Link href={buildWorkspaceHref({ runId: entry.run_id })}>
+                              {entry.run_id}
+                            </Link>
+                          </small>
+                          {entry.task ? (
+                            <>
+                              {" · "}
+                              <Link
+                                href={buildWorkspaceHref({
+                                  task: entry.task,
+                                  mode: entry.mode,
+                                })}
+                              >
+                                إعادة التعبئة
+                              </Link>
+                            </>
+                          ) : null}
                         </td>
                         <td>
                           <StatusPill status={entry.status}>

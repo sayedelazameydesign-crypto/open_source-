@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { Icon } from "../../components/icon";
 import {
   ConsoleHeading,
@@ -44,9 +45,12 @@ export default function RegistryPage() {
         }
       >
         <RefreshButton loading={platform.loading} onClick={platform.refresh} />
-        <a className="secondary-button" href="/devbox">
+        <Link className="secondary-button" href="/devbox">
           <Icon name="activity" width="15" /> بيئة التنفيذ
-        </a>
+        </Link>
+        <Link className="secondary-button" href="/launchpad">
+          <Icon name="grid" width="15" /> لوحة التشغيل
+        </Link>
       </ConsoleHeading>
 
       {platform.loading && !info && <LoadingState>جارٍ قراءة بيانات الصورة…</LoadingState>}
