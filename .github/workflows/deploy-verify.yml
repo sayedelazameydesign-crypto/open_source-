@@ -16,8 +16,8 @@ name: Deploy verification (live URL)
 #
 # Secrets: CELA_API_TOKEN, CELA_PRIVATE_API_TOKEN, CELA_RUN_STORE_URL.
 # The readiness Doctor is provider-neutral: CELA_DEPLOY_REQUIRE_PERSISTENT_STORE=1
-# requires a Postgres (or Redis+Postgres) run store instead of relying on
-# RENDER=true, so the same gate works on any container provider.
+# requires a Postgres (or Redis+Postgres) run store instead of relying on a
+# provider-specific flag, so the same gate works on any container provider.
 #
 # Read-only on the repository: it checks the deployment and changes nothing.
 

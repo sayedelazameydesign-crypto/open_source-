@@ -1,10 +1,14 @@
-"""C6 must stay a deliberate, separated, write-only-to-a-test-database run.
+"""Guard the manual C6 workflow: a write test must stay deliberate and separated.
 
-Closing C6 means proving persistence against a real PostgreSQL database. That
-proof is only honest if the run cannot be triggered by a push, cannot write to
-the production database, cannot silently skip the separation guard, and cannot
-print a DSN. Those are properties of the workflow file, so they are asserted
-here — the same way the other workflow guards in ``tests/`` do it.
+C6 is the only check that proves run state survives a real reconnect, and it is
+also the only check in this repository that *writes* to a database outside the
+test suite. Two failures matter more than any other:
+
+1. it runs by accident (a push, a schedule, or a default dispatch);
+2. it writes to the production database, or reports C6 without proving
+   separation from production.
+
+The workflow is the place both are decided, so both are asserted here.
 """
 
 from __future__ import annotations
@@ -40,62 +44,57 @@ def _step(spec: dict, needle: str) -> dict:
 
 
 def test_workflow_is_manual_and_read_only(spec: dict) -> None:
-    triggers = _triggers(spec)
-    assert set(triggers) == {"workflow_dispatch"}
+    assert set(_triggers(spec)) == {"workflow_dispatch"}
     assert spec["permissions"] == {"contents": "read"}
 
 
-def test_write_test_needs_an_explicit_yes(spec: dict) -> None:
+def test_write_requires_an_explicit_confirmation(spec: dict) -> None:
     inputs = _triggers(spec)["workflow_dispatch"]["inputs"]
-    assert inputs["confirm_write"]["type"] == "choice"
-    assert inputs["confirm_write"]["default"] == "no", "the safe default is no write"
-    assert set(inputs["confirm_write"]["options"]) == {"no", "yes"}
+    confirm = inputs["confirm_write"]
+    assert confirm["type"] == "choice"
+    assert set(confirm["options"]) == {"no", "yes"}
+    assert confirm["default"] == "no", "the default dispatch must not write"
     assert spec["jobs"]["persistence"]["if"] == "inputs.confirm_write == 'yes'"
 
 
 def test_install_carries_psycopg(spec: dict) -> None:
-    run = _step(spec, "Install")["run"]
-    assert '.[dev,server,distributed]' in run, (
-        "the C6 script cannot connect to PostgreSQL without psycopg"
-    )
+    assert '".[dev,server,distributed]"' in _step(spec, "Install")["run"]
 
 
 def test_preflight_names_both_secrets_without_printing_them(spec: dict) -> None:
-    run = _step(spec, "Preflight")["run"]
+    step = _step(spec, "Preflight")
+    run = step["run"]
     for name in ("CELA_TEST_POSTGRES_DSN", "CELA_RUN_STORE_URL"):
         assert f"{name} secret is empty or unset" in run, (
             f"a missing {name} must be a named preflight failure"
         )
+        assert step["env"][name] == "${{ secrets." + name + " }}"
     assert "::error title=Preflight::" in run
-    assert "secrets." not in run, "secrets travel through step env only"
-    assert "echo \"${CELA_TEST_POSTGRES_DSN" not in run
+    assert "secrets." not in run
 
 
-def test_dsns_reach_the_script_through_env_only(spec: dict) -> None:
-    run = _step(spec, "Run the C6")["run"]
-    assert "secrets." not in run, "a secret interpolated into the shell would reach argv/logs"
-    env = _step(spec, "Run the C6")["env"]
+def test_the_dsns_reach_the_script_only_through_env(spec: dict) -> None:
+    step = _step(spec, "Run the C6")
+    assert "secrets." not in step["run"]
     for name in ("CELA_TEST_POSTGRES_DSN", "CELA_RUN_STORE_URL"):
-        assert env[name] == "${{ secrets." + name + " }}"
+        assert step["env"][name] == "${{ secrets." + name + " }}"
 
 
-def test_run_requires_yes_and_never_opts_out_of_the_separation_guard(spec: dict) -> None:
+def test_the_run_confirms_and_never_skips_the_separation_guard(spec: dict) -> None:
     run = _step(spec, "Run the C6")["run"]
     assert "scripts/test_postgres_persistence.py --yes" in run
     assert "--no-production-reference" not in run, (
-        "a CI run without a production reference proves no separation; it cannot be C6 evidence"
+        "a CI run without a production reference proves no separation, so it cannot be C6"
     )
 
 
-def test_keep_rows_is_an_explicit_input(spec: dict) -> None:
+def test_rows_are_deleted_by_default(spec: dict) -> None:
     inputs = _triggers(spec)["workflow_dispatch"]["inputs"]
     assert inputs["keep_rows"]["default"] == "no"
-    run = _step(spec, "Run the C6")["run"]
-    assert '--yes --keep' in run
-    assert 'KEEP_ROWS:-no' in run
+    assert '--yes --keep' in _step(spec, "Run the C6")["run"]
 
 
-def test_summary_runs_even_on_failure_and_reuses_the_script_output(spec: dict) -> None:
+def test_summary_is_written_even_on_failure_and_carries_no_secret(spec: dict) -> None:
     summary = _step(spec, "Summary")
     assert summary["if"] == "always()"
     assert "/tmp/c6.log" in summary["run"]

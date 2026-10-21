@@ -51,9 +51,7 @@ def test_accepts_a_provider_host_covered_by_a_wildcard() -> None:
 
 
 def test_accepts_an_exact_host_and_normalizes_case_and_trailing_slash() -> None:
-    result = authorize_target(
-        "https://API.Example.APP/", "api.example.app, *.railway.app"
-    )
+    result = authorize_target("https://API.Example.APP/", "api.example.app, *.railway.app")
 
     assert result["url"] == "https://api.example.app"
     assert result["allowed_host"] == "api.example.app"
@@ -61,7 +59,7 @@ def test_accepts_an_exact_host_and_normalizes_case_and_trailing_slash() -> None:
 
 
 def test_wildcard_does_not_cover_the_apex_or_a_lookalike_suffix() -> None:
-    for url in ("https://example.app", "https://example.app.evil.test"):
+    for url in ("https://example.app", "https://api.example.app.evil.test"):
         with pytest.raises(TargetError, match="not covered"):
             authorize_target(url, "*.example.app")
 
