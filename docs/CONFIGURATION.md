@@ -37,6 +37,7 @@
 
 | المتغيّر | الافتراضي | المعنى |
 |---|---|---|
+| `CELA_DEPLOY_REQUIRE_PERSISTENT_STORE` | `0` | يجعل بوابة النشر تشترط مخزنًا دائمًا (`postgresql://`/`postgres://` أو `distributed://` مع `CELA_POSTGRES_URL` و`CELA_REDIS_URL`) على **أي** مزوّد، لا على Render وحدها. `0` لا يُعفي من قاعدة Render: مع `RENDER=true` يبقى الاشتراط فعّالًا. الغرض: منصّة بحاوية/قرص مؤقّت تفقد SQLite عند كل إعادة نشر، فيُرفض النشر بدل فقد التشغيلات. |
 | `CELA_RUN_STORE_URL` `[*]` | مخزن داخل الذاكرة | `sqlite:///…` أو `postgresql://…` (يحتاج `psycopg` من extra `distributed`). بدونه كل تشغيل يضيع عند إعادة التشغيل. |
 | `CELA_POSTGRES_URL` | — | بديل/مرادف لـDSN عند بناء مخزن موزّع في الاختبارات والسكربتات. |
 | `CELA_REDIS_URL` | `redis://localhost:6379/0` | ناقل الأحداث للمخزن الموزّع (extra `distributed`). |

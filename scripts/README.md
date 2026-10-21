@@ -16,6 +16,7 @@
 | `deploy_doctor.py` | فحص جاهزية النشر (`--strict`): أسرار، عناوين، مخزن دائم، `CELA_CODE_EXEC_MODE=disabled`، Blueprint الهدف. | `deploy-verify.yml` · `make` لا يشغّله تلقائيًا |
 | `verify_deployment.py` | تحقق بعد النشر من خدمة منشورة (صحة + هوية التنفيذ)، بقائمة سماح صريحة للمضيفين. | `make verify-deploy` |
 | `verify_indigo_api.py` | يتحقق من تكامل Indigo بلا شبكة، ثم حيًّا عند السماح (مع `--allow-host`). | `indigo-live-check.yml` |
+| `authorize_deploy_target.py` | يقرأ `vars.CELA_DEPLOY_URL` و`vars.CELA_DEPLOY_ALLOWED_HOSTS` ويحوّلهما إلى قرار **قبل** إرسال أي طلب (بلا شبكة وبلا DNS): إمّا يطبع القيم المطبَّعة و`--allow-host` الجاهزة، أو يفشل بسطر واحد وبرمز خروج `2` — فلا تختلف طبقة الـworkflow عن طبقة المسبار. |
 | `publish_acceptance_annotations.py` | ينشر حكم A1/A6 كتعليقات فحص GitHub من سجل التشغيل. | `live-acceptance.yml` · `indigo-live-check.yml` |
 | `test_gemini_provider.py` | قبول A1/A6 لمزوّد Gemini حقيقي (يحتاج مفتاحًا). | `live-acceptance.yml` (يدوي) |
 | `defork_launcher.sh` | يزيل علامات ArtCraft من نسخة الـfork — تشغيل واعٍ ومقصود فقط. | يدوي (fork) |
