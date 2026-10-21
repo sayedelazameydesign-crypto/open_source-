@@ -28,15 +28,17 @@ demo-flow:
 serve:
 	python -m os_server.cli serve --demo --host 0.0.0.0 --port 8080
 
-# Post-deploy verification of a published API service. Needs the service URL
-# and public platform token; the token is never printed. API hosts default to
-# Render only. An alternate host pattern must be approved for its adapter first:
-#   make verify-deploy API=https://<service> ALLOW_HOSTS='*.operator-approved.example'
-#   make verify-deploy API=... EXPECT_KIND=provider_adapter
-ALLOW_HOSTS ?= *.onrender.com
+# Post-deploy verification of a published API service. Needs the service URL,
+# the public platform token (CELA_API_TOKEN), and an explicit host allowlist —
+# no provider domain is assumed. For the full gate (private surface + durable
+# store), use .github/workflows/deploy-verify.yml or add the flags below:
+#   make verify-deploy API=https://<service>.<provider> ALLOW_HOSTS='*.example.app'
+#   make verify-deploy API=... ALLOW_HOSTS=... EXPECT_KIND=provider_adapter
+ALLOW_HOSTS ?=
 VERIFY_ALLOW_HOST_ARGS = $(foreach host,$(ALLOW_HOSTS),--allow-host "$(host)")
 verify-deploy:
-	@test -n "$(API)" || { echo "usage: make verify-deploy API=https://<service>.onrender.com"; exit 2; }
+	@test -n "$(API)" || { echo "usage: make verify-deploy API=https://<service>.<provider> ALLOW_HOSTS='*.example.app'"; exit 2; }
+	@test -n "$(ALLOW_HOSTS)" || { echo "usage: ALLOW_HOSTS='*.your-provider.app' is required (no provider default)"; exit 2; }
 	python scripts/verify_deployment.py --api "$(API)" --expect-kind "$(or $(EXPECT_KIND),scripted)" $(VERIFY_ALLOW_HOST_ARGS)
 
 # Vendored ArtCraft Launcher workspace (packages/craft-launcher, ADR-0015).

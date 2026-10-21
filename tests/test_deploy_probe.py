@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
 import socket
 import subprocess
 import sys
@@ -458,3 +459,153 @@ def test_cli_refuses_cleartext_http_for_a_remote_host() -> None:
     assert proc.returncode == 2
     assert "https" in proc.stderr
     assert TOKEN not in proc.stderr
+
+
+# --------------------------------------------------------------------------
+# Provider-agnostic gate criteria: private surface + durable store
+# --------------------------------------------------------------------------
+
+PRIVATE_TOKEN = "probe-private-token"
+
+
+@pytest.fixture
+def gated_service(tmp_path: pathlib.Path) -> Iterator[str]:
+    """A service with two tokens and an on-disk store (the gate's promises)."""
+    app = create_app(
+        lambda m, n: build_demo_platform_for(m, max_steps=n),
+        api_token=TOKEN,
+        private_api_token=PRIVATE_TOKEN,
+        store_url=f"sqlite:///{tmp_path / 'runs.db'}",
+    )
+    with _serving(app) as url:
+        yield url
+    app.state.runtime.close()
+
+
+def test_probe_checks_the_private_surface_when_a_private_token_is_supplied(
+    gated_service: str,
+) -> None:
+    report = verify_published_service(
+        gated_service,
+        TOKEN,
+        allow_loopback=True,
+        private_token=PRIVATE_TOKEN,
+    )
+
+    assert report.ok, [result.detail for result in report.failures]
+    names = [result.name for result in report.results]
+    assert names == [
+        'health answers {"status":"ok"} without a token',
+        "runtime-info requires the platform token",
+        'runtime-info reports execution.kind == "scripted"',
+        "/cela/v1/whoami accepts the private token and refuses the public one",
+        "no response echoes the API token",
+    ]
+    assert PRIVATE_TOKEN not in json.dumps(report.as_dict())
+
+
+def test_probe_detects_an_unconfigured_private_surface(
+    preview_service: str,
+) -> None:
+    # preview_service configures no private token: the private surface answers
+    # 503 even for the public token, so a supplied private token cannot be
+    # proven to work.
+    report = verify_published_service(
+        preview_service,
+        TOKEN,
+        allow_loopback=True,
+        private_token=PRIVATE_TOKEN,
+    )
+
+    failure = next(r for r in report.failures if "whoami" in r.name)
+    assert "got HTTP 503" in failure.detail
+
+
+def test_probe_refuses_an_identical_private_token(preview_service: str) -> None:
+    with pytest.raises(ProbeConfigurationError, match="must differ"):
+        verify_published_service(
+            preview_service, TOKEN, allow_loopback=True, private_token=TOKEN
+        )
+
+
+def test_probe_proves_a_durable_store_when_required(gated_service: str) -> None:
+    report = verify_published_service(
+        gated_service,
+        TOKEN,
+        allow_loopback=True,
+        require_durable_store=True,
+    )
+
+    assert report.ok, [result.detail for result in report.failures]
+    store = next(r for r in report.results if "durable run store" in r.name)
+    assert "store.durable=true" in store.detail
+    assert "SQLiteRunStore" in store.detail
+
+
+def test_probe_rejects_the_in_memory_store_when_a_durable_one_is_required(
+    preview_service: str,
+) -> None:
+    report = verify_published_service(
+        preview_service,
+        TOKEN,
+        allow_loopback=True,
+        require_durable_store=True,
+    )
+
+    failure = next(r for r in report.failures if "durable run store" in r.name)
+    assert "store.durable is not true" in failure.detail
+    assert "in-memory store" in failure.detail
+
+
+def test_cli_requires_the_private_token_when_asked(preview_service: str) -> None:
+    proc = _run_cli(
+        "--api",
+        preview_service,
+        "--allow-loopback",
+        "--require-private-token",
+        env={"CELA_API_TOKEN": TOKEN, "CELA_PRIVATE_API_TOKEN": ""},
+    )
+
+    assert proc.returncode == 2
+    assert "no private token" in proc.stderr
+    assert TOKEN not in proc.stderr
+
+
+def test_cli_runs_the_full_gate_against_a_local_service(gated_service: str) -> None:
+    proc = _run_cli(
+        "--api",
+        gated_service,
+        "--allow-loopback",
+        "--private-token-env",
+        "CELA_PRIVATE_API_TOKEN",
+        "--require-private-token",
+        "--require-durable-store",
+        env={
+            "CELA_API_TOKEN": TOKEN,
+            "CELA_PRIVATE_API_TOKEN": PRIVATE_TOKEN,
+        },
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "whoami" in proc.stdout
+    assert "durable run store" in proc.stdout
+    assert PRIVATE_TOKEN not in proc.stdout
+    assert PRIVATE_TOKEN not in proc.stderr
+
+
+def test_cli_reads_the_provider_neutral_allowlist_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The CI gate supplies its allowlist without hardcoding a provider."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("verify_deployment_script", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+
+    monkeypatch.setenv("CELA_DEPLOY_ALLOWED_HOSTS", "*.example.app, api.example.app ,")
+    assert module._allowlist_from_env() == ("*.example.app", "api.example.app")
+
+    monkeypatch.delenv("CELA_DEPLOY_ALLOWED_HOSTS")
+    assert module._allowlist_from_env() == ()

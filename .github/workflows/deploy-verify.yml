@@ -1,8 +1,24 @@
-name: Deploy verification (manual)
+name: Deploy verification (live URL)
 
-# Manual post-deploy check of the Render service. Runs only on workflow_dispatch.
-# The service URL is resolved from the Render API using the RENDER_API_KEY
-# repository secret; secrets are passed through env and never echoed.
+# Provider-agnostic post-deploy gate.
+#
+# This workflow does NOT call a hosting provider's API and has no provider
+# domain baked in. The target comes from repository configuration, which only
+# administrators can change:
+#
+#   vars.CELA_DEPLOY_URL            e.g. https://celia.<provider-domain>
+#   vars.CELA_DEPLOY_ALLOWED_HOSTS  e.g. *.clawcloudrun.com,*.up.railway.app
+#
+# A dispatch input cannot steer the platform token at another host: the only
+# input is the expected execution kind, and the target is re-authorized by
+# scripts/authorize_deploy_target.py before any request is sent. The host
+# allowlist is a closed pattern set, and the probe checks it again in-process.
+#
+# Secrets: CELA_API_TOKEN, CELA_PRIVATE_API_TOKEN, CELA_RUN_STORE_URL.
+# The readiness Doctor is provider-neutral: CELA_DEPLOY_REQUIRE_PERSISTENT_STORE=1
+# requires a Postgres (or Redis+Postgres) run store instead of relying on
+# RENDER=true, so the same gate works on any container provider.
+#
 # Read-only on the repository: it checks the deployment and changes nothing.
 
 on:
@@ -26,11 +42,13 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # A preview deployment must answer 'scripted'; flipping this to
-    # 'provider_adapter' is only honest after §2.6 of the free-tier runbook was
-    # actually completed (live adapter + key in Render).
+    # 'scripted' is honest for the preview deployment; flipping the input to
+    # 'provider_adapter' is only correct after the live adapter is complete and
+    # CELA_USE_LIVE_PROVIDER=1 is set on the service itself.
     env:
       EXPECT_KIND: ${{ inputs.expect_kind }}
+      DEPLOY_URL: ${{ vars.CELA_DEPLOY_URL }}
+      DEPLOY_ALLOWED_HOSTS: ${{ vars.CELA_DEPLOY_ALLOWED_HOSTS }}
     steps:
       - uses: actions/checkout@v7
 
@@ -39,83 +57,68 @@ jobs:
           python-version: "3.11"
 
       - name: Install
-        # `distributed` is not optional here: the Doctor step below receives
-        # CELA_RUN_STORE_URL from the secret store, and the doctor refuses a
-        # Postgres run store when psycopg is not importable (scripts/deploy_doctor.py
-        # -> postgres_driver_missing). Installing only ".[dev,server]" therefore fails
-        # the run before the deployment is ever probed. This extras set mirrors the
-        # service build in render.yaml ("[server,distributed]").
+        # `distributed` is not optional: the Doctor receives CELA_RUN_STORE_URL
+        # from the secret store and refuses a Postgres run store when psycopg
+        # is not importable (scripts/deploy_doctor.py -> postgres_driver_missing).
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev,server,distributed]"
 
-      - name: Resolve Render service URL
-        env:
-          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      - name: Resolve and authorize the target
+        # Two variables, one decision. A missing variable is a named preflight
+        # failure, not a probe exception; a URL outside the allowlist, an
+        # http:// URL, or a URL carrying credentials stops here with an
+        # annotation on the run.
         run: |
           set -euo pipefail
-          if [ -z "${RENDER_API_KEY:-}" ]; then
-            echo "::error title=Preflight::RENDER_API_KEY secret is empty or unset."
+          if [ -z "${DEPLOY_URL:-}" ]; then
+            echo "::error title=Preflight::CELA_DEPLOY_URL repository variable is empty or unset."
             exit 1
           fi
-          curl -sS -f -m 30 \
-            -H "Authorization: Bearer ${RENDER_API_KEY}" \
-            -H "Accept: application/json" \
-            "https://api.render.com/v1/services?name=celia-mission-os-api&limit=5" \
-            -o services.json
-          URL=$(python - <<'PY'
-          import json, sys
-          try:
-              items = json.load(open("services.json"))
-          except (OSError, ValueError) as exc:
-              # A non-JSON body is a proxy/login page, not a Render answer; say so
-              # instead of drowning the operator in a traceback.
-              sys.exit("Render API returned an unreadable response (%s: %s)" % (type(exc).__name__, exc))
-          if not isinstance(items, list):
-              sys.exit("Render API returned %s, expected a list of services" % type(items).__name__)
-          matches = [i["service"] for i in items if i.get("service", {}).get("name") == "celia-mission-os-api"]
-          if len(matches) != 1:
-              sys.exit("expected exactly one service named celia-mission-os-api, found %d" % len(matches))
-          url = matches[0].get("serviceDetails", {}).get("url", "")
-          if not url.startswith("https://"):
-              sys.exit("service has no https URL yet (is it deployed?)")
-          print(url)
-          PY
-          )
-          echo "Resolved service URL: ${URL}"
-          echo "API_URL=${URL}" >> "$GITHUB_ENV"
-          rm -f services.json
+          if [ -z "${DEPLOY_ALLOWED_HOSTS:-}" ]; then
+            echo "::error title=Preflight::CELA_DEPLOY_ALLOWED_HOSTS repository variable is empty or unset."
+            exit 1
+          fi
+          python scripts/authorize_deploy_target.py \
+            --url "${DEPLOY_URL}" \
+            --allowed-hosts "${DEPLOY_ALLOWED_HOSTS}" \
+            --format env >> "${GITHUB_ENV}"
+          echo "Authorized target: $(grep '^API_URL=' "${GITHUB_ENV}" | tail -1)"
 
-      - name: Doctor (strict)
-        # RENDER=true is what makes this step a Render gate rather than a local
-        # preflight: the doctor hangs its Render rules (persistent_run_store_required,
-        # code_exec_not_disabled incl. the render.yaml blueprint) on `is_render`,
-        # and GitHub runners never set RENDER — without it a missing
-        # CELA_RUN_STORE_URL passes green with store_backend_scheme: memory.
-        # CELA_CODE_EXEC_MODE=disabled is declared alongside it, mirroring
-        # render.yaml, so the step cannot fail with code_exec_not_disabled for a
-        # reason unrelated to storage; it is a literal, never a secret.
+      - name: Doctor (strict, provider-neutral)
+        # CELA_BACKEND_URL is passed through the shell, not through an `env:`
+        # expression: values written to $GITHUB_ENV by the previous step are
+        # available to the shell but are not in the `env` expression context.
         env:
-          RENDER: "true"
+          CELA_DEPLOY_REQUIRE_PERSISTENT_STORE: "1"
           CELA_CODE_EXEC_MODE: disabled
           CELA_API_TOKEN: ${{ secrets.CELA_API_TOKEN }}
           CELA_PRIVATE_API_TOKEN: ${{ secrets.CELA_PRIVATE_API_TOKEN }}
           CELA_RUN_STORE_URL: ${{ secrets.CELA_RUN_STORE_URL }}
-          CELA_BACKEND_URL: ${{ env.API_URL }}
-        run: python scripts/deploy_doctor.py --strict
+        run: |
+          set -euo pipefail
+          CELA_BACKEND_URL="${API_URL}" python scripts/deploy_doctor.py --strict
 
       - name: Verify deployment
+        # Health first without a token, then the public identity, the private
+        # surface, and the durable store. Every criterion is named; a failure
+        # says which promise broke.
         env:
           CELA_API_TOKEN: ${{ secrets.CELA_API_TOKEN }}
+          CELA_PRIVATE_API_TOKEN: ${{ secrets.CELA_PRIVATE_API_TOKEN }}
         run: |
           set -euo pipefail
           if [ -z "${CELA_API_TOKEN:-}" ]; then
             echo "::error title=Preflight::CELA_API_TOKEN secret is empty or unset."
             exit 1
           fi
-          # The input is a closed choice, but the value still arrives through env
-          # rather than being interpolated into this shell line, and is re-checked:
-          # a hand-edited default must not reach the probe as an arbitrary string.
+          if [ -z "${CELA_PRIVATE_API_TOKEN:-}" ]; then
+            echo "::error title=Preflight::CELA_PRIVATE_API_TOKEN secret is empty or unset."
+            exit 1
+          fi
+          # The input is a closed choice, but the value still arrives through
+          # env rather than being interpolated into this shell line, and is
+          # re-checked: a hand-edited default must not reach the probe.
           case "${EXPECT_KIND:-scripted}" in
             scripted | provider_adapter | any) EXPECT="${EXPECT_KIND:-scripted}" ;;
             *)
@@ -123,5 +126,19 @@ jobs:
               exit 2
               ;;
           esac
+          ARGS=()
+          IFS=',' read -ra HOSTS <<< "${DEPLOY_ALLOWED_HOSTS}"
+          for host in "${HOSTS[@]}"; do
+            host="${host//[[:space:]]/}"
+            if [ -n "${host}" ]; then
+              ARGS+=(--allow-host "${host}")
+            fi
+          done
           echo "Verifying ${API_URL} expects execution.kind == ${EXPECT}"
-          make verify-deploy API="${API_URL}" EXPECT_KIND="${EXPECT}"
+          python scripts/verify_deployment.py \
+            --api "${API_URL}" \
+            --expect-kind "${EXPECT}" \
+            --private-token-env CELA_PRIVATE_API_TOKEN \
+            --require-private-token \
+            --require-durable-store \
+            "${ARGS[@]}"

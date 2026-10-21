@@ -1,0 +1,117 @@
+name: Postgres persistence (C6, manual)
+
+# C6 — proves that run state, events, artifacts and WebSocket tickets survive a
+# real reconnect against a real PostgreSQL database.
+#
+# This is a WRITE test: it inserts one run into the target database, verifies
+# recovery over a brand-new connection, then deletes its own rows. It is
+# therefore off by default and requires an explicit `confirm_write: yes`.
+#
+# Safety rails (all enforced here, not only in the script):
+#   * the target comes from CELA_TEST_POSTGRES_DSN — a dedicated test database;
+#   * CELA_RUN_STORE_URL (the production reference) is required and is used
+#     only for comparison, never as the write target; the script refuses a
+#     target that resolves to the same database;
+#   * both values are passed through step env, never interpolated into the
+#     shell, and the script scrubs credentials before printing anything.
+#
+# The repository's default suite covers the same behaviour with fake DBAPI
+# providers on SQLite. Only this run can close C6, and only its own output is
+# evidence.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_write:
+        description: "I confirm CELA_TEST_POSTGRES_DSN points at a dedicated TEST database"
+        required: true
+        default: "no"
+        type: choice
+        options: ["no", "yes"]
+      keep_rows:
+        description: "Keep the rows this test writes (default: delete them)"
+        required: false
+        default: "no"
+        type: choice
+        options: ["no", "yes"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: postgres-persistence-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  persistence:
+    # Two keys to turn: the input above and the secrets below. Without both,
+    # nothing is written anywhere.
+    if: inputs.confirm_write == 'yes'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      KEEP_ROWS: ${{ inputs.keep_rows }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install
+        # psycopg ships in the `distributed` extra; without it the script
+        # cannot open a PostgreSQL connection at all.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,server,distributed]"
+
+      - name: Preflight (named errors, no secret values)
+        env:
+          CELA_TEST_POSTGRES_DSN: ${{ secrets.CELA_TEST_POSTGRES_DSN }}
+          CELA_RUN_STORE_URL: ${{ secrets.CELA_RUN_STORE_URL }}
+        run: |
+          set -euo pipefail
+          missing=0
+          if [ -z "${CELA_TEST_POSTGRES_DSN:-}" ]; then
+            echo "::error title=Preflight::CELA_TEST_POSTGRES_DSN secret is empty or unset (dedicated test database)."
+            missing=1
+          fi
+          if [ -z "${CELA_RUN_STORE_URL:-}" ]; then
+            echo "::error title=Preflight::CELA_RUN_STORE_URL secret is empty or unset; it is the production reference the separation guard needs."
+            missing=1
+          fi
+          if [ "${missing}" -ne 0 ]; then
+            exit 1
+          fi
+          echo "Both DSNs are present (values are never printed)."
+
+      - name: Run the C6 acceptance test
+        # No --no-production-reference here on purpose: a run without a
+        # production reference proves no separation, so CI refuses to label it
+        # C6 evidence. Use that flag only in a local shell, consciously.
+        env:
+          CELA_TEST_POSTGRES_DSN: ${{ secrets.CELA_TEST_POSTGRES_DSN }}
+          CELA_RUN_STORE_URL: ${{ secrets.CELA_RUN_STORE_URL }}
+        run: |
+          set -euo pipefail
+          if [ "${KEEP_ROWS:-no}" = "yes" ]; then
+            python scripts/test_postgres_persistence.py --yes --keep | tee /tmp/c6.log
+          else
+            python scripts/test_postgres_persistence.py --yes | tee /tmp/c6.log
+          fi
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### C6 — PostgreSQL persistence"
+            echo ""
+            if [ -f /tmp/c6.log ]; then
+              echo '```text'
+              # The script scrubs DSNs before printing; this is its own output.
+              sed -n '1,80p' /tmp/c6.log
+              echo '```'
+            else
+              echo "The test did not run; see the Preflight step."
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"

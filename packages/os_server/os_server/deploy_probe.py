@@ -2,10 +2,16 @@
 
 The deployment runbooks state the post-deploy check as two curls::
 
-    API=https://<service>.onrender.com
+    API=https://<service>.<provider-domain>        # any HTTPS host on 443
     curl -sS $API/health                                    # {"status":"ok"}
     curl -sS -H "Authorization: Bearer $CELA_API_TOKEN" $API/runtime-info
     # preview mode (CELA_USE_LIVE_PROVIDER=0) must answer execution.kind == "scripted"
+
+The provider is a *configuration value*, never a constant: the CI gate reads the
+URL and the host allowlist from repository variables and passes them in
+explicitly. ``DEFAULT_VERIFY_ALLOWED_HOSTS`` keeps the historical Render
+pattern only so existing runbooks still work when no allowlist is supplied; a
+gate must supply one.
 
 Runbooks are read by people; this module is the *same check executed by a
 machine*, so a deployment claim can be produced by a command instead of
@@ -386,11 +392,121 @@ def _check_execution_identity(
     )
 
 
-def _check_no_credential_echo(token: str, bodies: list[str]) -> ProbeResult:
-    """No response body may echo the token back, including URL-encoded forms."""
+def _check_private_surface(
+    http: httpx.Client,
+    url: str,
+    token: str,
+    private_token: str,
+    bodies: list[str],
+) -> ProbeResult:
+    """The private surface must accept its own token and refuse the public one.
+
+    The deployment has two credentials; checking only the public one leaves the
+    private API either unreachable (503 when unset) or, worse, reachable with
+    the public token. Both directions are asserted in one criterion.
+    """
+    name = "/cela/v1/whoami accepts the private token and refuses the public one"
+    try:
+        public_response = http.get(
+            f"{url}/cela/v1/whoami",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        bodies.append(public_response.text)
+        private_response = http.get(
+            f"{url}/cela/v1/whoami",
+            headers={"Authorization": f"Bearer {private_token}"},
+        )
+        bodies.append(private_response.text)
+    except httpx.HTTPError as exc:
+        detail = _redact_token(str(exc), private_token)
+        detail = _redact_token(detail, token)
+        return _result(name, False, f"request failed: {type(exc).__name__}: {detail}")
+
+    if public_response.status_code != 401:
+        return _result(
+            name,
+            False,
+            "the public token was not refused by /cela/v1/whoami "
+            f"(expected HTTP 401, got HTTP {public_response.status_code})",
+        )
+    if private_response.status_code != 200:
+        return _result(
+            name,
+            False,
+            "the private token did not open /cela/v1/whoami "
+            f"(expected HTTP 200, got HTTP {private_response.status_code})",
+        )
+    try:
+        payload = private_response.json()
+    except ValueError:
+        return _result(name, False, "whoami did not answer JSON")
+    surface = payload.get("surface") if isinstance(payload, dict) else None
+    if surface != "private":
+        safe_surface = _redact_token(repr(surface), private_token)
+        return _result(name, False, f"whoami reports surface={safe_surface}, expected 'private'")
+    return _result(
+        name,
+        True,
+        "HTTP 401 for the public token; HTTP 200 and surface=private for the private token",
+    )
+
+
+def _check_durable_store(
+    http: httpx.Client,
+    url: str,
+    token: str,
+    bodies: list[str],
+) -> ProbeResult:
+    """``/platform/info`` must report a run store that survives a restart.
+
+    This is a process-report check, not a write test: it proves the running
+    service *configured* a durable store (Postgres/SQLite) instead of the
+    in-memory default. Proving writes survive a real reconnect is the separate
+    C6 acceptance script against a dedicated database.
+    """
+    name = "platform-info reports a durable run store"
+    try:
+        response = http.get(
+            f"{url}/platform/info",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    except httpx.HTTPError as exc:
+        detail = _redact_token(str(exc), token)
+        return _result(name, False, f"request failed: {type(exc).__name__}: {detail}")
+    bodies.append(response.text)
+    if response.status_code != 200:
+        return _result(
+            name,
+            False,
+            f"expected HTTP 200 with the platform token, got HTTP {response.status_code}",
+        )
+    try:
+        payload = response.json()
+    except ValueError:
+        return _result(name, False, f"body is not JSON: {_safe_excerpt(response.text, token)!r}")
+    store = payload.get("store") if isinstance(payload, dict) else None
+    if not isinstance(store, dict):
+        return _result(name, False, "the response carries no 'store' object")
+    if store.get("durable") is not True:
+        backend = _redact_token(str(store.get("backend")), token)
+        scope = _redact_token(str(store.get("scope")), token)
+        return _result(
+            name,
+            False,
+            f"store.durable is not true (backend={backend}, scope={scope}); "
+            "the service is on the in-memory store",
+        )
+    backend = _redact_token(str(store.get("backend")), token)
+    scope = _redact_token(str(store.get("scope")), token)
+    return _result(name, True, f"store.durable=true; backend={backend}; scope={scope}")
+
+
+def _check_no_credential_echo(tokens: Sequence[str], bodies: list[str]) -> ProbeResult:
+    """No response body may echo a token back, including URL-encoded forms."""
     name = "no response echoes the API token"
-    if any(_contains_token(body, token) for body in bodies):
-        return _result(name, False, "the API token appeared in a response body")
+    for token in tokens:
+        if token and any(_contains_token(body, token) for body in bodies):
+            return _result(name, False, "an API token appeared in a response body")
     return _result(name, True, "the API token appears in no response body")
 
 
@@ -402,6 +518,8 @@ def verify_published_service(
     timeout: float = 20.0,
     allowed_hosts: Sequence[str] | None = None,
     allow_loopback: bool = False,
+    private_token: str | None = None,
+    require_durable_store: bool = False,
     client: httpx.Client | None = None,
 ) -> ProbeReport:
     """Run the post-deploy criteria against *base_url* and return the report.
@@ -410,15 +528,29 @@ def verify_published_service(
     describe), ``"provider_adapter"`` (the live one), or ``"any"`` to accept
     whichever kind the service reports.
 
+    Two criteria are optional because not every deployment promises them:
+
+    * ``private_token`` adds a check that ``/cela/v1/whoami`` accepts the
+      private token and refuses the public one;
+    * ``require_durable_store`` adds a check that ``/platform/info`` reports
+      ``store.durable == true`` (a Postgres or on-disk store, not memory).
+
     Raises :class:`ProbeConfigurationError` when the probe cannot run: no
-    token, an unusable or disallowed URL, or an unknown expectation. The
-    production default is ``*.onrender.com`` over HTTPS/443. Set
+    token, an unusable or disallowed URL, an unknown expectation, or a private
+    token identical to the public one. ``allowed_hosts`` defaults to the legacy
+    Render pattern; the deploy workflow always passes the repository-variable
+    allowlist explicitly, so no provider is hardcoded into the gate. Set
     ``allow_loopback=True`` only for local tests. An injected client is accepted
     only when backed by ``httpx.MockTransport`` (a socket-free test seam).
     """
     token = (token or "").strip()
     if not token:
         raise ProbeConfigurationError("no API token was given (set CELA_API_TOKEN)")
+    private = (private_token or "").strip()
+    if private and private == token:
+        raise ProbeConfigurationError(
+            "the private token must differ from the public token (CELA_PRIVATE_API_TOKEN)"
+        )
     expectation = (expected_kind or ANY_KIND).strip().lower()
     if expectation not in (ANY_KIND, *VALID_EXECUTION_KINDS):
         message = (
@@ -428,15 +560,16 @@ def verify_published_service(
         raise ProbeConfigurationError(_redact_token(message, token))
     try:
         url = normalize_base_url(base_url)
-        if _contains_token(url, token):
-            raise ProbeConfigurationError("the service base URL must not contain the API token")
+        if _contains_token(url, token) or (private and _contains_token(url, private)):
+            raise ProbeConfigurationError("the service base URL must not contain an API token")
         verdict = authorize_probe_destination(
             url,
             allowed_hosts=allowed_hosts,
             allow_loopback=allow_loopback,
         )
     except ProbeConfigurationError as exc:
-        raise ProbeConfigurationError(_redact_token(str(exc), token)) from None
+        detail = _redact_token(str(exc), token)
+        raise ProbeConfigurationError(_redact_token(detail, private)) from None
 
     owns_client = client is None
     if client is not None:
@@ -463,11 +596,14 @@ def verify_published_service(
             _check_health(http, url, token, bodies),
             _check_runtime_info_requires_auth(http, url, token, bodies),
             _check_execution_identity(http, url, token, expectation, bodies),
-            _check_no_credential_echo(token, bodies),
         ]
+        if private:
+            results.append(_check_private_surface(http, url, token, private, bodies))
+        if require_durable_store:
+            results.append(_check_durable_store(http, url, token, bodies))
+        results.append(_check_no_credential_echo((token, private), bodies))
     finally:
         if owns_client:
             http.close()
-    return ProbeReport(
-        base_url=_redact_token(url, token), expected_kind=expectation, results=tuple(results)
-    )
+    safe_url = _redact_token(_redact_token(url, token), private)
+    return ProbeReport(base_url=safe_url, expected_kind=expectation, results=tuple(results))
