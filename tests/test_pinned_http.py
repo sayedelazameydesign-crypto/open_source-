@@ -192,6 +192,7 @@ def _start_local_https_server(
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(certfile=cert_path, keyfile=key_path)
     context.set_servername_callback(
         lambda _ssl_socket, server_name, _context: sni_names.append(server_name)

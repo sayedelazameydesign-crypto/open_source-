@@ -18,7 +18,8 @@
 # vendored packages/craft-launcher and packages/web trees) if image size
 # matters; correctness does not depend on it.
 
-FROM python:3.11-slim
+# Keep the local parity image aligned with Render's Python 3.11 line.
+FROM python:3.11-slim AS runtime
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
