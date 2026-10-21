@@ -6,7 +6,7 @@
 بينما كبرت المجموعة، وصار أول دليل يقرأه الزائر هو أول دليل يخذله.
 
 <!-- generated:test-count -->
-**1545 اختبارًا في المجموعة** — 1542 مُختارًا · 3 مُستبعَدًا (deselected) · `pytest --collect-only -q`
+**1584 اختبارًا في المجموعة** — 1581 مُختارًا · 3 مُستبعَدًا (deselected) · `pytest --collect-only -q`
 <!-- /generated:test-count -->
 
 > **الرقمان ليسا تناقضًا.** العدد أعلاه حصيلة `pytest --collect-only -q`، أي
@@ -40,7 +40,7 @@ Chromium الحيّ صراحةً، لكن اختباري Reach الشبكيين 
 | جاهزية النشر | `python scripts/deploy_doctor.py --strict` | أسرار وعناوين؛ Render يشترط مخزن Postgres دائمًا و`CELA_CODE_EXEC_MODE=disabled` في البيئة وBlueprint الهدف؛ هذا preflight ليس orchestrator مركزيًا |
 | artifacts | `render.yaml` واختبارات GHCR | Blueprint واحد في الجذر لـRender؛ بقية container providers تستخدم صورة GHCR ذات مدخل `deploy/g1a` |
 | Provider API حيّ | **غير مفعّل** | `OpenAICompatModel` لم يُربط بعد بالنقل المثبّت أو allowlist خاصة بالمزوّد؛ لا تفعّل `CELA_USE_LIVE_PROVIDER=1` حتى مراجعة host Gemini وإكمال adapter واختباراته |
-| هوية خدمة منشورة | `python scripts/verify_deployment.py --api https://<service>.onrender.com` | HTTPS/443 · allowlist افتراضية `*.onrender.com` · DNS pinning · `/health` أولًا بلا رمز · بلا redirects أو proxy env · DB خارج فحص HTTP |
+| هوية خدمة منشورة | `python scripts/verify_deployment.py --api https://<service>.<provider-domain> --allow-host '<pattern>'` | HTTPS/443 · قائمة سماح صريحة من `--allow-host` أو `CELA_DEPLOY_ALLOWED_HOSTS` (لا مزوّد مفترض في البوابة) · DNS pinning · `/health` أولًا بلا رمز · بلا redirects أو proxy env · فحص المخزن عبر `/platform/info` لا باتصال DB من الفاحص |
 | مستندات PDF | `pip install -e ".[dev,server,papers]"` ثم `pytest tests/test_resource_collection.py` | extra `papers` يثبت `pypdf`؛ CI و`make install` يثبتانه لتشغيل التغطية الحقيقية |
 | Chromium حيّ | `pytest -m "browser and network" tests/test_browser_live.py` | الاختبار يشترط محتوى من Python.org ورصد طلبات CDN عابرة للأصل وفشلها؛ لا يُعدّ نجاحًا حتى يمر job الـCI |
 
@@ -86,7 +86,7 @@ Chromium الحيّ صراحةً، لكن اختباري Reach الشبكيين 
 | Chromium حيّ | نجح job `live-browser` في CI run `39523895556` على commit `9721494`; شغّل Python.org مع قياس حجب CDN |
 | حواجز اختبارات الـprovider | 11 اختبارًا مستهدفًا نجحت؛ أزيلت مشغلات `push` من workflows الحية، وصارت dispatch اليدوية شرطًا، كما أصبح فحص Indigo يعمل offline افتراضيًا ما لم يكن `ALLOW_LIVE_EXTERNAL_CALLS=true` صراحةً |
 | Render / Postgres حيّان | **لم يُنفَّذا**؛ لا توجد خدمة/قاعدة تجربة مرتبطة بهذه الجولة |
-| بوابة نشر مركزية | **غير موجودة بعد**؛ `deploy_doctor --strict` يفحص Render Blueprint والبيئة لكنه preflight يدوي لا يفرضه orchestrator لكل provider. هذا مانع لأي deploy، ولا يُتجاوز باختيار provider آخر |
+| بوابة نشر مركزية | **ليست orchestrator بعد:** توجد بوابة CI يدوية قابلة للاستدعاء (`.github/workflows/deploy-verify.yml`) تفحص أي عنوان HTTPS وتفرض Doctor + probe، لكنها لا تُستدعى تلقائيًا قبل كل نشر ولا تمنع نشرًا يدويًا من لوحة المزوّد. `deploy_doctor --strict` يبقى preflight. هذا مانع لأي إعلان «جاهز للإنتاج» |
 
 ## ٢-د) نتائج CI وVercel للـPR #83 — 2026-10-20
 
@@ -115,7 +115,22 @@ Chromium الحيّ صراحةً، لكن اختباري Reach الشبكيين 
 | سياسة GHCR في رأس PR | `main` يحدّث `:latest`, `:edge`, و`:sha-*`; وسوم `v*` تدفع وسم الإصدار و`:sha-*`; `arena/**` تبني وتختبر فقط. `packages: write` محصورة في job النشر المشروط؛ اختبار `tests/test_docker_workflow_security.py` يحرس الشرط والفصل |
 | ظهور الحزمة/الوسوم الحالية | توثيق سابق في `docs/NO_CARD_DEPLOY_VERIFIED.md` يسجل `:edge` كحزمة عامة. استعلام package metadata/versions أعاد 403 (`Resource not accessible by integration`)، لذلك لم أستطع إعادة تأكيد visibility أو جرد الوسوم الحالية؛ لم يُحذف أي tag |
 | `ruff format --check .` | يفشل على 34 ملفًا في رأس PR؛ فشل المقارنة على `main` عند `4e5ac17` يشمل 45 ملفًا، وجميع ملفات فشل PR ضمن تلك المجموعة. CI يشغّل `ruff check .` فقط ولا يفرض `ruff format --check` |
-| بوابة النشر وRender | لا توجد بوابة نشر مركزية قابلة للاستدعاء؛ `deploy_doctor --strict` preflight يدوي. لم يحدث Render deploy أو `make verify-deploy`، ولم تُكتب adapters |
+| بوابة النشر | توجد بوابة CI يدوية بلا مزوّد (`.github/workflows/deploy-verify.yml` + `authorize_deploy_target.py`) تفحص أي عنوان HTTPS، لكنها ليست orchestrator ولا تُستدعى تلقائيًا قبل النشر. لم تُشغَّل بعد على عنوان عام، ولم تُكتب deploy adapters |
+
+## ٢-و) بوابة نشر بلا مزوّد — 2026-10-21
+
+أُخرج Render من مسار التحقق بعد فشل `Deploy verification (manual)` في تشغيل
+`39619939086` عند خطوة «Resolve Render service URL» (قبل أي فحص للخدمة). البوابة
+الآن تقرأ العنوان وقائمة السماح من متغيرات المستودع، ولا تحمل `RENDER_API_KEY`
+ولا أي نطاق مزوّد. التفاصيل والحدود: [`DEPLOY_VERIFY_LIVE_URL.md`](DEPLOY_VERIFY_LIVE_URL.md).
+
+| الفحص | النتيجة |
+|---|---|
+| `tests/test_deploy_verify_workflow.py` + `test_authorize_deploy_target.py` + `test_postgres_persistence_workflow.py` | حراسة ملف البوابة وقواعد الوجهة وقيود C6 — كلها ناجحة محليًا |
+| بوابة كاملة ضد عملية حقيقية على loopback (SQLite، رمزان مختلفان) | **6/6 PASS** · `health` · `runtime-info` بلا رمز 401 · `execution.kind=scripted` · `whoami` خاص/عام · `store.durable=true; scope=disk` · لا جسم يعيد الرمز · `TOKENS_LEAKED: False` |
+| حرّاس C6 قبل أي اتصال | نفس قاعدة الإنتاج ⇒ `exit 2` برسالة رفض؛ غياب مرجع الإنتاج ⇒ `exit 2` برسالة رفض |
+| C5 (خدمة عامة) | **لم يُنفَّذ** — لا عنوان عام بعد |
+| C6 (Postgres حيّ) | **لم يُنفَّذ** — لم يُمرَّر `CELA_TEST_POSTGRES_DSN` بعد |
 
 ## ٣) ما لا يغطّيه هذا الملف — بصراحة
 

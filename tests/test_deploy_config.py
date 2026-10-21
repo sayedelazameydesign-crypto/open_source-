@@ -595,3 +595,55 @@ def test_doctor_vercel_is_silent_outside_build() -> None:
         {"CELA_BACKEND_URL": "https://celia-api.onrender.com"}, root=ROOT
     )
     assert quiet["warnings"] == []
+
+
+def test_provider_neutral_doctor_requires_a_persistent_store_without_render() -> None:
+    """A container provider has the same ephemeral-disk risk as Render Free.
+
+    The flag exists so the CI gate can require a durable store on any host
+    instead of setting RENDER=true and borrowing Render's rules.
+    """
+    from os_server.automation import check_deployment_readiness
+
+    base = {
+        "CELA_DEPLOY_REQUIRE_PERSISTENT_STORE": "1",
+        "CELA_API_TOKEN": "public-token",
+        "CELA_PRIVATE_API_TOKEN": "different-private-token",
+        "CELA_CODE_EXEC_MODE": "disabled",
+    }
+    for store_url in (None, "sqlite:///./runs.db", "memory://"):
+        env = {**base}
+        if store_url is not None:
+            env["CELA_RUN_STORE_URL"] = store_url
+        report = check_deployment_readiness(env, root=ROOT)
+        errors = [
+            error
+            for error in report["errors"]
+            if error["id"] == "persistent_run_store_required"
+        ]
+        assert errors, f"{store_url!r} must be refused for a durable deployment"
+        assert "Render" not in errors[0]["message_ar"], (
+            "the provider-neutral message must not talk about Render"
+        )
+
+    postgres = check_deployment_readiness(
+        {**base, "CELA_RUN_STORE_URL": "postgresql://u:p@db.example.test:5432/app"},
+        root=ROOT,
+    )
+    assert "persistent_run_store_required" not in {
+        error["id"] for error in postgres["errors"]
+    }
+
+    # Without the flag, a local SQLite store stays acceptable: the requirement
+    # belongs to the deployment, not to every invocation of the Doctor.
+    local = check_deployment_readiness(
+        {
+            "CELA_API_TOKEN": "public-token",
+            "CELA_PRIVATE_API_TOKEN": "different-private-token",
+            "CELA_RUN_STORE_URL": "sqlite:///./runs.db",
+        },
+        root=ROOT,
+    )
+    assert "persistent_run_store_required" not in {
+        error["id"] for error in local["errors"]
+    }

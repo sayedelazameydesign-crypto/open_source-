@@ -83,7 +83,7 @@ python scripts/deploy_doctor.py --strict
 5. **التحقق بعد النشر:**
 
 ```bash
-API=https://<service>.onrender.com
+API=https://<service>.<provider-domain>
 curl -sS $API/health                                   # {"status":"ok"}
 curl -sS -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer $CELA_API_TOKEN" $API/runs        # 200
 curl -sS -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer $CELA_API_TOKEN" $API/cela/v1/whoami  # 401
@@ -95,9 +95,9 @@ curl -sS -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer $CELA_PRIVAT
 
 ```bash
 export CELA_API_TOKEN=...            # الرمز العام؛ لا يُطبع أبدًا
-make verify-deploy API="$API" EXPECT_KIND=scripted
+make verify-deploy API="$API" ALLOW_HOSTS='*.your-provider.app' EXPECT_KIND=scripted
 # Celia.sh — deployment verification
-#   service : https://<service>.onrender.com
+#   service : https://<service>.<provider-domain>
 #   commit  : <40-char sha>
 #   expect  : execution.kind == 'scripted'
 #   token   : loaded from CELA_API_TOKEN (never printed)
@@ -111,11 +111,31 @@ make verify-deploy API="$API" EXPECT_KIND=scripted
 الـprobe **لا يخمّن**: فحوصه الأربعة مسمّاة، ورمز الخروج `0` يعني أن كل الفحوص
 نجحت، و`1` يعني أن فشل واحدًا على الأقل (فيُطبع أيّها بالتفصيل)، و`2` يعني أن
 الفحص لم يعمل أصلًا (لا رمز، أو عنوان غير صالح). يستخدم HTTPS/443 فقط، ويطابق
-المضيف مع `*.onrender.com` قبل DNS أو إرسال أي طلب، ويثبّت كل عناوين DNS العامة،
+المضيف مع قائمة السماح التي تمرّرها **صراحةً** (`ALLOW_HOSTS` أو
+`CELA_DEPLOY_ALLOWED_HOSTS`) قبل DNS أو إرسال أي طلب، ويثبّت كل عناوين DNS العامة،
 ولا يتبع redirects ولا يثق بمتغيرات proxy. يبدأ بـ`/health` بلا رمز؛ ولا يفحص
-Postgres عبر HTTP. الرمز لا يُطبع ولا يُخزَّن في التقرير. لمزوّد API آخر، حدّد
-`ALLOW_HOSTS` صراحةً بعد مراجعة adapter؛ لا تستخدم نطاقات قاعدة البيانات كخدمة HTTP.
-أضف `--json` عند استدعاء `scripts/verify_deployment.py` مباشرةً لآلة تقرأ التقرير.
+Postgres عبر HTTP. الرمز لا يُطبع ولا يُخزَّن في التقرير. لا يوجد نطاق مزوّد مفترض:
+`make verify-deploy` يرفض العمل بلا `ALLOW_HOSTS`، والقيمة الافتراضية القديمة
+(`*.onrender.com`) باقية في المكتبة فقط كتوافق خلفي لدفاتر Render القديمة.
+لا تستخدم نطاقات قاعدة البيانات كخدمة HTTP. أضف `--json` عند استدعاء
+`scripts/verify_deployment.py` مباشرةً لآلة تقرأ التقرير.
+
+الفحص الكامل (نفس ما تشغّله البوابة في CI) يضيف شرطين: أن `/cela/v1/whoami`
+يرفض الرمز العام ويقبل الرمز الخاص، وأن `/platform/info` يعلن مخزنًا دائمًا
+(`store.durable=true`):
+
+```bash
+export CELA_API_TOKEN=...
+export CELA_PRIVATE_API_TOKEN=...
+python scripts/verify_deployment.py --api "$API" \
+  --allow-host '*.your-provider.app' \
+  --private-token-env CELA_PRIVATE_API_TOKEN --require-private-token \
+  --require-durable-store
+```
+
+> **حدّ صريح:** هذا الفحص يثبت أن الخدمة *أُعدّت* بمخزن دائم. أما إثبات أن
+> الكتابة تنجو من إعادة اتصال حقيقية فهو C6 وحده: `scripts/test_postgres_persistence.py`
+> ضد قاعدة اختبار مخصّصة، عبر `.github/workflows/postgres-persistence.yml`.
 
 ### 2.6 الوضع التجريبي أولًا، ثم الوضع الحي
 
@@ -139,7 +159,7 @@ Postgres عبر HTTP. الرمز لا يُطبع ولا يُخزَّن في ال
    `provider_adapter` مع `fallback_triggered=False` في مسار النجاح. أي:
 
    ```bash
-   make verify-deploy API="$API" EXPECT_KIND=provider_adapter
+   make verify-deploy API="$API" ALLOW_HOSTS='*.your-provider.app' EXPECT_KIND=provider_adapter
    ```
 
    الفحص الافتراضي يتوقّع `scripted` (وضع المعاينة)، فإن استُدعي على خدمة حيّة
@@ -158,22 +178,46 @@ Postgres عبر HTTP. الرمز لا يُطبع ولا يُخزَّن في ال
 > وبث SSE يستأنف بـ `?after_seq=N` بدل إعادة الأحداث. إن أردت تقليل النوم، أرسل طلب `/health` كل 10 دقائق من
 > خدمة ping خارجية (اختياري، ويكون ضمن حدود الخطة المجانية).
 
-### 2.7 التحقق بعد النشر من GitHub Actions (workflow يدوي)
+### 2.7 التحقق بعد النشر من GitHub Actions (workflow يدوي، بلا مزوّد محدد)
 
 الفحصان أعلاه يدويّان، أي أن الرمز يمرّ في طرفية المشغّل. لقضائهما بدون أي
 `export` محلي يوجد `.github/workflows/deploy-verify.yml` — **يدوي فقط**
-(`workflow_dispatch`) و`permissions: contents: read`، فلا يغيّر شيئًا في المستودع:
+(`workflow_dispatch`) و`permissions: contents: read`، فلا يغيّر شيئًا في المستودع.
+وهو **لا يعرف مزوّدًا بعينه**: لا يستدعي API أي منصة، ولا يحمل نطاق Render أو غيره
+داخل الملف.
 
-1. يحلّ عنوان الخدمة من Render API بالاسم `celia-mission-os-api` باستخدام
-   `RENDER_API_KEY`. العنوان **ليس مدخلًا**: لا يستطيع من يضغط *Run workflow* أن
-   يوجّه `CELA_API_TOKEN` إلى مضيف يختاره هو؛ هذه البنية عليها حراسة في
-   `tests/test_deploy_verify_workflow.py` كما في `eval-real-model.yml`.
-2. `python scripts/deploy_doctor.py --strict` على بيئة الخطوة بالأسرار المُمرَّرة.
-3. `make verify-deploy API=<العنوان المحلول> EXPECT_KIND=<التوقّع>`، أي نفس
-   الفحوص الأربعة المذكورة في §2 بند 5.
+**الإعداد لمرة واحدة** (إعدادات المستودع، لا مدخلات التشغيل):
 
-الأسرار المطلوبة في المستودع: `RENDER_API_KEY` و`CELA_API_TOKEN` و
-`CELA_PRIVATE_API_TOKEN` و`CELA_RUN_STORE_URL`. غياب أي منها يُطبع كخطأ مسمّى
+| النوع | الاسم | القيمة |
+|---|---|---|
+| Variable | `CELA_DEPLOY_URL` | `https://<service>.<provider-domain>` بلا مسار أو استعلام |
+| Variable | `CELA_DEPLOY_ALLOWED_HOSTS` | قائمة أنماط مفصولة بفواصل، مثل `*.clawcloudrun.com,*.up.railway.app` |
+| Secret | `CELA_API_TOKEN` | الرمز العام للمنصة |
+| Secret | `CELA_PRIVATE_API_TOKEN` | رمز السطح الخاص، ويجب أن يختلف عن العام |
+| Secret | `CELA_RUN_STORE_URL` | سلسلة Postgres (أو `distributed://` مع متغيريها) |
+
+خطوات التشغيل:
+
+1. **التحقق من الوجهة قبل أي طلب:** `scripts/authorize_deploy_target.py` يقرأ
+   المتغيرين، ويرفض — برسالة مسمّاة في سجل Actions — غياب أي منهما، أو `http://`،
+   أو عنوانًا يحمل بيانات اعتماد أو منفذًا غير 443 أو مسارًا، أو مضيفًا خارج
+   قائمة السماح، أو عنوان IP حرفيًا. ثم يكتب `API_URL` و`DEPLOY_ALLOWED_HOSTS`
+   المُطبَّعين إلى `$GITHUB_ENV`.
+   **العنوان ليس مدخلًا في `workflow_dispatch`:** لا يستطيع من يضغط *Run workflow*
+   أن يوجّه الرموز إلى مضيف يختاره؛ المدخل الوحيد هو `execution.kind` المتوقَّع.
+   هذه الخصائص محروسة في `tests/test_deploy_verify_workflow.py` و
+   `tests/test_authorize_deploy_target.py`.
+2. **`python scripts/deploy_doctor.py --strict`** على بيئة الخطوة بالأسرار
+   المُمرَّرة، مع `CELA_DEPLOY_REQUIRE_PERSISTENT_STORE=1` بدل `RENDER=true`:
+   المتطلب نفسه (Postgres أو `distributed://`)، لكن القاعدة صارت مرتبطة بالنشر
+   لا باسم مزوّد.
+3. **`scripts/verify_deployment.py`** بصلاحية `--allow-host` لكل نمط في قائمة
+   السماح، ومعه `--private-token-env CELA_PRIVATE_API_TOKEN --require-private-token
+   --require-durable-store`: صحة `/health` بلا رمز، حجب `/runtime-info` بلا رمز،
+   هوية التنفيذ المتوقَّعة، رفض السطح الخاص للرمز العام وقبوله للرمز الخاص،
+   وإعلان `/platform/info` عن مخزن دائم، وألا يعيد أي جسم الرمز.
+
+الأسرار الأربعة مطلوبة؛ غياب أي منها يُطبع كخطأ مسمّى
 (`::error title=Preflight::… secret is empty or unset.`) قبل أي طلب فعلي، فلا
 يُقرأ الفشل الخلطي على أنه خلل في الخدمة.
 
@@ -183,28 +227,19 @@ Postgres عبر HTTP. الرمز لا يُطبع ولا يُخزَّن في ال
 * **لا تحذف `distributed` من خطوة التثبيت.** `CELA_RUN_STORE_URL` يشير إلى
   Postgres، و`deploy_doctor` يرفض مخزن Postgres بلا `psycopg`
   (`postgres_driver_missing`) لأن الخادم يتوقف عند أول تشغيل لا عند الإقلاع.
-  باقتصار التثبيت على `.[dev,server]` تعود `ready: false` فيتوقف الـworkflow قبل
-  أن يلمس الخدمة أصلًا؛ لذلك يثبّت `.[dev,server,distributed]` مطابقةً لبناء
-  الخدمة في `render.yaml` (`.[server,distributed]`).
+  لذلك يثبّت الـworkflow `.[dev,server,distributed]`.
 * **`expect_kind` خيار مقفل** (`scripted` / `provider_adapter` / `any`) بقيمة
   افتراضية `scripted`: وضع المعاينة. اختيار `provider_adapter` دليل صادق فقط بعد
   إكمال §2.6 فعليًا؛ والقيمة تصل إلى الـshell عبر متغير بيئة وتُعاد مقابلتها قبل
   الاستخدام، لا عبر استخراج داخل سطر الأمر.
 
-حدّان يُقرآن قبل تفسير النتيجة: خطوة `Doctor (strict)` **بوابة على `render.yaml`
-والبيئة المعلَنة في الـworkflow**، لا قراءة لإعداد الخدمة الحيّة. تعمل الخطوة
-بـ`RENDER=true` و`CELA_CODE_EXEC_MODE=disabled` معلَنين فيها: الأول يُفعّل قواعد
-Render في `deploy_doctor` (وفي مقدّمتها `persistent_run_store_required`) التي
-لا تعمل على الـrunner بدونه — فيمرّ غياب `CELA_RUN_STORE_URL` أخضر بمخزن ذاكرة
-(`store_backend_scheme: memory`) — والثاني مطابق لما يفرضه `render.yaml` حتى لا
-تفشل الخطوة بـ`code_exec_not_disabled` لسبب لا علاقة له بالتخزين. لكن ما غيّره
-المشغّل في لوحة Render دون أن ينعكس في `render.yaml` أو في أسرار المستودع لا
-تراه البوابة؛ يبقى `/runtime-info` في خطوة `Verify deployment` الشاهد الوحيد
-على إعداد الخدمة الفعلي. والبوابة تفشل مغلقة (fail-closed): فشل `Doctor`
-يوقف التشغيل ويمنع فحص الخدمة أصلًا، فلا يُتجاوز الرفض بفحصها رغمًا عنه —
-توافقًا مع «لا تتجاوز الرفض» في §2 أعلاه. و`workflow_dispatch` لا يظهر في الواجهة قبل وجود
-الملف على الفرع الافتراضي (`main`)؛ وبعده يمكن تشغيله من أي فرع يحتوي الملف،
-ومن أي فرع يُشغَّل منه تُقرأ نسخة الـworkflow نفسها.
+حدّان يُقرآن قبل تفسير النتيجة: خطوة `Doctor (strict)` **بوابة على الأسرار
+المعلنة في الـworkflow**، لا قراءة لإعداد الخدمة الحيّة؛ وما غيّره المشغّل في لوحة
+المزوّد دون أن ينعكس في الأسرار لا تراه البوابة، ويبقى `/platform/info` و
+`/runtime-info` في خطوة `Verify deployment` الشاهد على إعداد الخدمة الفعلي.
+والبوابة تفشل مغلقة (fail-closed): فشل `Doctor` يوقف التشغيل ويمنع فحص الخدمة
+أصلًا. و`workflow_dispatch` لا يظهر في الواجهة قبل وجود الملف على الفرع الافتراضي
+(`main`)؛ وبعده يمكن تشغيله من أي فرع يحتوي الملف.
 
 ---
 
@@ -454,6 +489,7 @@ grep -c "CELA_API_TOKEN\|local-dev-token" <(curl -sS $SITE/) || true  # 0 — ل
 | `packages/web/app/api/backend/[...path]/route.ts` | وكيل الخادم (BFF) — Next.js / Vercel |
 | `packages/web/next.config.ts` | وضع التصدير الثابت عبر `CELA_STATIC_EXPORT=1` |
 | `scripts/deploy_doctor.py` | فحص الجاهزية قبل النشر |
-| `.github/workflows/deploy-verify.yml` | الفحص بعد النشر يدويًا من Actions (§2.7) — يحلّ العنوان من Render API ثم `deploy_doctor` + `verify_deployment` |
+| `.github/workflows/deploy-verify.yml` | الفحص بعد النشر يدويًا من Actions (§2.7) — عنوان من `vars.CELA_DEPLOY_URL` وقائمة سماح من `vars.CELA_DEPLOY_ALLOWED_HOSTS`، ثم `deploy_doctor` + `verify_deployment` بلا أي اعتماد على Render |
+| `.github/workflows/postgres-persistence.yml` | C6 — كتابة/قراءة حقيقية ضد قاعدة اختبار Postgres، بتأكيد صريح وفصل إلزامي عن قاعدة الإنتاج |
 | `tests/test_deploy_config.py` + `npm run test:deploy` | حراسة العقد الأمني والكونفيغوراسيون |
 | `docs/AUTOMATION_AND_DEPLOYMENT_PLAN.md` | الخطة الكاملة ومصفوفة الامتثال |

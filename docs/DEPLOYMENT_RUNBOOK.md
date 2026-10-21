@@ -86,12 +86,28 @@ GitHub لا يعرض قيمة أي سر بعد حفظه — لا للمستخد�
 
 حدود الحالة الحالية — تُقرأ قبل أي كلمة عن «جاهز للإنتاج»:
 
-* **C5 لم يُنفَّذ:** لا نشر على Render، ولا `render.yaml` مُطبَّق على خدمة حقيقية.
+* **C5 لم يُنفَّذ:** لا خدمة API منشورة على أي مزوّد، ولا `render.yaml` مُطبَّق على خدمة حقيقية.
+  البوابة صارت قابلة للتشغيل مع أي مزوّد، لكنها لم تُشغَّل بعد على عنوان عام حقيقي.
 * **C6 لم يُنفَّذ:** لا قاعدة اختبار حقيقية، ولا تشغيل لـ`scripts/test_postgres_persistence.py`
   ضد Postgres حيّ. ما يغطّيه CI هو مزوّدو DBAPI مزيَّفون على SQLite فقط (انظر [`EVIDENCE.md`](EVIDENCE.md) §٣).
 * لذلك هذا المستودع **ليس «جاهزًا للإنتاج»**، وأي وصف يقول غير ذلك يخالف هذا الملف.
 
-## المرحلة C5 — النشر على Render
+## المرحلة C5 — نشر الخدمة (المزوّد قرار، لا افتراض)
+
+> **تحديث 2026-10-21:** لم يعد Render مسار التحقق. حسابنا رُفض من Render
+> ([`NO_CARD_DEPLOY_VERIFIED.md`](NO_CARD_DEPLOY_VERIFIED.md))، وبوابة
+> `.github/workflows/deploy-verify.yml` لم تعد تستدعي Render API ولا تحمل
+> `RENDER_API_KEY`. البوابة الآن تأخذ عنوانها وقائمة سماحها من متغيرات المستودع
+> (`CELA_DEPLOY_URL` / `CELA_DEPLOY_ALLOWED_HOSTS`)، وتعمل مع أي مزوّد HTTPS.
+> التفاصيل: [`DEPLOY_VERIFY_LIVE_URL.md`](DEPLOY_VERIFY_LIVE_URL.md).
+> `render.yaml` يبقى ملف Blueprint اختياريًا لمن يستطيع استخدام Render، وليس شرطًا
+> لأي فحص أو إصدار.
+
+الخطوات أدناه مكتوبة بصيغة Render لأنها أول Blueprint في المستودع؛ استبدل الاسم
+بأي مزوّد حاويات (ClawCloud Run، Railway، Fly.io، VPS) مع نفس المتغيرات. المطلوب
+في كل الحالات: `CELA_API_TOKEN` و`CELA_PRIVATE_API_TOKEN` مختلفان،
+`CELA_RUN_STORE_URL` يشير إلى Postgres حقيقي (C6)، و`CELA_CODE_EXEC_MODE=disabled`
+و`CELA_USE_LIVE_PROVIDER=0` ما لم يُكتمل adapter المزوّد.
 
 1. اربط المستودع بـ Render واختر خطة Free.
 2. استخدم `render.yaml` الموجود في جذر المشروع (Blueprint) أو اضبط نفس المتغيرات يدويًا.
@@ -105,8 +121,18 @@ GitHub لا يعرض قيمة أي سر بعد حفظه — لا للمستخد�
    ولأنّ هذين الطلبين يتكرّران في كل نشر، فالسكربت `scripts/verify_deployment.py` ينفّذهما كفحوص مسمّاة ذات رمز خروج واضح:
    ```bash
    export CELA_API_TOKEN=...            # الرمز العام؛ لا يُطبع أبدًا
-   python scripts/verify_deployment.py --api https://<service>.onrender.com \
+   python scripts/verify_deployment.py --api https://<service>.<provider-domain> \
+       --allow-host '*.your-provider.app' \
        --expect-kind provider_adapter    # أو 'scripted' في وضع المعاينة
+   ```
+
+   وللفحص الكامل الذي تشغّله البوابة (السطح الخاص + المخزن الدائم):
+   ```bash
+   export CELA_PRIVATE_API_TOKEN=...
+   python scripts/verify_deployment.py --api https://<service>.<provider-domain> \
+       --allow-host '*.your-provider.app' \
+       --private-token-env CELA_PRIVATE_API_TOKEN --require-private-token \
+       --require-durable-store
    ```
    الرمز `0` = كل الفحوص نجحت، `1` = فشل واحد على الأقل (مع بيانه في المخرجات)، `2` = الفحص لم يعمل أصلًا (لا رمز أو عنوان غير صالح). لو ظهر `scripted` بعد تمكين العلم، فهناك خطأ إعداد (عادةً اسم المتغير أو المفتاح) — والفحص يسمّي الفحص الفاشل بدل أن يتركك تخمّن. ستجد الرسالة الواضحة في سجلات بدء التشغيل — ولن تبدأ الخدمة أصلًا في حالة الإعداد الناقص.
 
@@ -115,7 +141,11 @@ GitHub لا يعرض قيمة أي سر بعد حفظه — لا للمستخد�
 1. أنشئ قاعدة Supabase/Render Postgres مجانية وانسخ سلسلة الاتصال.
 2. عيّن `CELA_RUN_STORE_URL=postgresql://user:pass@host:5432/postgres` كسر في Render.
    - في حال Postgres المدار من Render يمكنك استخدام `$DATABASE_URL`.
-3. محليًا، استخدم **قاعدة اختبار مخصصة** (وليست قاعدة الإنتاج) وشغّل اختبار الفصل الحقيقي للاتصال:
+3. من CI (يدوي، مع تأكيد كتابة صريح) يمكن تشغيل C6 بدون تمرير أي DSN إلى طرفية:
+   `.github/workflows/postgres-persistence.yml` يحتاج السريّن `CELA_TEST_POSTGRES_DSN`
+   و`CELA_RUN_STORE_URL`، ويشتغل فقط عند اختيار `confirm_write: yes`، ويرفض
+   `--no-production-reference` صراحةً حتى لا يُسجَّل تشغيل بلا دليل فصل.
+4. محليًا، استخدم **قاعدة اختبار مخصصة** (وليست قاعدة الإنتاج) وشغّل اختبار الفصل الحقيقي للاتصال:
    ```bash
    export CELA_TEST_POSTGRES_DSN="postgresql://user:pass@host:5432/cela_test"
    export CELA_RUN_STORE_URL="postgresql://.../postgres"   # مرجع الإنتاج للمقارنة فقط

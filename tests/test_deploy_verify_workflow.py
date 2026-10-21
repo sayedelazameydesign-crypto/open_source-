@@ -1,19 +1,21 @@
-"""Guard the manual deploy-verification workflow against silent mis-configuration.
+"""Guard the provider-agnostic deploy-verification workflow.
 
-``deploy-verify.yml`` is the one workflow that runs *after* a publish, by hand,
-from whatever branch the operator picks. Two failure modes matter there and
-neither is visible from the code it calls:
+The workflow used to resolve its target from the Render API. After Render
+refused the account (``docs/NO_CARD_DEPLOY_VERIFIED.md``) that made the check
+un-runnable from this repository: a red job with no owner and no possible fix.
+The gate is now defined against a *URL*, not a provider:
 
-1. a step that fails for a reason local to the runner, so the operator reads a
-   red check as "the deployment is broken" — this is why the install step must
-   carry the ``distributed`` extra (the Doctor refuses a Postgres run store
-   when ``psycopg`` is not importable, see ``postgres_driver_missing`` in
-   ``os_server.automation.check_deployment_readiness``);
-2. a destination that can be steered by whoever clicks *Run workflow*, or a
-   token that reaches a log line.
+* the base URL and the host allowlist are repository variables, so a dispatch
+  cannot point the platform tokens at somebody else's host;
+* ``scripts/authorize_deploy_target.py`` refuses a missing variable, an
+  ``http://`` URL, embedded credentials, a non-443 port, a path, an IP literal
+  or a host outside the allowlist *before* any request is made;
+* the readiness Doctor is provider-neutral: ``CELA_DEPLOY_REQUIRE_PERSISTENT_STORE``
+  replaces ``RENDER=true``;
+* the probe proves the platform token, the private token and the durable store.
 
-So the assertions are made against the workflow file itself, the same way
-``test_eval_workflow_security.py`` and ``test_live_acceptance_workflow.py`` do.
+Assertions are made against the workflow file itself, as in
+``test_eval_workflow_security.py`` and ``test_live_acceptance_workflow.py``.
 """
 
 from __future__ import annotations
@@ -28,10 +30,16 @@ WORKFLOW = (
     pathlib.Path(__file__).resolve().parents[1] / ".github" / "workflows" / "deploy-verify.yml"
 )
 
+REQUIRED_SECRETS = ("CELA_API_TOKEN", "CELA_PRIVATE_API_TOKEN", "CELA_RUN_STORE_URL")
+
 
 @pytest.fixture(scope="module")
 def spec() -> dict:
     return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+
+
+def _triggers(spec: dict) -> dict:
+    return spec.get("on", spec.get(True))  # PyYAML parses `on` as True
 
 
 def _steps(spec: dict) -> list[dict]:
@@ -42,119 +50,112 @@ def _step(spec: dict, needle: str) -> dict:
     return next(s for s in _steps(spec) if needle in s.get("name", ""))
 
 
+def _job_env(spec: dict) -> dict:
+    return spec["jobs"]["verify"]["env"]
+
+
 def test_workflow_is_manual_and_read_only(spec: dict) -> None:
-    triggers = spec.get("on", spec.get(True))  # PyYAML parses `on` as True
+    triggers = _triggers(spec)
     assert set(triggers) == {"workflow_dispatch"}
     assert spec["permissions"] == {"contents": "read"}
-    # Nothing about *which* service to probe is a dispatch input: the URL is
-    # resolved from the Render API in the runner, so clicking 'Run workflow'
-    # cannot aim the platform token at somebody else's host.
-    assert "url" not in ((triggers["workflow_dispatch"] or {}).get("inputs") or {})
 
 
-def test_install_carries_the_distributed_extra(spec: dict) -> None:
-    """Otherwise the strict Doctor aborts before the deployment is probed.
+def test_no_hosting_provider_is_baked_into_the_gate(spec: dict) -> None:
+    text = WORKFLOW.read_text(encoding="utf-8")
+    for forbidden in ("api.render.com", "RENDER_API_KEY", "onrender.com", "RENDER=true"):
+        assert forbidden not in text, f"{forbidden} re-locks the gate to one provider"
+    assert "RENDER" not in _job_env(spec)
 
-    The Doctor step is handed ``CELA_RUN_STORE_URL`` from the secret store, and
-    the documented target is a Postgres store (render.yaml + the free-tier
-    runbook). Without ``psycopg`` that check returns
-    ``ready: false`` / exit 1 — a red run that says nothing about the service.
-    """
-    run = _step(spec, "Install")["run"]
-    match = re.search(r"pip install -e \"\.\[([a-z,]+)\]\"", run)
-    assert match, "expected a single editable install with an explicit extras list"
-    extras = set(match.group(1).split(","))
-    assert {"server", "distributed"} <= extras, (
-        "the Doctor needs psycopg (distributed) and the server deps in the same env"
+
+def test_target_and_allowlist_come_from_repository_variables(spec: dict) -> None:
+    env = _job_env(spec)
+    assert env["DEPLOY_URL"] == "${{ vars.CELA_DEPLOY_URL }}"
+    assert env["DEPLOY_ALLOWED_HOSTS"] == "${{ vars.CELA_DEPLOY_ALLOWED_HOSTS }}"
+
+
+def test_dispatch_inputs_cannot_name_a_destination(spec: dict) -> None:
+    inputs = _triggers(spec)["workflow_dispatch"]["inputs"]
+    assert set(inputs) == {"expect_kind"}, (
+        "a free-text URL input would let whoever clicks Run workflow choose where the tokens go"
     )
-
-
-def test_backend_url_comes_from_the_resolution_step(spec: dict) -> None:
-    """The URL is discovered, not baked in, so a renamed service cannot be 'verified'."""
-    doctor = _step(spec, "Doctor")
-    assert doctor["env"]["CELA_BACKEND_URL"] == "${{ env.API_URL }}"
-    assert "onrender.com" not in doctor["run"], "no hardcoded service host"
-    resolve = _step(spec, "Resolve Render service URL")["run"]
-    assert 'echo "API_URL=${URL}" >> "$GITHUB_ENV"' in resolve
-
-
-def test_doctor_checks_the_same_credentials_the_service_uses(spec: dict) -> None:
-    doctor = _step(spec, "Doctor")["env"]
-    for name in ("CELA_API_TOKEN", "CELA_PRIVATE_API_TOKEN", "CELA_RUN_STORE_URL"):
-        assert doctor[name] == "${{ secrets." + name + " }}"
-
-
-def test_doctor_is_run_as_a_render_gate(spec):
-    env = _step(spec, "Doctor")["env"]
-    assert env["RENDER"] == "true"
-    assert env["CELA_CODE_EXEC_MODE"] == "disabled"
-    assert "secrets." not in env["CELA_CODE_EXEC_MODE"]
-
-
-@pytest.mark.parametrize(
-    ("step_name", "secret"),
-    [("Resolve Render service URL", "RENDER_API_KEY"), ("Verify deployment", "CELA_API_TOKEN")],
-)
-def test_preflight_errors_are_actionable(spec: dict, step_name: str, secret: str) -> None:
-    """An unset secret must read as a missing secret, not as a failed deployment."""
-    run = _step(spec, step_name)["run"]
-    assert f"{secret} secret is empty or unset." in run, (
-        f"{step_name} must fail with a named preflight error, not an empty-header 401"
-    )
-    assert "::error title=Preflight::" in run, "the failure must be annotated in the Actions log"
-
-
-def test_tokens_never_reach_a_log_line(spec: dict) -> None:
-    for step in _steps(spec):
-        run = step.get("run", "")
-        assert "secrets." not in run, "secrets may only travel through step env"
-        for token in ("CELA_API_TOKEN", "CELA_PRIVATE_API_TOKEN", "RENDER_API_KEY"):
-            pattern = r"echo [^\n]*\$\{?" + token
-            assert not re.search(pattern, run), f"{token} echoed in logs"
-    # The resolved URL is not a credential and is printed on purpose; nothing else is.
-    resolve = _step(spec, "Resolve Render service URL")["run"]
-    assert 'echo "Resolved service URL: ${URL}"' in resolve
-
-
-def test_fetched_service_list_is_not_left_in_the_workspace(spec: dict) -> None:
-    """services.json carries every service in the account: scrub it after use."""
-    resolve = _step(spec, "Resolve Render service URL")["run"]
-    assert "rm -f services.json" in resolve
 
 
 def test_expect_kind_is_a_closed_choice(spec: dict) -> None:
-    """Preview vs live is the operator's call, but only among the probe's own kinds."""
-    triggers = spec.get("on", spec.get(True))
-    inputs = triggers["workflow_dispatch"]["inputs"]
-    expect_kind = inputs["expect_kind"]
+    expect_kind = _triggers(spec)["workflow_dispatch"]["inputs"]["expect_kind"]
     assert expect_kind["type"] == "choice"
     assert set(expect_kind["options"]) == {"scripted", "provider_adapter", "any"}
     assert expect_kind["default"] == "scripted", "preview mode is the honest default"
     assert expect_kind.get("required") is False
+    assert _job_env(spec)["EXPECT_KIND"] == "${{ inputs.expect_kind }}"
 
 
-def test_dispatch_inputs_cannot_name_a_destination(spec: dict) -> None:
-    triggers = spec.get("on", spec.get(True))
-    inputs = triggers["workflow_dispatch"]["inputs"]
-    for forbidden in ("url", "api", "service_url", "base_url", "host"):
-        assert forbidden not in inputs, f"a free-text `{forbidden}` input sets where the token goes"
-    # The chosen kind reaches the shell through env, never interpolated inline.
-    assert spec["jobs"]["verify"]["env"]["EXPECT_KIND"] == "${{ inputs.expect_kind }}"
-    assert "${{ inputs." not in _step(spec, "Verify deployment")["run"]
+def test_install_carries_the_distributed_extra(spec: dict) -> None:
+    """Missing psycopg makes the strict Doctor fail before the service is probed."""
+    run = _step(spec, "Install")["run"]
+    assert '".[dev,server,distributed]"' in run
 
 
-def test_probe_target_is_constrained(spec: dict) -> None:
-    """The probe keeps its own allowlist; the workflow must not widen it."""
-    run = _step(spec, "Verify deployment")["run"]
-    assert "ALLOW_HOSTS" not in run, "widening the host allowlist belongs to the operator"
-    assert "--allow-loopback" not in run
-    assert 'case "${EXPECT_KIND:-scripted}" in' in run, "the kind is re-checked before the probe"
-    assert 'make verify-deploy API="${API_URL}" EXPECT_KIND="${EXPECT}"' in run
+def test_authorize_step_validates_both_variables_and_fails_closed(spec: dict) -> None:
+    run = _step(spec, "authorize")["run"]
+    assert "scripts/authorize_deploy_target.py" in run
+    assert '--url "${DEPLOY_URL}"' in run
+    assert '--allowed-hosts "${DEPLOY_ALLOWED_HOSTS}"' in run
+    assert '"${GITHUB_ENV}"' in run
+    for variable in ("CELA_DEPLOY_URL", "CELA_DEPLOY_ALLOWED_HOSTS"):
+        assert f"{variable} repository variable is empty or unset." in run, (
+            f"a missing {variable} must be a named preflight failure"
+        )
+    assert "::error title=Preflight::" in run
+    assert "secrets." not in run
 
 
-def test_render_answer_is_parsed_defensively(spec: dict) -> None:
-    """A proxy/login page instead of JSON must read as such, not as a traceback."""
-    run = _step(spec, "Resolve Render service URL")["run"]
-    assert "unreadable response" in run
-    assert "expected a list of services" in run
-    assert re.search(r"found %d\" % len\(matches\)", run), "wrong service count must be named"
+def test_doctor_is_provider_neutral(spec: dict) -> None:
+    doctor = _step(spec, "Doctor")["env"]
+    assert doctor["CELA_DEPLOY_REQUIRE_PERSISTENT_STORE"] == "1"
+    assert doctor["CELA_CODE_EXEC_MODE"] == "disabled"
+    assert "secrets." not in doctor["CELA_CODE_EXEC_MODE"]
+    # Values written to $GITHUB_ENV are shell-visible but not part of the
+    # `env:` expression context; `${{ env.API_URL }}` here would be empty.
+    assert "CELA_BACKEND_URL" not in doctor
+    run = _step(spec, "Doctor")["run"]
+    assert 'CELA_BACKEND_URL="${API_URL}"' in run
+
+
+def test_doctor_checks_the_same_credentials_the_service_uses(spec: dict) -> None:
+    doctor = _step(spec, "Doctor")["env"]
+    for name in REQUIRED_SECRETS:
+        assert doctor[name] == "${{ secrets." + name + " }}"
+
+
+def test_verify_step_proves_the_core_contract(spec: dict) -> None:
+    run = _step(spec, "Verify")["run"]
+    assert "scripts/verify_deployment.py" in run
+    assert "--require-private-token" in run
+    assert "--require-durable-store" in run
+    assert '--api "${API_URL}"' in run
+    assert '--expect-kind "${EXPECT}"' in run
+    assert "IFS=',' read -ra HOSTS" in run
+    assert "ALLOW_HOSTS" not in run, "the allowlist is the repository variable, not a make knob"
+
+
+def test_verify_step_sends_tokens_through_env_only(spec: dict) -> None:
+    step = _step(spec, "Verify")
+    assert "secrets." not in step["run"]
+    for name in ("CELA_API_TOKEN", "CELA_PRIVATE_API_TOKEN"):
+        assert step["env"][name] == "${{ secrets." + name + " }}"
+        assert f"{name} secret is empty or unset." in step["run"], (
+            f"an unset {name} must read as a missing secret, not as a failed deployment"
+        )
+    assert 'case "${EXPECT_KIND:-scripted}" in' in step["run"]
+
+
+def test_no_step_echoes_a_secret(spec: dict) -> None:
+    for step in _steps(spec):
+        run = step.get("run", "")
+        assert "secrets." not in run, "secrets may only travel through step env"
+        for token in ("CELA_API_TOKEN", "CELA_PRIVATE_API_TOKEN"):
+            assert not re.search(r"echo [^\n]*\$\{?" + token, run), f"{token} echoed in logs"
+
+
+def test_timeout_bounds_the_run(spec: dict) -> None:
+    assert spec["jobs"]["verify"]["timeout-minutes"] == 15

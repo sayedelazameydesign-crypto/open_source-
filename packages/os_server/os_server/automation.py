@@ -511,22 +511,38 @@ def check_deployment_readiness(
                 }
             )
 
-    if is_render:
+    # Any provider with an ephemeral filesystem (containers, free dynos, CI
+    # runners) loses SQLite and memory stores on redeploy. The flag lets a
+    # provider-agnostic pipeline require the same guarantee Render enforces.
+    require_persistent_store = is_render or active_env.get(
+        "CELA_DEPLOY_REQUIRE_PERSISTENT_STORE", ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    if require_persistent_store:
         postgres_store = store_url.startswith(("postgres://", "postgresql://"))
         distributed_store = store_url in {"distributed://", "distributed"} and all(
             active_env.get(name, "").strip() for name in ("CELA_POSTGRES_URL", "CELA_REDIS_URL")
         )
         if not postgres_store and not distributed_store:
+            if is_render:
+                message_ar = (
+                    "يتطلب نشر Render مخزن تشغيل دائمًا: اضبط CELA_RUN_STORE_URL على "
+                    "postgresql:// أو postgres://؛ أو استخدم distributed:// مع ضبط "
+                    "CELA_POSTGRES_URL وCELA_REDIS_URL. SQLite والذاكرة لا يصمدان أمام "
+                    "إعادة تشغيل Render Free، لذا يُرفض النشر بدل فقد التشغيلات."
+                )
+            else:
+                message_ar = (
+                    "هذا النشر مُعلَن كدائم (CELA_DEPLOY_REQUIRE_PERSISTENT_STORE=1) لكن "
+                    "CELA_RUN_STORE_URL ليس Postgres: اضبط postgresql:// أو postgres://؛ "
+                    "أو استخدم distributed:// مع CELA_POSTGRES_URL وCELA_REDIS_URL. "
+                    "قرص الحاوية والذاكرة يُفقدان عند كل إعادة نشر أو استبدال نسخة، "
+                    "لذا يُرفض النشر بدل فقد التشغيلات."
+                )
             errors.append(
                 {
                     "id": "persistent_run_store_required",
                     "variable": "CELA_RUN_STORE_URL",
-                    "message_ar": (
-                        "يتطلب نشر Render مخزن تشغيل دائمًا: اضبط CELA_RUN_STORE_URL على "
-                        "postgresql:// أو postgres://؛ أو استخدم distributed:// مع ضبط "
-                        "CELA_POSTGRES_URL وCELA_REDIS_URL. SQLite والذاكرة لا يصمدان أمام "
-                        "إعادة تشغيل Render Free، لذا يُرفض النشر بدل فقد التشغيلات."
-                    ),
+                    "message_ar": message_ar,
                 }
             )
 

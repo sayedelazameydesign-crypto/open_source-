@@ -1,4 +1,9 @@
 # Celia.sh — Mission OS ($0 Free-Tier Deployment Blueprint for Render)
+#
+# OPTIONAL: Render is no longer the verification path. CI takes the target from
+# the CELA_DEPLOY_URL / CELA_DEPLOY_ALLOWED_HOSTS repository variables and has
+# no provider dependency (docs/DEPLOY_VERIFY_LIVE_URL.md). This blueprint stays
+# for operators who can actually use Render.
 # Pair with:
 # - Supabase Postgres Free (500 MB) via CELA_RUN_STORE_URL="postgresql://..."
 # - Cloudflare Pages / Workers for packages/web (with CELA_API_TOKEN kept server-side)

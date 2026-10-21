@@ -3,7 +3,7 @@
 
 The deployment runbooks state the post-deploy check as two curls::
 
-    API=https://<service>.onrender.com
+    API=https://<service>.<provider-domain>
     curl -sS $API/health                                    # {"status":"ok"}
     curl -sS -H "Authorization: Bearer $CELA_API_TOKEN" $API/runtime-info
     # preview mode (CELA_USE_LIVE_PROVIDER=0) must answer execution.kind == "scripted"
@@ -11,18 +11,25 @@ The deployment runbooks state the post-deploy check as two curls::
 This script is that check, executed::
 
     export CELA_API_TOKEN=...        # the public platform token
-    python scripts/verify_deployment.py --api https://<service>.onrender.com
+    python scripts/verify_deployment.py --api https://<service>.<provider> \
+        --allow-host '*.example-provider.app'
 
-    # a live deployment must say so
-    python scripts/verify_deployment.py --api https://<service>.onrender.com \
-        --expect-kind provider_adapter
+    # the CI gate also proves the private surface and the durable store
+    python scripts/verify_deployment.py --api https://<service>.<provider> \
+        --allow-host '*.example-provider.app' \
+        --private-token-env CELA_PRIVATE_API_TOKEN --require-private-token \
+        --require-durable-store --expect-kind scripted
+
+No provider is hardcoded: the allowlist comes from ``--allow-host`` (repeatable)
+or ``CELA_DEPLOY_ALLOWED_HOSTS`` (comma-separated). When neither is given, the
+historical ``*.onrender.com`` default applies so old runbooks keep working; a
+CI gate always supplies one.
 
 The token is read from the environment and never printed: it appears in no
 output line, no report and no error message. Production targets must use HTTPS
-on port 443 and match the default ``*.onrender.com`` API allowlist; the probe
-resolves and pins approved public IPs, ignores proxy environment variables, and
-does not follow redirects. Alternate API hosts require explicit ``--allow-host``
-entries. ``--allow-loopback`` is only for local tests.
+on port 443; the probe resolves and pins approved public IPs, ignores proxy
+environment variables, and does not follow redirects. ``--allow-loopback`` is
+only for local tests.
 
 Exit codes: 0 = every criterion passed, 1 = at least one criterion failed,
 2 = the probe could not run (no token, unusable URL, unknown expectation).
@@ -66,6 +73,16 @@ RESET = "\033[0m"
 
 #: Where the service URL may come from, in order.
 _URL_ENV_VARS = ("CELA_API_URL", "CELA_BACKEND_URL")
+
+#: Comma-separated allowlist for the provider-agnostic CI gate. Explicit
+#: ``--allow-host`` entries win; otherwise this replaces the built-in default.
+_ALLOWED_HOSTS_ENV = "CELA_DEPLOY_ALLOWED_HOSTS"
+
+
+def _allowlist_from_env() -> tuple[str, ...]:
+    raw = os.environ.get(_ALLOWED_HOSTS_ENV, "")
+    hosts = tuple(part.strip() for part in raw.split(",") if part.strip())
+    return hosts
 
 
 def commit_sha() -> str:
@@ -138,8 +155,25 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         action="append",
         default=None,
         metavar="PATTERN",
-        help="explicit API host allowlist entry (repeatable; default: "
+        help="explicit API host allowlist entry (repeatable; overrides "
+        f"${_ALLOWED_HOSTS_ENV}; fallback default: "
         f"{', '.join(DEFAULT_VERIFY_ALLOWED_HOSTS)}; HTTPS/443 only)",
+    )
+    parser.add_argument(
+        "--private-token-env",
+        default="CELA_PRIVATE_API_TOKEN",
+        help="environment variable holding the private API token; when empty the "
+        "private-surface check is skipped unless --require-private-token is set",
+    )
+    parser.add_argument(
+        "--require-private-token",
+        action="store_true",
+        help="fail (exit 2) when --private-token-env is empty instead of skipping",
+    )
+    parser.add_argument(
+        "--require-durable-store",
+        action="store_true",
+        help="require /platform/info to report store.durable == true (not memory)",
     )
     parser.add_argument(
         "--allow-loopback",
@@ -158,10 +192,11 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(list(sys.argv[1:] if argv is None else argv))
     url = _resolve_url(args.api)
     token = os.environ.get(args.token_env, "").strip()
+    private_token = os.environ.get(args.private_token_env, "").strip()
 
     if not url:
         print(
-            "error: no service URL — pass --api https://<service>.onrender.com or set CELA_API_URL",
+            "error: no service URL — pass --api https://<service>.<provider> or set CELA_API_URL",
             file=sys.stderr,
         )
         return 2
@@ -171,6 +206,17 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+    if args.require_private_token and not private_token:
+        print(
+            f"error: no private token — export {args.private_token_env} "
+            "or drop --require-private-token",
+            file=sys.stderr,
+        )
+        return 2
+
+    explicit_hosts = tuple(args.allow_host) if args.allow_host is not None else None
+    env_hosts = _allowlist_from_env()
+    allowed_hosts = explicit_hosts if explicit_hosts is not None else (env_hosts or None)
 
     try:
         report = verify_published_service(
@@ -178,8 +224,10 @@ def main(argv: list[str] | None = None) -> int:
             token,
             expected_kind=args.expect_kind,
             timeout=args.timeout,
-            allowed_hosts=tuple(args.allow_host) if args.allow_host is not None else None,
+            allowed_hosts=allowed_hosts,
             allow_loopback=args.allow_loopback,
+            private_token=private_token or None,
+            require_durable_store=args.require_durable_store,
         )
     except ProbeConfigurationError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -194,6 +242,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  commit  : {commit_sha()}")
     print(f"  expect  : execution.kind == {report.expected_kind!r}")
     print(f"  token   : loaded from {args.token_env} (never printed)")
+    if private_token:
+        print(f"  private : loaded from {args.private_token_env} (never printed)")
     print()
     for result in report.results:
         mark = f"{GREEN}PASS{RESET}" if result.ok else f"{RED}FAIL{RESET}"
