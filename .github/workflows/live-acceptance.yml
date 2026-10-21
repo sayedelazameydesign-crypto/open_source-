@@ -24,8 +24,8 @@ jobs:
     # Push to main is the merge itself: only dispatch should spend quota there.
     if: github.event_name == 'workflow_dispatch' || github.ref_name != 'main'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       - name: Install
@@ -77,7 +77,7 @@ jobs:
       - name: Upload log
         # Always: a failed criterion is exactly the evidence someone needs.
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: live-acceptance-log
           path: live-acceptance.log
