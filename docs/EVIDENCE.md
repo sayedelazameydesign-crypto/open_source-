@@ -6,7 +6,7 @@
 بينما كبرت المجموعة، وصار أول دليل يقرأه الزائر هو أول دليل يخذله.
 
 <!-- generated:test-count -->
-**1584 اختبارًا في المجموعة** — 1581 مُختارًا · 3 مُستبعَدًا (deselected) · `pytest --collect-only -q`
+**1605 اختبارًا في المجموعة** — 1602 مُختارًا · 3 مُستبعَدًا (deselected) · `pytest --collect-only -q`
 <!-- /generated:test-count -->
 
 > **الرقمان ليسا تناقضًا.** العدد أعلاه حصيلة `pytest --collect-only -q`، أي
@@ -35,6 +35,8 @@ Chromium الحيّ صراحةً، لكن اختباري Reach الشبكيين 
 | عدد الاختبارات | `pytest --collect-only -q` | ما **تُجمعه** المجموعة، لا ما نجح في تشغيل بعينه |
 | نجاح المجموعة | `pytest -q` | يشغّل الاختبارات المحلية؛ يستبعد 3 اختبارات موسومة `network` افتراضيًا |
 | نظافة الأسلوب | `ruff check .` | كل قواعد `pyproject.toml` |
+| تطابق التنسيق | `ruff format --check .` | يمرّ على الشجرة كاملة؛ CI يفرضه منذ 2026-10-21 |
+| توثيق الإعداد | `pytest tests/test_docs_claims.py` | كل متغيّر بيئة تقرأه الشيفرة مذكور في `.env.example` أو `docs/CONFIGURATION.md` |
 | واجهة الويب | `npm run test:components` / `test:hooks` / `test:deploy` | مكوّنات React · خطّافات · دالة الحافة (بلا شبكة) |
 | بناء الويب (شكلان) | `npm run build` · `npm run build:pages` | بناء Next الخادمي · تصدير ثابت لـ Cloudflare Pages |
 | جاهزية النشر | `python scripts/deploy_doctor.py --strict` | أسرار وعناوين؛ Render يشترط مخزن Postgres دائمًا و`CELA_CODE_EXEC_MODE=disabled` في البيئة وBlueprint الهدف؛ هذا preflight ليس orchestrator مركزيًا |
@@ -131,6 +133,39 @@ Chromium الحيّ صراحةً، لكن اختباري Reach الشبكيين 
 | حرّاس C6 قبل أي اتصال | نفس قاعدة الإنتاج ⇒ `exit 2` برسالة رفض؛ غياب مرجع الإنتاج ⇒ `exit 2` برسالة رفض |
 | C5 (خدمة عامة) | **لم يُنفَّذ** — لا عنوان عام بعد |
 | C6 (Postgres حيّ) | **لم يُنفَّذ** — لم يُمرَّر `CELA_TEST_POSTGRES_DSN` بعد |
+
+## ٢-و) مراجعة المستودع الكاملة — 2026-10-21 · `a8e8aec`
+
+فحص شامل قراءةً وتشغيلًا، وليست لقطة PR. كل رقم أدناه أُعيد إنتاجه بعد التعديلات.
+
+| الفحص | الأمر | النتيجة |
+|---|---|---|
+| الأسلوب | `ruff check .` | All checks passed |
+| التنسيق | `ruff format --check .` | 275 ملفًا مطابقًا، 0 يحتاج تنسيقًا (كان 34) |
+| المجموعة | `pytest -q` | نجحت كاملة، `3 deselected` (وسم `network`) |
+| التغطية | `pytest --cov` | 88% على 15,496 سطرًا |
+| الأدلة | `scripts/update_evidence.py --check` | مطابقة (الكتلة أعلاه أعيد توليدها) |
+| نزاهة المضافة | `scripts/vendored_manifest.py verify` | 198 ملفًا، البصمة مطابقة |
+| الواجهة | `npm run build` · `lint` · `typecheck` · 8 مجموعات | 12 مسارًا · نظيف · 109 اختبارًا |
+| Docker | `docker build` | **لم يُنفَّذ هنا** (لا Docker في بيئة الفحص)؛ تحرسه `docker-image.yml` واختبارات `test_deploy_config.py` |
+
+أُصلحت في هذه المراجعة خمسة عيوب موثّقة بأدلتها، ودون تغيير أي سلوك افتراضي للمستخدم:
+
+| # | العيب | الإصلاح | الحارس |
+|---|---|---|---|
+| 1 | `tests/test_know_reindex.py` يستدعي `cela` من `PATH` فيفشل تحت `python -m pytest` داخل venv | يستعمل السكربت إن وُجد، وإلا نفس المدخل عبر `sys.executable -m os_server.cli` | نفس الاختبار في الحالتين + تحقق من تعريف المدخل في `pyproject.toml` |
+| 2 | `.dockerignore` لا يستثني `.env`، و`node_modules` غير متداخل | `.env`/`.env.*` مع `!.env.example`، و`**/node_modules`، ولقطة الطرف الثالث | `test_build_context_excludes_local_secrets_and_nested_node_modules` |
+| 3 | الصورة تعمل بـroot | `useradd --uid 10001` + `chown` + `USER cela` في ملفَي Dockerfile | `test_runtime_image_does_not_run_as_root` |
+| 4 | `ruff format` غير مفروض في CI (34 ملفًا منحرفًا) | الشجرة منسّقة، و`ruff format --check .` خطوة في `ci.yml` وهدف `make format-check` داخل `make check` | خطوة CI نفسها |
+| 5 | 19 متغيّر بيئة يُقرأ بلا توثيق | `docs/CONFIGURATION.md` (مرجع كامل) + `CELA_PUBLIC_DOCS` و`CELA_LEDGER_PATH` في القالب | `test_every_read_environment_variable_is_documented` |
+
+إضافات سلوكية واحدة فقط، وكلتاهما اختيارية وبلا تغيير في الافتراضي:
+`CELA_PUBLIC_DOCS=0` يحذف `/docs` و`/redoc` و`/openapi.json` (404) في نشر لا نريد تسليم خريطة
+الـAPI فيه؛ والافتراضي `1` يُبقي إشارة الفحص `/docs ⇒ 200` الموثّقة صحيحة.
+و`scripts/README.md` صار فهرسًا لكل سكربت، يحرسه اختبار فلا يُضاف سكربت غير موثّق.
+
+**ما لم يُتحقَّق منه هنا:** `cargo test` (لا Rust في بيئة الفحص)، `docker build` (لا Docker)،
+والاختبارات الموسومة `network` الثلاثة، وأي مزوّد LLM حقيقي. هذه تبقى أدلة CI لا أدلة محلية.
 
 ## ٣) ما لا يغطّيه هذا الملف — بصراحة
 

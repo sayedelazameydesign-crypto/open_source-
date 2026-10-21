@@ -1,6 +1,6 @@
-.PHONY: install test lint format demo-react demo-flow serve check clean launcher-test launcher-build \
-        vendored-verify vendored-verify-upstream vendored-write defork-launcher evidence evidence-check \
-        verify-deploy
+.PHONY: install test lint format format-check demo-react demo-flow serve check clean launcher-test \
+        launcher-build vendored-verify vendored-verify-upstream vendored-write defork-launcher evidence \
+        evidence-check verify-deploy
 
 install:
 	pip install -e ".[dev,server,papers]"
@@ -14,10 +14,15 @@ lint:
 format:
 	ruff format .
 
+# Same rule as `ruff check`: the tree is either formatted or it is not. CI runs
+# this step too, so a reformat-only drift cannot land silently.
+format-check:
+	ruff format --check .
+
 # The test count is generated, not typed: `evidence-check` fails when
 # docs/EVIDENCE.md drifts from what the suite actually collects. Verify the
 # vendored snapshot explicitly as part of the full local check as well.
-check: lint evidence-check vendored-verify test
+check: lint format-check evidence-check vendored-verify test
 
 demo-react:
 	python -m os_server.cli run --demo "Sum the integers from 0 to 100"

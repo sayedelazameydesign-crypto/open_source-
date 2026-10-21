@@ -1368,9 +1368,7 @@ def main(argv: list[str] | None = None) -> int:
                 assume_yes=args.yes,
                 as_json=args.json,
             )
-        return _know_eval(
-            store, retriever, args.golden, k=args.k, corpus=args.corpus, arm=args.arm
-        )
+        return _know_eval(store, retriever, args.golden, k=args.k, corpus=args.corpus, arm=args.arm)
 
     if args.command == "telemetry":
         return _telemetry_export(args)
@@ -1404,6 +1402,7 @@ def main(argv: list[str] | None = None) -> int:
 
         from os_server.demo import free_tier_model_from_env as _ftm
         from os_server.demo import is_live_provider_enabled as _ilpe
+
         _want_live = (not args.demo) and (bool(args.live) or _ilpe())
         _live_available = _ftm() is not None
         _use_live = _want_live and _live_available
@@ -1427,9 +1426,7 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         _model_label = (
-            "live provider (fail-closed fallback to scripted)"
-            if _use_live
-            else "scripted demo"
+            "live provider (fail-closed fallback to scripted)" if _use_live else "scripted demo"
         )
         print(f"  model: {_model_label}")
 

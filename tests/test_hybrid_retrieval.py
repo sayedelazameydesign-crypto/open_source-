@@ -161,10 +161,10 @@ def test_rrf_order_is_stable_across_calls() -> None:
     retriever = KnowRetriever(
         store, LocalAIEngine(), min_score=0.0, embedder=_FixedEmbedder([0.7, 0.7], dim=2)
     )
+
     def _ids() -> list[str]:
         return [
-            h.chunk.chunk_id
-            for h in retriever.query("token shared", corpus_ids=["docs"], top_k=5)
+            h.chunk.chunk_id for h in retriever.query("token shared", corpus_ids=["docs"], top_k=5)
         ]
 
     first, second = _ids(), _ids()

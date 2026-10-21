@@ -105,7 +105,9 @@ def test_sandbox_local_mode_never_claims_network_isolation() -> None:
 
 
 def test_store_targets_are_scrubbed_and_never_echo_credentials() -> None:
-    store = PostgresRunStore("postgresql://celia:supersecret@db.example.com:5432/celia?sslmode=require")
+    store = PostgresRunStore(
+        "postgresql://celia:supersecret@db.example.com:5432/celia?sslmode=require"
+    )
     payload = _collect(store=store)["store"]
     assert payload["backend"] == "PostgresRunStore"
     assert payload["durable"] is True

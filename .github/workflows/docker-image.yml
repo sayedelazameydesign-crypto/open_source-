@@ -30,6 +30,9 @@ on:
       - "pyproject.toml"
       - ".dockerignore"
       - ".github/workflows/docker-image.yml"
+      # The composite action *is* the build+smoke path; without this line a
+      # change to it (e.g. a new assertion) would never run in CI.
+      - ".github/actions/**"
   pull_request:
     branches: [main]
     paths:
@@ -39,6 +42,9 @@ on:
       - "pyproject.toml"
       - ".dockerignore"
       - ".github/workflows/docker-image.yml"
+      # The composite action *is* the build+smoke path; without this line a
+      # change to it (e.g. a new assertion) would never run in CI.
+      - ".github/actions/**"
   workflow_dispatch:
 
 concurrency:

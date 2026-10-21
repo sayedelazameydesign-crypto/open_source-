@@ -47,6 +47,18 @@ runs:
         done
 
         curl -fsS http://127.0.0.1:8080/health | grep -q '"status":"ok"'
+
+        # The runtime must not be root: the service needs no privileged port and
+        # every code-exec backend already fails closed in this image. Asserting
+        # it on the running container keeps a dropped `USER` from shipping.
+        uid=$(docker exec smoke id -u)
+        if [ "$uid" = "0" ]; then
+          echo "::error::container runs as root (uid 0); the image must switch USER"
+          docker logs smoke
+          exit 1
+        fi
+        echo "container runs as non-root uid $uid"
+
         code=$(curl -s -o /dev/null -w '%{http_code}' \
           "http://127.0.0.1:8080/cela/v1/runs?limit=1" \
           -H "Authorization: Bearer definitely-wrong-token")

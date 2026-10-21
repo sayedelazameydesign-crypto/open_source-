@@ -97,19 +97,24 @@ app = FastAPI(title="Celia Custom AI API", version="1.0.2")
 # مبدأ الفشل المبكر (Fail-Fast): إيقاف التشغيل فوراً إذا كان مفتاح البيئة مفقوداً
 API_KEY = os.getenv("CUSTOM_API_KEY")
 if not API_KEY:
-    raise RuntimeError("CRITICAL SECURITY ERROR: CUSTOM_API_KEY environment variable is missing. Server startup aborted.")
+    raise RuntimeError(
+        "CRITICAL SECURITY ERROR: CUSTOM_API_KEY environment variable is missing. Server startup aborted."
+    )
 
 API_KEY_NAME = "X-API-Key"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
+
 
 class PromptRequest(BaseModel):
     prompt: str
     max_tokens: int = 256
 
+
 def get_api_key(api_key_val: str = Security(api_key_header)):
     if api_key_val == API_KEY:
         return api_key_val
     raise HTTPException(status_code=403, detail="Invalid or missing API Key")
+
 
 @app.post("/v1/generate")
 async def generate_response(request: PromptRequest, api_key: str = Security(get_api_key)):
@@ -117,6 +122,6 @@ async def generate_response(request: PromptRequest, api_key: str = Security(get_
         "status": "success",
         "model": "custom-edge-model-v1",
         "prompt_received": request.prompt,
-        "output": f"تمت المعالجة بأمان تام عبر الـ API الخاص: {request.prompt}"
+        "output": f"تمت المعالجة بأمان تام عبر الـ API الخاص: {request.prompt}",
     }
 ```

@@ -21,6 +21,7 @@ import json
 import shutil
 import sqlite3
 import subprocess
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -316,9 +317,17 @@ def test_reindex_never_rereads_source_files_and_is_idempotent_to_sqlite_bytes(
         ).fetchall()
     assert snap_two == snap_one
 
-    # Verify the installed `cela` console entrypoint works end-to-end on PATH.
+    # Verify the installed `cela` console entrypoint works end-to-end. The
+    # interpreter running the suite does not always have its own ``bin/``
+    # directory on PATH — ``python -m pytest`` from a venv resolves to the
+    # venv's interpreter while PATH still points at the system one — so use the
+    # installed script when it is resolvable and otherwise run the exact same
+    # entrypoint (``os_server.cli:main``) through this interpreter. Neither
+    # branch is skipped; both execute the CLI in a child process.
+    cela_cmd = shutil.which("cela")
+    argv = [cela_cmd] if cela_cmd else [sys.executable, "-m", "os_server.cli"]
     proc = subprocess.run(
-        ["cela", "know", "stats", "--json", "--store-url", f"sqlite:///{db}"],
+        [*argv, "know", "stats", "--json", "--store-url", f"sqlite:///{db}"],
         capture_output=True,
         text=True,
         check=True,
@@ -338,4 +347,8 @@ def test_reindex_never_rereads_source_files_and_is_idempotent_to_sqlite_bytes(
     assert idem["space_before"] == "feature-hash-v1@16"
     assert idem["space_after"] == "feature-hash-v1@16"
     assert mem.list_chunks() == before_mem
-    assert shutil.which("cela") is not None
+    # Packaging regression guard that does not depend on the caller's PATH: the
+    # console script the child process above ran (or its `-m` equivalent) must
+    # stay declared as ``os_server.cli:main``.
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    assert 'cela = "os_server.cli:main"' in pyproject.read_text(encoding="utf-8")

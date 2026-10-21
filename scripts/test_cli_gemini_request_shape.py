@@ -18,6 +18,7 @@ about the provider wiring, without network access:
 The CLI's own live/fail-closed entry points are exercised by the subprocess
 probes in scripts/test_gemini_provider.py.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -71,9 +72,7 @@ class _RequestRecorder:
                                         "type": "function",
                                         "function": {
                                             "name": "python_execute",
-                                            "arguments": json.dumps(
-                                                {"code": "print(7*8)"}
-                                            ),
+                                            "arguments": json.dumps({"code": "print(7*8)"}),
                                         },
                                     }
                                 ],

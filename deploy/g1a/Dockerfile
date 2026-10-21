@@ -42,6 +42,7 @@ ENV CELA_IMAGE_REF=${CELA_IMAGE_REF} \
 # extras — no browser/sandbox/ai toolchains. Build context is the repo root.
 COPY . /app
 RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir --upgrade "setuptools>=78.1.1" wheel \
     && pip install --no-cache-dir -e ".[server,distributed]"
 
 EXPOSE 8080
@@ -50,6 +51,11 @@ EXPOSE 8080
 # (platforms like Back4app inject/auto-detect the listening port).
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD python -c "import os,urllib.request;urllib.request.urlopen('http://127.0.0.1:%s/health' % os.environ.get('PORT','8080'))" || exit 1
+
+# Unprivileged runtime, mirroring the root Dockerfile (2026-10-21 review, S2).
+RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin cela \
+    && chown -R cela:cela /app
+USER cela
 
 # PORT-aware start: honor an injected $PORT, fall back to 8080.
 CMD ["sh", "-c", "uvicorn --app-dir deploy/g1a main:app --host 0.0.0.0 --port ${PORT:-8080}"]

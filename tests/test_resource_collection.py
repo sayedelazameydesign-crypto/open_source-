@@ -398,4 +398,3 @@ def test_real_pypdf_extracts_a_text_layer_pdf(tmp_path) -> None:
     pdf = tmp_path / "paper.pdf"
     pdf.write_bytes(_text_pdf("Findings replicate across three cohorts"))
     assert "Findings replicate across three cohorts" in read_research_paper(pdf)
-

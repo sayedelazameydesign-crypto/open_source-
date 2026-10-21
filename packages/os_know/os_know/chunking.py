@@ -32,9 +32,7 @@ def _effective_limit(text: str, max_chars: int, max_tokens: int | None) -> int:
     return min(max_chars, token_budget_chars(text, max_tokens))
 
 
-def _split_long(
-    text: str, limit: int, *, max_tokens: int | None = MAX_TOKENS
-) -> list[str]:
+def _split_long(text: str, limit: int, *, max_tokens: int | None = MAX_TOKENS) -> list[str]:
     eff = _effective_limit(text, limit, max_tokens)
     if len(text) <= eff:
         return [text]
@@ -208,9 +206,7 @@ def chunk_text(
                 buffer, chunk_start = "", line_no
             if max_tokens is not None:
                 for piece in _split_long(para, size, max_tokens=max_tokens):
-                    drafts.append(
-                        _draft(piece, line_no, line_no + piece.count("\n"), len(drafts))
-                    )
+                    drafts.append(_draft(piece, line_no, line_no + piece.count("\n"), len(drafts)))
             else:
                 drafts.append(_draft(para, line_no, line_no + para.count("\n"), len(drafts)))
             line_no += para.count("\n") + 2

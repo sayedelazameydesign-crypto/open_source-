@@ -229,9 +229,7 @@ def test_late_dimension_is_tagged_after_embed_and_heals_sparse_corroboration() -
 
     # Simulate an earlier sparse record from an outage; corroborating heals its vector.
     sparse_store = InMemoryMemoryStore()
-    outage_mgr = MemoryManager(
-        sparse_store, LocalAIEngine(), embedder=_FailingEmbedder("raise")
-    )
+    outage_mgr = MemoryManager(sparse_store, LocalAIEngine(), embedder=_FailingEmbedder("raise"))
     first, _ = outage_mgr.remember("canary window lasts thirty minutes", key="canary.window")
     assert first is not None and not first.has_usable_vector()
 
@@ -361,4 +359,3 @@ def test_cli_serve_and_run_exit_2_on_broken_embedding_config(
 
     assert cli_main(["run", "--demo", "ping"]) == 2
     assert "invalid-backend" in capsys.readouterr().err
-

@@ -409,9 +409,7 @@ def test_colab_notebook_syncs_source_before_smoke_and_launch() -> None:
     """9) دفتر Colab: مزامنة المصدر من origin/main، والفحص قبل التشغيل، وخلايا صالحة."""
     notebook_path = _REPO_ROOT / "CELA_PRO_COLAB.ipynb"
     notebook = json.loads(notebook_path.read_text(encoding="utf-8"))
-    sources = [
-        "".join(cell["source"]) for cell in notebook["cells"] if cell["cell_type"] == "code"
-    ]
+    sources = ["".join(cell["source"]) for cell in notebook["cells"] if cell["cell_type"] == "code"]
 
     for index, source in enumerate(sources):
         if source.lstrip().startswith(("!", "%")):

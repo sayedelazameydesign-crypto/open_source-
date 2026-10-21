@@ -74,9 +74,7 @@ def annotations(sha: str, verdicts: list[tuple[bool, str, str]]) -> list[str]:
         )
         return lines
     passed = sum(1 for ok, _, _ in verdicts if ok)
-    lines.append(
-        f"::notice title=A1/A6 at {sha}::{passed}/{len(verdicts)} criteria passed"
-    )
+    lines.append(f"::notice title=A1/A6 at {sha}::{passed}/{len(verdicts)} criteria passed")
     for ok, criterion, detail in verdicts:
         level = "notice" if ok else "error"
         state = "PASS" if ok else "FAIL"

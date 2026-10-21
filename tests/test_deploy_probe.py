@@ -523,9 +523,7 @@ def test_probe_detects_an_unconfigured_private_surface(
 
 def test_probe_refuses_an_identical_private_token(preview_service: str) -> None:
     with pytest.raises(ProbeConfigurationError, match="must differ"):
-        verify_published_service(
-            preview_service, TOKEN, allow_loopback=True, private_token=TOKEN
-        )
+        verify_published_service(preview_service, TOKEN, allow_loopback=True, private_token=TOKEN)
 
 
 def test_probe_proves_a_durable_store_when_required(gated_service: str) -> None:

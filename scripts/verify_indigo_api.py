@@ -228,9 +228,7 @@ def run_live_checks(
             )
 
         if not service.status()["configured"]:
-            msg = (
-                "INDIGO_API_KEY is empty or unset — authenticated AI Indigo checks were NOT run"
-            )
+            msg = "INDIGO_API_KEY is empty or unset — authenticated AI Indigo checks were NOT run"
             if require_configured:
                 rec.record(
                     False,

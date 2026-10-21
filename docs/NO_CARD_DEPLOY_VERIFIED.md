@@ -92,7 +92,7 @@
 ## 7) سجل التحقق المحلي المباشر (2026-10-20)
 
 - `pip install -e ".[server]"` ثم `".[server,distributed]"` — نجحا، وكل وحدات `os_server` تُستورد.
-- الخادم الحي (نفس أمر Dockerfile): `/health` ⇒ `{"status":"ok"}` • `/docs` و`/openapi.json` ⇒ 200 • توكن خاطئ ⇒ 401 • التوكن الصحيح ⇒ 200 على `/cela/v1/runs`.
+- الخادم الحي (نفس أمر Dockerfile): `/health` ⇒ `{"status":"ok"}` • `/docs` و`/openapi.json` ⇒ 200 (الافتراضي؛ أطفئه بـ`CELA_PUBLIC_DOCS=0` على نشر عام فلا تُخدَم الخريطة، راجع [`CONFIGURATION.md`](CONFIGURATION.md)) • توكن خاطئ ⇒ 401 • التوكن الصحيح ⇒ 200 على `/cela/v1/runs`.
 - **RSS = 58.5 MB** « حد 256 MB في Back4App ⇒ التطبيق يدخل الحاوية المجانية بارتياح.
 
 ## 8) GitHub Actions — الحكم في "التشغيل المستمر" (تحقق 2026-10-20)

@@ -74,8 +74,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import secrets
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import aclosing, asynccontextmanager, suppress
 from typing import Any
 
@@ -140,6 +141,23 @@ from os_server.waapi import WaapiService, create_waapi_router
 
 # Backwards-compatible alias for internal callers.
 _valid_bearer_token = valid_bearer_token
+
+PUBLIC_DOCS_ENV = "CELA_PUBLIC_DOCS"
+
+
+def public_docs_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """Are FastAPI's interactive docs served at ``/docs``, ``/redoc``, ``/openapi.json``?
+
+    Default **on**, deliberately: this is an open-source API, and the deploy
+    runbook uses ``GET /docs`` ⇒ 200 as a post-deploy smoke signal
+    (docs/NO_CARD_DEPLOY_VERIFIED.md). The cost is that an internet-exposed
+    instance hands an anonymous caller a complete, machine-readable map of
+    every route — free reconnaissance. ``CELA_PUBLIC_DOCS=0`` removes all three
+    routes (they answer 404) without touching the API itself, so an operator
+    who already has the schema locally can stop publishing it.
+    """
+    raw = (env if env is not None else os.environ).get(PUBLIC_DOCS_ENV, "1")
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
 
 
 class StartRunRequest(BaseModel):
@@ -296,10 +314,16 @@ def create_app(
             await indigo.aclose()
             await waapi.aclose()
 
+    # Docs are public by default (deploy runbook smoke signal) and can be
+    # switched off per deployment; see public_docs_enabled().
+    _docs = public_docs_enabled()
     app = FastAPI(
         title="cela_use_browser private + platform API",
         version=PRODUCT_VERSION,
         lifespan=lifespan,
+        docs_url="/docs" if _docs else None,
+        redoc_url="/redoc" if _docs else None,
+        openapi_url="/openapi.json" if _docs else None,
     )
     from os_server.documents import document_router
 

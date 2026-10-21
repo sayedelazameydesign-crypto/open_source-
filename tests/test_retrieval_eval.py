@@ -318,4 +318,3 @@ def test_chunking_enforces_max_tokens_ceiling_on_arabic_without_shifting_english
     en_legacy = chunk_markdown(english, max_tokens=None)
     en_capped = chunk_markdown(english, max_tokens=MAX_TOKENS)
     assert en_capped == en_legacy
-

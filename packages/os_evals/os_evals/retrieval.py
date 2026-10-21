@@ -43,6 +43,7 @@ THREE_WAY = ("sparse", "dense", "hybrid")
 
 _FLOOR_ENV = {"recall": "CELA_EVAL_RECALL_FLOOR", "mrr": "CELA_EVAL_MRR_FLOOR"}
 
+
 def default_golden_path() -> Path:
     """Walk up from this file until ``tests/fixtures/golden.jsonl`` exists."""
     for parent in Path(__file__).resolve().parents:
@@ -168,9 +169,7 @@ def _scope(corpus_ids: Sequence[str] | str | None) -> list[str]:
     return [str(c) for c in corpus_ids if str(c).strip()]
 
 
-def _engine_facts(
-    retriever: Any, *, corpus_ids: Sequence[str] | None = None
-) -> dict[str, Any]:
+def _engine_facts(retriever: Any, *, corpus_ids: Sequence[str] | None = None) -> dict[str, Any]:
     configured = getattr(retriever, "embedder", None) or getattr(
         getattr(retriever, "store", None), "embedder", None
     )

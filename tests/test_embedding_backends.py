@@ -377,9 +377,7 @@ def test_missing_extra_is_reported_as_a_missing_extra() -> None:
 
 def test_provider_requires_a_policy_even_when_the_url_is_fine() -> None:
     with pytest.raises(EmbeddingUnavailable, match="EgressPolicy is required"):
-        ProviderEmbedding(
-            base_url="https://embed.invalid/v1", model_id="m", dimensions=2
-        )
+        ProviderEmbedding(base_url="https://embed.invalid/v1", model_id="m", dimensions=2)
 
 
 @pytest.mark.parametrize(
@@ -457,9 +455,7 @@ def test_provider_sends_dimensions_only_when_asked() -> None:
         ([_row(0, 1.0, 0.0), _row(1, float("nan"), 0.0)], "NaN"),
     ],
 )
-def test_a_malformed_batch_fails_instead_of_attaching_the_wrong_vector(
-    rows, match: str
-) -> None:
+def test_a_malformed_batch_fails_instead_of_attaching_the_wrong_vector(rows, match: str) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return api_response(rows)
 
@@ -520,9 +516,9 @@ def test_a_named_key_variable_that_is_unset_fails_before_the_socket(monkeypatch)
         raise AssertionError("a missing credential must not reach the provider")
 
     with pytest.raises(EmbeddingUnavailable, match="CELA_TEST_EMBED_KEY is not set"):
-        provider(
-            transport=httpx.MockTransport(handler), api_key_env="CELA_TEST_EMBED_KEY"
-        ).embed(["a"])
+        provider(transport=httpx.MockTransport(handler), api_key_env="CELA_TEST_EMBED_KEY").embed(
+            ["a"]
+        )
 
 
 def test_factory_builds_a_provider_when_all_flags_are_present() -> None:
@@ -731,7 +727,5 @@ def test_os_evals_retrieval_exits_2_on_a_broken_backend(tmp_path, monkeypatch, c
     golden = tmp_path / "golden.jsonl"
     golden.write_text('{"q": "anything", "docs": ["doc_x"]}\n', encoding="utf-8")
 
-    assert (
-        evals_main(["retrieval", "--golden", str(golden), "--store-url", "memory://"]) == 2
-    )
+    assert evals_main(["retrieval", "--golden", str(golden), "--store-url", "memory://"]) == 2
     assert "CELA_EMBED_DIM" in capsys.readouterr().err

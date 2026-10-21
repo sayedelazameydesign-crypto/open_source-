@@ -192,10 +192,7 @@ def get_provider_config(provider: str | None = None) -> dict[str, Any]:
     name = resolve_provider_name(provider)
     spec = PROVIDER_SPECS[name]
     model = os.getenv(spec["model_env"], "").strip() or spec["default_model"]
-    base_url = (
-        os.getenv(spec["base_url_env"], "").strip().rstrip("/")
-        or spec["default_base_url"]
-    )
+    base_url = os.getenv(spec["base_url_env"], "").strip().rstrip("/") or spec["default_base_url"]
     api_key_env: str | None = spec["api_key_env"]
     requires_key: bool = bool(spec["requires_key"])
     if api_key_env:
@@ -237,8 +234,7 @@ def format_provider_status(provider: str | None = None) -> str:
         )
     elif cfg["configured"]:
         key_state = (
-            f"<span class='status-info'>●</span> المفتاح `{cfg['api_key_env']}` مُعيّن — "
-            f"{unverified}"
+            f"<span class='status-info'>●</span> المفتاح `{cfg['api_key_env']}` مُعيّن — {unverified}"
         )
     else:
         key_state = (
@@ -482,13 +478,11 @@ def run_smoke_test(provider: str | None = None) -> dict[str, Any]:
         result["detail"] = "فشل الطلب أو أعاد المزوّد رسالة خطأ/ردًا فارغًا."
     elif result["state"] == SMOKE_INCONCLUSIVE:
         result["detail"] = (
-            "وصل رد من المزوّد لكنه لا يتضمن عبارة التحقق المطلوبة "
-            f"«{SMOKE_VERIFICATION_PHRASE}»."
+            f"وصل رد من المزوّد لكنه لا يتضمن عبارة التحقق المطلوبة «{SMOKE_VERIFICATION_PHRASE}»."
         )
     else:
         result["detail"] = (
-            f"وصل رد حقيقي من المزوّد يتضمن عبارة التحقق "
-            f"«{SMOKE_VERIFICATION_PHRASE}»."
+            f"وصل رد حقيقي من المزوّد يتضمن عبارة التحقق «{SMOKE_VERIFICATION_PHRASE}»."
         )
     return result
 
@@ -587,11 +581,7 @@ class OrionAgent:
         if not task or not task.strip():
             return "⚠️ أدخل مهمة."
         if not approved:
-            return (
-                "⏸️ في انتظار الموافقة (HITL).\n"
-                "فعّل «أوافق» ثم أعد التنفيذ.\n"
-                f"المهمة: {task}"
-            )
+            return f"⏸️ في انتظار الموافقة (HITL).\nفعّل «أوافق» ثم أعد التنفيذ.\nالمهمة: {task}"
         self.history.append(task)
         skills = self.engine.list_skills()
         return (
@@ -640,8 +630,7 @@ def _library_store_urls() -> tuple[str, str]:
         or f"sqlite:///{data_dir / 'knowledge.sqlite3'}"
     )
     skill_url = (
-        os.getenv("CELA_SKILL_STORE_URL", "").strip()
-        or f"sqlite:///{data_dir / 'skills.sqlite3'}"
+        os.getenv("CELA_SKILL_STORE_URL", "").strip() or f"sqlite:///{data_dir / 'skills.sqlite3'}"
     )
     return know_url, skill_url
 
@@ -722,9 +711,7 @@ def _admin_error(token: Any) -> str:
 
 def _upload_root() -> str:
     """مجلد Gradio المؤقت للملفات المرفوعة (``GRADIO_TEMP_DIR`` أو ``<tmp>/gradio``)."""
-    return os.getenv("GRADIO_TEMP_DIR", "").strip() or os.path.join(
-        tempfile.gettempdir(), "gradio"
-    )
+    return os.getenv("GRADIO_TEMP_DIR", "").strip() or os.path.join(tempfile.gettempdir(), "gradio")
 
 
 def _uploaded_file_path(file: Any) -> str:
@@ -746,9 +733,7 @@ def _uploaded_file_path(file: Any) -> str:
 def _paper_library_text() -> str:
     try:
         layer = _existing_knowledge()
-        documents = (
-            layer[0].list_documents(corpus_id=_RESEARCH_CORPUS) if layer is not None else []
-        )
+        documents = layer[0].list_documents(corpus_id=_RESEARCH_CORPUS) if layer is not None else []
     except Exception as exc:
         return f"تعذّر فتح مكتبة الأبحاث ({type(exc).__name__})."
     if not documents:
@@ -992,9 +977,7 @@ def chat_fn(
     messages: list[dict[str, str]] = [{"role": "system", "content": SYSTEM_PROMPT}]
     for item in history or []:
         if isinstance(item, dict) and "role" in item and "content" in item:
-            messages.append(
-                {"role": str(item["role"]), "content": str(item["content"])}
-            )
+            messages.append({"role": str(item["role"]), "content": str(item["content"])})
         elif isinstance(item, (list, tuple)) and len(item) >= 2:
             if item[0] is not None:
                 messages.append({"role": "user", "content": str(item[0])})
@@ -1105,9 +1088,7 @@ with gr.Blocks(title="CELA.PRO") as demo:
 
     gr.Markdown(
         "### 🔌 وحدات النظام\n"
-        + "\n".join(
-            f"- {m}: {'✅' if ok else '❌'}" for m, ok in _MODULE_STATUS.items()
-        )
+        + "\n".join(f"- {m}: {'✅' if ok else '❌'}" for m, ok in _MODULE_STATUS.items())
     )
 
     with gr.Row():

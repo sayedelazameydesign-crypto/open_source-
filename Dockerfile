@@ -38,6 +38,7 @@ ENV CELA_IMAGE_REF=${CELA_IMAGE_REF} \
 # extras — no browser/sandbox/ai toolchains. Build context is the repo root.
 COPY . /app
 RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir --upgrade "setuptools>=78.1.1" wheel \
     && pip install --no-cache-dir -e ".[server,distributed]"
 
 EXPOSE 8080
@@ -45,5 +46,14 @@ EXPOSE 8080
 # Liveness probe target is /health (see os_server.app); PORT-aware to match CMD.
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD python -c "import os,urllib.request;urllib.request.urlopen('http://127.0.0.1:%s/health' % os.environ.get('PORT','8080'))" || exit 1
+
+# Run as an unprivileged user (2026-10-21 review, S2). The service needs no
+# privileged port (8080) and no root capability: the sandbox backends already
+# fail closed in this image (CELA_CODE_EXEC_MODE=disabled). /app is chowned so
+# the default run ledger (./.cela/ledger.jsonl) and a local SQLite store stay
+# writable without handing the process the whole filesystem.
+RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin cela \
+    && chown -R cela:cela /app
+USER cela
 
 CMD ["sh", "-c", "uvicorn --app-dir deploy/g1a main:app --host 0.0.0.0 --port ${PORT:-8080}"]
