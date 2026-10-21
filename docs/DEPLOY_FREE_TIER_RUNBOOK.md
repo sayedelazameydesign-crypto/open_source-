@@ -158,6 +158,45 @@ Postgres عبر HTTP. الرمز لا يُطبع ولا يُخزَّن في ال
 > وبث SSE يستأنف بـ `?after_seq=N` بدل إعادة الأحداث. إن أردت تقليل النوم، أرسل طلب `/health` كل 10 دقائق من
 > خدمة ping خارجية (اختياري، ويكون ضمن حدود الخطة المجانية).
 
+### 2.7 التحقق بعد النشر من GitHub Actions (workflow يدوي)
+
+الفحصان أعلاه يدويّان، أي أن الرمز يمرّ في طرفية المشغّل. لقضائهما بدون أي
+`export` محلي يوجد `.github/workflows/deploy-verify.yml` — **يدوي فقط**
+(`workflow_dispatch`) و`permissions: contents: read`، فلا يغيّر شيئًا في المستودع:
+
+1. يحلّ عنوان الخدمة من Render API بالاسم `celia-mission-os-api` باستخدام
+   `RENDER_API_KEY`. العنوان **ليس مدخلًا**: لا يستطيع من يضغط *Run workflow* أن
+   يوجّه `CELA_API_TOKEN` إلى مضيف يختاره هو؛ هذه البنية عليها حراسة في
+   `tests/test_deploy_verify_workflow.py` كما في `eval-real-model.yml`.
+2. `python scripts/deploy_doctor.py --strict` على بيئة الخطوة بالأسرار المُمرَّرة.
+3. `make verify-deploy API=<العنوان المحلول> EXPECT_KIND=<التوقّع>`، أي نفس
+   الفحوص الأربعة المذكورة في §2 بند 5.
+
+الأسرار المطلوبة في المستودع: `RENDER_API_KEY` و`CELA_API_TOKEN` و
+`CELA_PRIVATE_API_TOKEN` و`CELA_RUN_STORE_URL`. غياب أي منها يُطبع كخطأ مسمّى
+(`::error title=Preflight::… secret is empty or unset.`) قبل أي طلب فعلي، فلا
+يُقرأ الفشل الخلطي على أنه خلل في الخدمة.
+
+خطوتان تُفشلان التشغيل لسبب محلي بالـrunner، وتُقرأان خطأً على أنهما فشل نشر —
+فلا تُصلحان بتخفيف الفحص:
+
+* **لا تحذف `distributed` من خطوة التثبيت.** `CELA_RUN_STORE_URL` يشير إلى
+  Postgres، و`deploy_doctor` يرفض مخزن Postgres بلا `psycopg`
+  (`postgres_driver_missing`) لأن الخادم يتوقف عند أول تشغيل لا عند الإقلاع.
+  باقتصار التثبيت على `.[dev,server]` تعود `ready: false` فيتوقف الـworkflow قبل
+  أن يلمس الخدمة أصلًا؛ لذلك يثبّت `.[dev,server,distributed]` مطابقةً لبناء
+  الخدمة في `render.yaml` (`.[server,distributed]`).
+* **`expect_kind` خيار مقفل** (`scripted` / `provider_adapter` / `any`) بقيمة
+  افتراضية `scripted`: وضع المعاينة. اختيار `provider_adapter` دليل صادق فقط بعد
+  إكمال §2.6 فعليًا؛ والقيمة تصل إلى الـshell عبر متغير بيئة وتُعاد مقابلتها قبل
+  الاستخدام، لا عبر استخراج داخل سطر الأمر.
+
+حدّان يُقرآن قبل تفسير النتيجة: خطوة `Doctor (strict)` تفحص **بيئة الـrunner** بما
+يُمرَّر إليها من أسرار، لا بيئة الخدمة على Render نفسها — الفحص الذي يلمس الخدمة
+هو خطوة `Verify deployment`. و`workflow_dispatch` لا يظهر في الواجهة قبل وجود
+الملف على الفرع الافتراضي (`main`)؛ وبعده يمكن تشغيله من أي فرع يحتوي الملف،
+ومن أي فرع يُشغَّل منه تُقرأ نسخة الـworkflow نفسها.
+
 ---
 
 ## 3) Cloudflare Pages — الواجهة + وكيل الحافة (10 دقائق)
@@ -406,5 +445,6 @@ grep -c "CELA_API_TOKEN\|local-dev-token" <(curl -sS $SITE/) || true  # 0 — ل
 | `packages/web/app/api/backend/[...path]/route.ts` | وكيل الخادم (BFF) — Next.js / Vercel |
 | `packages/web/next.config.ts` | وضع التصدير الثابت عبر `CELA_STATIC_EXPORT=1` |
 | `scripts/deploy_doctor.py` | فحص الجاهزية قبل النشر |
+| `.github/workflows/deploy-verify.yml` | الفحص بعد النشر يدويًا من Actions (§2.7) — يحلّ العنوان من Render API ثم `deploy_doctor` + `verify_deployment` |
 | `tests/test_deploy_config.py` + `npm run test:deploy` | حراسة العقد الأمني والكونفيغوراسيون |
 | `docs/AUTOMATION_AND_DEPLOYMENT_PLAN.md` | الخطة الكاملة ومصفوفة الامتثال |
