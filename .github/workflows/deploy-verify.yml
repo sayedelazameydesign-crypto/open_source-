@@ -1,0 +1,81 @@
+name: Deploy verification (manual)
+
+# Manual post-deploy check of the Render service. Runs only on workflow_dispatch.
+# The service URL is resolved from the Render API using the RENDER_API_KEY
+# repository secret; secrets are passed through env and never echoed.
+# Read-only on the repository: it checks the deployment and changes nothing.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-verify-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,server]"
+
+      - name: Resolve Render service URL
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${RENDER_API_KEY:-}" ]; then
+            echo "::error title=Preflight::RENDER_API_KEY secret is empty or unset."
+            exit 1
+          fi
+          curl -sS -f -m 30 \
+            -H "Authorization: Bearer ${RENDER_API_KEY}" \
+            -H "Accept: application/json" \
+            "https://api.render.com/v1/services?name=celia-mission-os-api&limit=5" \
+            -o services.json
+          URL=$(python - <<'PY'
+          import json, sys
+          items = json.load(open("services.json"))
+          matches = [i["service"] for i in items if i.get("service", {}).get("name") == "celia-mission-os-api"]
+          if len(matches) != 1:
+              sys.exit("expected exactly one service named celia-mission-os-api, found %d" % len(matches))
+          url = matches[0].get("serviceDetails", {}).get("url", "")
+          if not url.startswith("https://"):
+              sys.exit("service has no https URL yet (is it deployed?)")
+          print(url)
+          PY
+          )
+          echo "Resolved service URL: ${URL}"
+          echo "API_URL=${URL}" >> "$GITHUB_ENV"
+          rm -f services.json
+
+      - name: Doctor (strict)
+        env:
+          CELA_API_TOKEN: ${{ secrets.CELA_API_TOKEN }}
+          CELA_PRIVATE_API_TOKEN: ${{ secrets.CELA_PRIVATE_API_TOKEN }}
+          CELA_RUN_STORE_URL: ${{ secrets.CELA_RUN_STORE_URL }}
+          CELA_BACKEND_URL: ${{ env.API_URL }}
+        run: python scripts/deploy_doctor.py --strict
+
+      - name: Verify deployment
+        env:
+          CELA_API_TOKEN: ${{ secrets.CELA_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CELA_API_TOKEN:-}" ]; then
+            echo "::error title=Preflight::CELA_API_TOKEN secret is empty or unset."
+            exit 1
+          fi
+          make verify-deploy API="${API_URL}" EXPECT_KIND=scripted
