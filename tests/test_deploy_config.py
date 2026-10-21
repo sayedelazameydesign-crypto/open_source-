@@ -705,3 +705,15 @@ def test_every_web_test_script_runs_in_web_ci() -> None:
     ci = WEB_CI.read_text(encoding="utf-8")
     not_run = [name for name in test_scripts if f"npm run {name}" not in ci]
     assert not not_run, f"web-ci.yml never runs: {not_run}"
+
+
+def test_docker_workflow_watches_the_composite_action_it_calls() -> None:
+    """A `paths:` filter that omits the action cannot test the action.
+
+    The build+smoke step is `.github/actions/docker-build-smoke`; changing the
+    action alone used to match no filter, so the workflow never ran and the new
+    assertions in it were untested (found in the 2026-10-21 review).
+    """
+    workflow = (ROOT / ".github" / "workflows" / "docker-image.yml").read_text(encoding="utf-8")
+    assert "./.github/actions/docker-build-smoke" in workflow
+    assert workflow.count('".github/actions/**"') >= 2  # push + pull_request
