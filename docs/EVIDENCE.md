@@ -40,7 +40,7 @@ Chromium الحيّ صراحةً، لكن اختباري Reach الشبكيين 
 | جاهزية النشر | `python scripts/deploy_doctor.py --strict` | أسرار وعناوين؛ Render يشترط مخزن Postgres دائمًا و`CELA_CODE_EXEC_MODE=disabled` في البيئة وBlueprint الهدف؛ هذا preflight ليس orchestrator مركزيًا |
 | artifacts | `render.yaml` واختبارات GHCR | Blueprint واحد في الجذر لـRender؛ بقية container providers تستخدم صورة GHCR ذات مدخل `deploy/g1a` |
 | Provider API حيّ | **غير مفعّل** | `OpenAICompatModel` لم يُربط بعد بالنقل المثبّت أو allowlist خاصة بالمزوّد؛ لا تفعّل `CELA_USE_LIVE_PROVIDER=1` حتى مراجعة host Gemini وإكمال adapter واختباراته |
-| هوية خدمة منشورة | `python scripts/verify_deployment.py --api https://<service>.<provider-domain> --allow-host '<pattern>'` | HTTPS/443 · قائمة سماح صريحة من `--allow-host` أو `CELA_DEPLOY_ALLOWED_HOSTS` (لا مزوّد مفترض في البوابة) · DNS pinning · `/health` أولًا بلا رمز · بلا redirects أو proxy env · DB خارج فحص HTTP |
+| هوية خدمة منشورة | `python scripts/verify_deployment.py --api https://<service>.<provider-domain> --allow-host '<pattern>'` | HTTPS/443 · قائمة سماح صريحة من `--allow-host` أو `CELA_DEPLOY_ALLOWED_HOSTS` (لا مزوّد مفترض في البوابة) · DNS pinning · `/health` أولًا بلا رمز · بلا redirects أو proxy env · فحص المخزن عبر `/platform/info` لا باتصال DB من الفاحص |
 | مستندات PDF | `pip install -e ".[dev,server,papers]"` ثم `pytest tests/test_resource_collection.py` | extra `papers` يثبت `pypdf`؛ CI و`make install` يثبتانه لتشغيل التغطية الحقيقية |
 | Chromium حيّ | `pytest -m "browser and network" tests/test_browser_live.py` | الاختبار يشترط محتوى من Python.org ورصد طلبات CDN عابرة للأصل وفشلها؛ لا يُعدّ نجاحًا حتى يمر job الـCI |
 

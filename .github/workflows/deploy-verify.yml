@@ -95,6 +95,9 @@ jobs:
           CELA_API_TOKEN: ${{ secrets.CELA_API_TOKEN }}
           CELA_PRIVATE_API_TOKEN: ${{ secrets.CELA_PRIVATE_API_TOKEN }}
           CELA_RUN_STORE_URL: ${{ secrets.CELA_RUN_STORE_URL }}
+          # Optional: only needed when CELA_RUN_STORE_URL is `distributed://`.
+          CELA_POSTGRES_URL: ${{ secrets.CELA_POSTGRES_URL }}
+          CELA_REDIS_URL: ${{ secrets.CELA_REDIS_URL }}
         run: |
           set -euo pipefail
           CELA_BACKEND_URL="${API_URL}" python scripts/deploy_doctor.py --strict
