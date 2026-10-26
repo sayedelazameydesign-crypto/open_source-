@@ -20,7 +20,7 @@
     "test:platform-console": "node ../../tests/web/run-platform-console.cjs"
   },
   "dependencies": {
-    "next": "^15.5.28",
+    "next": "^16.4.2",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   },
