@@ -15,7 +15,7 @@
 # to the app settings). We honor $PORT and fall back to 8080.
 
 # Keep the container runtime aligned with Render's Python 3.11 line.
-FROM python:3.11-slim AS runtime
+FROM python:3.12-slim AS runtime
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
