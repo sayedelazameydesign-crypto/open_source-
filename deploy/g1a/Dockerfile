@@ -19,7 +19,7 @@
 # matters; correctness does not depend on it.
 
 # Keep the local parity image aligned with Render's Python 3.11 line.
-FROM python:3.11-slim AS runtime
+FROM python:3.12-slim AS runtime
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
